@@ -102,6 +102,32 @@ defmodule Arcadic.QueryStreamTest do
     end
   end
 
+  describe "Bolt.stream_error/1 (mid-stream error mapping + redaction)" do
+    test "maps a Boltx timeout to a typed transport :timeout error" do
+      assert Bolt.stream_error(%Boltx.Error{code: :timeout}) ==
+               %Arcadic.TransportError{reason: :timeout}
+    end
+
+    test "maps a bare socket atom (e.g. :closed) to a typed transport error" do
+      assert Bolt.stream_error(:closed) == %Arcadic.TransportError{reason: :closed}
+    end
+
+    test "a value-bearing server error redacts: sentinel in neither message/1 nor inspect" do
+      sentinel = "row-value-and-email@example.com-SEKRET"
+
+      e = %Boltx.Error{
+        code: :syntax_error,
+        bolt: %{code: "Neo.ClientError.Statement.SyntaxError", message: sentinel}
+      }
+
+      err = Bolt.stream_error(e)
+      assert %Arcadic.Error{reason: :parse_error} = err
+      # The value-bearing bolt.message must not survive into the raised exception.
+      refute Exception.message(err) =~ sentinel
+      refute inspect(err) =~ sentinel
+    end
+  end
+
   describe "Bolt.query_stream/3 guards (server-free)" do
     test "refuses a session/tx conn (defense in depth)" do
       conn = %{bolt_conn() | session_id: "bolt", transport_options: [bolt_opts: []]}

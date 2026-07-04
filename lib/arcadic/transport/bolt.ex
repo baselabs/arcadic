@@ -237,11 +237,15 @@ if Code.ensure_loaded?(Boltx) do
     # Mid-stream errors reuse bolt_error/1 so no row/param bytes leak into the raised
     # exception's message or inspect (Critical Rule 3). A finite-timeout breach arrives
     # as %Boltx.Error{code: :timeout} → :timeout; a socket-level send failure is a bare
-    # atom (e.g. :closed) — both handled before the struct fallback.
-    defp stream_error(%Boltx.Error{code: :timeout}), do: %TransportError{reason: :timeout}
-    defp stream_error(%Boltx.Error{} = e), do: bolt_error(e)
-    defp stream_error(reason) when is_atom(reason), do: %TransportError{reason: reason}
-    defp stream_error(other), do: %TransportError{reason: transport_reason(other)}
+    # atom (e.g. :closed) — both handled before the struct fallback. Public (@doc false)
+    # so the mapping — including the value-redaction and timeout invariants — is unit-
+    # testable server-free (mirrors map_transaction_outcome/1, assert_has_more_key!/2).
+    @doc false
+    @spec stream_error(term()) :: Error.t() | TransportError.t()
+    def stream_error(%Boltx.Error{code: :timeout}), do: %TransportError{reason: :timeout}
+    def stream_error(%Boltx.Error{} = e), do: bolt_error(e)
+    def stream_error(reason) when is_atom(reason), do: %TransportError{reason: reason}
+    def stream_error(other), do: %TransportError{reason: transport_reason(other)}
 
     @impl true
     def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
