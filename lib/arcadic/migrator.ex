@@ -80,4 +80,44 @@ defmodule Arcadic.Migrator do
       {:error, error} -> {:error, error}
     end
   end
+
+  @doc "Roll back the last `n` applied migrations (down), newest first. Returns `{:ok, count}`."
+  @spec rollback(Conn.t(), module(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, Exception.t()}
+  def rollback(%Conn{} = conn, registry, n \\ 1)
+      when is_atom(registry) and is_integer(n) and n > 0 do
+    with :ok <- ensure_type(conn),
+         {:ok, applied} <- applied_versions(conn) do
+      to_roll =
+        registry.migrations()
+        |> Enum.filter(fn mod -> mod.version() in applied end)
+        |> Enum.sort_by(& &1.version(), :desc)
+        |> Enum.take(n)
+
+      run_down(conn, to_roll, 0)
+    end
+  end
+
+  @doc "Roll back every applied migration, then migrate all. Returns `{:ok, migrated_count}`."
+  @spec reset(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t()}
+  def reset(%Conn{} = conn, registry) when is_atom(registry) do
+    with :ok <- ensure_type(conn),
+         {:ok, applied} <- applied_versions(conn),
+         {:ok, _} <- rollback(conn, registry, max(length(applied), 1)) do
+      migrate(conn, registry)
+    end
+  end
+
+  defp run_down(_conn, [], count), do: {:ok, count}
+
+  defp run_down(conn, [mod | rest], count) do
+    with :ok <- mod.down(conn),
+         :ok <- remove_version(conn, mod.version()) do
+      run_down(conn, rest, count + 1)
+    end
+  end
+
+  defp remove_version(conn, version) do
+    tracked(conn, "DELETE FROM #{@type_name} WHERE version = :v", %{"v" => version})
+  end
 end
