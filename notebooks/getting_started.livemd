@@ -1,0 +1,209 @@
+# Getting started with Arcadic
+
+## Setup
+
+`Arcadic` is a lean, framework-agnostic Elixir client for
+[ArcadeDB](https://arcadedb.com) over its HTTP Cypher command API, with an
+optional Bolt transport for the query hot path. It ships Cypher/SQL to ArcadeDB
+and manages connections, sessions, and transactions — the "`postgrex` of
+ArcadeDB".
+
+This notebook needs a running **ArcadeDB**. The quickest way is Docker:
+
+```
+docker run -d --name arcadic-quickstart \
+  -p 2480:2480 -p 7687:7687 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata \
+                -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \
+  arcadedata/arcadedb:latest
+```
+
+Two ports are published: **2480** (the HTTP command API — the default transport)
+and **7687** (Bolt — used by the streaming section below). The
+`-Darcadedb.server.plugins=Bolt:...` option enables ArcadeDB's Bolt protocol,
+which is off by default; without it the streaming section can't connect.
+
+> **Heads-up on port 7687.** That is also Neo4j's default Bolt port. If you run a
+> local Neo4j, it likely already owns 7687 and the streaming section would end up
+> talking to *it* instead of ArcadeDB, giving a confusing handshake or auth error.
+> Map ArcadeDB's Bolt to a free host port instead (e.g. `-p 7690:7687`) and set
+> `ARCADIC_BOLT_PORT=7690` before launching Livebook.
+
+> **Re-running cells.** The setup cells (connect, create-database) are safe to
+> re-run — the database is created only if it does not already exist, and the data
+> cells use `MERGE`, so they are idempotent. To start completely fresh, run the
+> **Cleanup** cell at the bottom, then run all cells top to bottom.
+
+Every connection value can be overridden with an environment variable set before
+you launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_BOLT_HOST`, `ARCADIC_BOLT_PORT`,
+`ARCADIC_PASSWORD`); otherwise the defaults match the `docker run` above.
+
+## Install
+
+```elixir
+Mix.install([
+  {:arcadic, "~> 0.1"},
+  {:boltx, "~> 0.0.6"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## Connect
+
+`Arcadic.connect/3` builds a pure-data connection handle — no process to
+supervise. We create a throwaway `arcadic_quickstart` database to play in (only if
+it does not already exist, so this cell is safe to re-run).
+
+```elixir
+http_url = System.get_env("ARCADIC_HTTP_URL", "http://localhost:2480")
+password = System.get_env("ARCADIC_PASSWORD", "playwithdata")
+database = "arcadic_quickstart"
+
+admin = Arcadic.connect(http_url, database, auth: {"root", password})
+{:ok, true} = Arcadic.Server.ready?(admin)
+
+unless match?({:ok, true}, Arcadic.Server.database_exists?(admin, database)) do
+  :ok = Arcadic.Server.create_database(admin, database)
+end
+
+conn = Arcadic.connect(http_url, database, auth: {"root", password})
+```
+
+## Query and command (parameters only)
+
+Every dynamic value reaches ArcadeDB **only as a bound parameter** (`$name`) —
+never string interpolation. `command/4` writes; `query/4` reads. `MERGE` keeps the
+write idempotent, so re-running this cell does not create duplicate people.
+
+```elixir
+{:ok, _} =
+  Arcadic.command(
+    conn,
+    "MERGE (p:Person {name: $name}) ON CREATE SET p.role = $role RETURN p.name AS name",
+    %{"name" => "Alice", "role" => "engineer"}
+  )
+
+{:ok, rows} = Arcadic.query(conn, "MATCH (p:Person) RETURN p.name AS name, p.role AS role", %{})
+rows
+```
+
+## Transactions
+
+`Arcadic.transaction/3` opens an ArcadeDB session, runs the function with a
+session-scoped connection, and commits on normal return. Returning normally
+commits; raising rolls back and reraises; `Arcadic.rollback/2` aborts on purpose
+and yields `{:error, reason}`.
+
+```elixir
+{:ok, total} =
+  Arcadic.transaction(conn, fn tx ->
+    Arcadic.command!(tx, "MERGE (p:Person {name: $name})", %{"name" => "Bob"})
+    [%{"c" => c}] = Arcadic.query!(tx, "MATCH (p:Person) RETURN count(p) AS c", %{})
+    c
+  end)
+
+total
+```
+
+```elixir
+# An intentional rollback discards everything the transaction did.
+result =
+  Arcadic.transaction(conn, fn tx ->
+    Arcadic.command!(tx, "CREATE (p:Person {name: $name})", %{"name" => "Ghost"})
+    Arcadic.rollback(tx, :changed_my_mind)
+  end)
+
+{:ok, [%{"c" => ghosts}]} =
+  Arcadic.query(conn, "MATCH (p:Person {name: $name}) RETURN count(p) AS c", %{"name" => "Ghost"})
+
+{result, ghosts}
+```
+
+## Other query languages
+
+Cypher is the default, but ArcadeDB is multi-model. Opt into another engine per
+call with `language:` — here, SQL.
+
+```elixir
+Arcadic.query!(conn, "SELECT name, role FROM Person ORDER BY name", %{}, language: "sql")
+```
+
+## Streaming large results over Bolt
+
+For large result sets, `Arcadic.query_stream/4` returns a lazy `Stream` of rows
+over Bolt, paged with `PULL` so the whole result never has to sit in memory at
+once. `Arcadic.Transport.Bolt.setup/1` builds the transport options in one call.
+
+```elixir
+bolt_host = System.get_env("ARCADIC_BOLT_HOST", "localhost")
+bolt_port = String.to_integer(System.get_env("ARCADIC_BOLT_PORT", "7687"))
+
+{:ok, transport_options} =
+  Arcadic.Transport.Bolt.setup(
+    hostname: bolt_host,
+    port: bolt_port,
+    username: "root",
+    password: password
+  )
+
+bolt_conn =
+  Arcadic.connect(http_url, database,
+    auth: {"root", password},
+    transport: Arcadic.Transport.Bolt,
+    transport_options: transport_options
+  )
+
+{:ok, stream} =
+  Arcadic.query_stream(bolt_conn, "UNWIND range(1, 25) AS i RETURN i AS n, i * i AS square", %{},
+    chunk_size: 5
+  )
+
+stream |> Enum.to_list() |> Kino.DataTable.new()
+```
+
+## Migrations
+
+`Arcadic.Migrator` runs `Arcadic.Migration`s in order and records applied versions
+in the `_arcadic_migrations` type, so re-running is a no-op. In a real app each
+migration is its own module; here we define and run one inline.
+
+```elixir
+defmodule Quickstart.Migrations.V1 do
+  @behaviour Arcadic.Migration
+  @impl true
+  def version, do: 1
+  @impl true
+  def up(c), do: Arcadic.command!(c, "CREATE VERTEX TYPE Widget IF NOT EXISTS", %{}, language: "sql") && :ok
+  @impl true
+  def down(c), do: Arcadic.command!(c, "DROP TYPE Widget IF EXISTS", %{}, language: "sql") && :ok
+end
+
+defmodule Quickstart.Migrations do
+  use Arcadic.MigrationRegistry
+  migrations([Quickstart.Migrations.V1])
+end
+
+{:ok, applied} = Arcadic.Migrator.migrate(conn, Quickstart.Migrations)
+{:ok, status} = Arcadic.Migrator.status(conn, Quickstart.Migrations)
+{applied, status}
+```
+
+## Server admin
+
+`Arcadic.Server` covers server-level operations. Database identifiers are
+allowlist-validated before they reach the wire.
+
+```elixir
+{:ok, databases} = Arcadic.Server.list_databases(admin)
+{:ok, exists?} = Arcadic.Server.database_exists?(admin, database)
+{databases, exists?}
+```
+
+## Cleanup
+
+Drop the throwaway database when you are done (or before a fresh top-to-bottom
+run).
+
+```elixir
+Arcadic.Server.drop_database(admin, database)
+```

@@ -76,6 +76,7 @@ defmodule Arcadic.MixProject do
       source_url: @source_url,
       extras: [
         "README.md",
+        "notebooks/getting_started.livemd",
         "usage-rules.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",

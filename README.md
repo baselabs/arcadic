@@ -1,5 +1,7 @@
 # Arcadic
 
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbaselabs%2Farcadic%2Fmain%2Fnotebooks%2Fgetting_started.livemd)
+
 A lean, framework-agnostic Elixir client for [ArcadeDB](https://arcadedb.com)
 over the **HTTP Cypher command API**, with an optional Bolt transport for the
 query hot path.
@@ -174,8 +176,13 @@ mix test
 mix quality   # format --check-formatted + credo --strict + dialyzer
 ```
 
+To explore the full surface interactively against a local ArcadeDB, open the
+[getting-started notebook](notebooks/getting_started.livemd) (the **Run in
+Livebook** badge at the top launches it directly).
+
 Contributor and agent working rules — including the params-only, redaction, and
-tenant-blind invariants — live in [`AGENTS.md`](AGENTS.md).
+tenant-blind invariants — live in
+[`AGENTS.md`](https://github.com/baselabs/arcadic/blob/main/AGENTS.md).
 
 ## Credits
 
