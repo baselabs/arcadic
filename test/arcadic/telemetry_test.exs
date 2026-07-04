@@ -36,4 +36,22 @@ defmodule Arcadic.TelemetryTest do
   test "database is NOT an allowed key (tenant-blind telemetry)" do
     refute :database in Arcadic.Telemetry.allowed_meta_keys()
   end
+
+  test "event/3 emits with validated metadata and rejects off-allowlist keys" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :query_stream, :stop]])
+
+    Arcadic.Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: 3}, %{
+      mode: :read,
+      reason: :ok
+    })
+
+    assert_received {[:arcadic, :query_stream, :stop], ^ref, %{row_count: 3},
+                     %{mode: :read, reason: :ok}}
+
+    assert_raise ArgumentError, fn ->
+      Arcadic.Telemetry.event([:arcadic, :query_stream, :stop], %{}, %{database: "leak"})
+    end
+
+    :telemetry.detach(ref)
+  end
 end

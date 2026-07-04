@@ -26,6 +26,17 @@ defmodule Arcadic.Telemetry do
     end)
   end
 
+  @doc """
+  Emit a manual `:telemetry.execute/3` event with allowlist-validated metadata, for
+  lazy operations (streaming) whose lifetime does not fit `span/3`'s synchronous
+  callback. Off-allowlist metadata keys raise (no statement/params/values/db name).
+  """
+  @spec event([atom(), ...], map(), map()) :: :ok
+  def event(name, measurements, meta)
+      when is_list(name) and is_map(measurements) and is_map(meta) do
+    :telemetry.execute(name, measurements, validate!(meta))
+  end
+
   @doc false
   @spec validate!(map()) :: map()
   def validate!(meta) when is_map(meta) do
