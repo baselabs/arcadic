@@ -26,6 +26,66 @@ defmodule Arcadic.Transport.HTTP do
   defp endpoint(:read), do: "query"
   defp endpoint(:write), do: "command"
 
+  @impl true
+  def begin(%Conn{} = conn, opts) do
+    body = isolation_body(opts[:isolation])
+
+    case post(conn, "/api/v1/begin/#{conn.database}", body, opts) do
+      {:ok, %Req.Response{status: status} = resp} when status in 200..299 ->
+        case session_id(resp) do
+          nil ->
+            {:error,
+             %Error{reason: :server_error, http_status: status, message: "no session id returned"}}
+
+          id ->
+            {:ok, id}
+        end
+
+      other ->
+        handle_status_only(other)
+    end
+  end
+
+  @impl true
+  def commit(%Conn{} = conn),
+    do: handle_status_only(post(conn, "/api/v1/commit/#{conn.database}", nil))
+
+  @impl true
+  def rollback(%Conn{} = conn),
+    do: handle_status_only(post(conn, "/api/v1/rollback/#{conn.database}", nil))
+
+  # nil isolation → NO body (the verified default); explicit → isolationLevel body.
+  defp isolation_body(nil), do: nil
+  defp isolation_body(:read_committed), do: %{isolationLevel: "READ_COMMITTED"}
+  defp isolation_body(:repeatable_read), do: %{isolationLevel: "REPEATABLE_READ"}
+
+  defp isolation_body(other),
+    do:
+      raise(
+        ArgumentError,
+        "unknown isolation #{inspect(other)}; allowed: [:read_committed, :repeatable_read]"
+      )
+
+  defp session_id(%Req.Response{headers: headers}) do
+    case headers["arcadedb-session-id"] do
+      [id | _] -> id
+      _ -> nil
+    end
+  end
+
+  defp handle_status_only({:ok, %Req.Response{status: status}}) when status in 200..299, do: :ok
+
+  defp handle_status_only({:ok, %Req.Response{status: status, body: body}}) when is_map(body),
+    do: {:error, Error.from_response(status, body)}
+
+  defp handle_status_only({:ok, %Req.Response{status: status}}),
+    do: {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+  defp handle_status_only({:error, %{reason: reason}}),
+    do: {:error, %TransportError{reason: reason}}
+
+  defp handle_status_only({:error, _}), do: {:error, %TransportError{reason: :unknown}}
+
   @doc false
   @spec build_body(Arcadic.Transport.request(), keyword()) :: map()
   def build_body(%{statement: statement, params: params, language: language}, opts) do

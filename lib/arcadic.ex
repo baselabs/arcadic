@@ -63,6 +63,15 @@ defmodule Arcadic do
   def command!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
     do: bang(command(conn, statement, params, opts))
 
+  @doc "Run a function within a session transaction. See `Arcadic.Transaction.transaction/3`."
+  @spec transaction(Conn.t(), (Conn.t() -> result), keyword()) :: {:ok, result} | {:error, term()}
+        when result: var
+  defdelegate transaction(conn, fun, opts \\ []), to: Arcadic.Transaction
+
+  @doc "Roll back the current transaction with a reason. See `Arcadic.Transaction.rollback/2`."
+  @spec rollback(Conn.t(), term()) :: no_return()
+  defdelegate rollback(tx, reason), to: Arcadic.Transaction
+
   # ── internals ──────────────────────────────────────────────────────────────
 
   defp run(conn, mode, statement, params, opts) do
