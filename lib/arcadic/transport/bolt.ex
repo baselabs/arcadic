@@ -30,11 +30,22 @@ if Code.ensure_loaded?(Boltx) do
     @behaviour Arcadic.Transport
 
     alias Arcadic.{Conn, Error, Telemetry, TransportError}
-    alias Boltx.BoltProtocol.Message.{PullMessage, RunMessage}
+    alias Boltx.BoltProtocol.Message.{HelloMessage, PullMessage, RunMessage}
+    alias Boltx.BoltProtocol.Versions
     alias Boltx.Client
     alias Boltx.Types.{Duration, Point}
 
     import Boltx.BoltProtocol.ServerResponse, only: [statement_result: 1, pull_result: 2]
+
+    # Local struct-shape aliases for boltx's structs. boltx defines the structs via
+    # `defstruct` but exports NO `@type t`, so `Boltx.Connection.t()` fails dialyzer as
+    # `unknown_type`; and a bare `%Boltx.Connection{}` in an `@spec` trips credo's
+    # SpecWithStruct check. Naming the struct shapes as local types once satisfies both:
+    # dialyzer resolves the struct, credo sees a type-name call (no struct literal) in specs.
+    @typep boltx_conn :: %Boltx.Connection{}
+    @typep boltx_error :: %Boltx.Error{}
+    @typep boltx_client :: %Client{}
+    @typep boltx_config :: %Client.Config{}
 
     @rollback_throw :arcadic_rollback
 
@@ -148,7 +159,7 @@ if Code.ensure_loaded?(Boltx) do
     end
 
     defp stream_start(conn, bolt_opts, statement, params, timeout) do
-      case bolt_connect(bolt_opts) do
+      case leak_safe_connect(bolt_opts) do
         {:ok, state} ->
           case stream_run(state.client, statement, params, run_extra(conn), timeout) do
             {:ok, run_success} ->
@@ -162,26 +173,123 @@ if Code.ensure_loaded?(Boltx) do
           end
 
         {:error, reason} ->
-          # A failed connect hands back no socket handle, so arcadic cannot disconnect
-          # here; raise a REDACTED typed error (never the raw exception, which could
-          # embed server bytes — Rule 3). NOTE: a post-handshake auth rejection leaves
-          # boltx's own socket open (boltx discards its client on the `do_init` error
-          # without closing) — arcadic has no handle to reap it; tracked as an upstream
-          # boltx fix, not closeable here without reimplementing Boltx.Connection.connect.
+          # A failed connect leaks no socket: leak_safe_connect/1 owns the handle from
+          # Client.do_connect onward and safe_disconnects it before returning {:error, _}.
+          # Raise a REDACTED typed error (never the raw exception, which could embed
+          # server bytes — Rule 3); the reason type is preserved (%Boltx.Error{}/atom).
           raise stream_error(reason)
       end
     end
 
-    # Boltx.Connection.connect/1 returns {:error, _} for refused / timeout / auth
-    # failures, but it RAISES (FunctionClauseError in Boltx.Client.decode_version/1)
-    # when the endpoint is open yet not a Bolt v4 server — e.g. the HTTP port, whose
-    # handshake reply is non-negotiable bytes. Convert any such raise to a redacted
-    # :bolt_protocol_error so the "connect failures raise %Arcadic.TransportError{}"
-    # contract holds and no server bytes escape in a raw exception.
-    defp bolt_connect(bolt_opts) do
-      Boltx.Connection.connect(bolt_opts)
+    # arcadic owns the per-stream (and pool) connect: drive boltx's public connect
+    # primitives directly so it holds the :gen_tcp socket handle from the moment
+    # Client.do_connect opens it and closes it on EVERY failure. This closes the
+    # connect-time fd leak that Boltx.Connection.connect/Boltx.Client.connect exhibit
+    # (auth-reject {:error} and non-Bolt-endpoint raise both discard the socket without
+    # closing it). Spec uses the local boltx_* struct-shape types (see their @typep note).
+    @doc false
+    @spec leak_safe_connect(keyword()) ::
+            {:ok, boltx_conn()} | {:error, boltx_error() | atom()}
+    def leak_safe_connect(bolt_opts) do
+      config = Client.Config.new(bolt_opts)
+
+      case Client.do_connect(config) do
+        {:error, reason} ->
+          # refused/timeout: no socket opened, nothing to leak.
+          {:error, reason}
+
+        {:ok, client} ->
+          # arcadic now OWNS the socket; guarantee close on every subsequent outcome.
+          try do
+            with {:ok, client} <- handshake(client, config),
+                 :ok <- assert_v4_band(client.bolt_version),
+                 {:ok, meta} <- hello_bounded(client, bolt_opts, config.connect_timeout) do
+              {:ok, build_state(meta, client)}
+            else
+              # preserve the reason (never flatten %Boltx.Error{} to an atom).
+              {:error, reason} ->
+                _ = safe_disconnect(client)
+                {:error, reason}
+            end
+          rescue
+            # unexpected internal defect: clean up then fail loud — do not launder.
+            e ->
+              _ = safe_disconnect(client)
+              reraise e, __STACKTRACE__
+          end
+      end
+    end
+
+    # Exact 4-byte handshake read. A connect timeout is preserved as :timeout; non-version
+    # reply bytes are dropped by the `_` match (information-destroying — Rule 3: they could
+    # be a misdirected HTTP/auth-proxy body, so nothing but a value-free atom is returned),
+    # and no FunctionClauseError can escape (unlike Boltx.Client.decode_version/1).
+    @spec handshake(boltx_client(), boltx_config()) ::
+            {:ok, boltx_client()}
+            | {:error, :version_negotiation_error | :bolt_protocol_error | :timeout}
+    defp handshake(client, config) do
+      data =
+        <<0x60, 0x60, 0xB0, 0x17>> <>
+          (config.versions
+           |> Enum.sort(&>=/2)
+           |> Enum.map_join("", &Versions.to_bytes/1))
+
+      with :ok <- Client.send_packet(client, data) do
+        case Client.recv_data(client, config.connect_timeout, 4) do
+          {:ok, <<0, 0, minor, major>>} when major > 0 ->
+            {:ok, %{client | bolt_version: Float.round(major + minor / 10.0, 1)}}
+
+          {:ok, _} ->
+            {:error, :version_negotiation_error}
+
+          {:error, :timeout} ->
+            {:error, :timeout}
+
+          {:error, _} ->
+            {:error, :bolt_protocol_error}
+        end
+      end
+    end
+
+    # Bounded HELLO — mirrors the RUN/PULL frame-exchange pattern (Decision 17) so the
+    # HELLO leg is bounded by connect_timeout instead of boltx's hardcoded :infinity recv.
+    @spec hello_bounded(boltx_client(), keyword(), timeout()) ::
+            {:ok, map()} | {:error, boltx_error() | atom()}
+    defp hello_bounded(client, bolt_opts, timeout) do
+      payload = HelloMessage.encode(client.bolt_version, bolt_opts)
+
+      with :ok <- Client.send_packet(client, payload) do
+        Client.recv_packets(client, &Client.prepare_generic_messages/2, timeout)
+      end
+    end
+
+    # arcadic pins Bolt v4 ([4.4, 4.3, 4.2, 4.1]); the HELLO-only auth band is [3.0, 5.1).
+    # Reject outside it rather than under-authenticate a 5.1+ peer that needs a separate LOGON.
+    @spec assert_v4_band(term()) :: :ok | {:error, :version_negotiation_error}
+    defp assert_v4_band(v) when is_float(v) and v >= 3.0 and v < 5.1, do: :ok
+    defp assert_v4_band(_), do: {:error, :version_negotiation_error}
+
+    # Cleanup must not mask the original error/raise: Client.disconnect/1 destructures
+    # client.sock and calls close, which raises if the socket is already gone — swallow it.
+    @spec safe_disconnect(boltx_client()) :: :ok
+    defp safe_disconnect(client) do
+      Client.disconnect(client)
     rescue
-      _ -> {:error, :bolt_protocol_error}
+      _ -> :ok
+    end
+
+    # Populate %Boltx.Connection{} from the HELLO reply (mirror boltx's
+    # get_server_metadata_state/1) so a consumer of server_version/connection_id/hints/
+    # patch_bolt reads real metadata, not nil.
+    @spec build_state(map(), boltx_client()) :: boltx_conn()
+    defp build_state(meta, client) do
+      %Boltx.Connection{
+        client: client,
+        server_version: meta["server"],
+        connection_id: meta["connection_id"] || "",
+        hints: meta["hints"] || "",
+        patch_bolt: meta["patch_bolt"] || ""
+      }
     end
 
     defp stream_next(%{done: true} = acc, _chunk, _timeout), do: {:halt, acc}
