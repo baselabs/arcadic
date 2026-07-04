@@ -33,3 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_arcadic_migrations`.
 - `Arcadic.Transport.Bolt` — optional Bolt transport (Bolt v4, non-TLS scheme)
   via the optional `boltx` dependency; server admin remains HTTP-only.
+- `Arcadic.query_stream/4` — Bolt-only lazy `Stream.t()` of raw row maps, chunked
+  over Bolt `PULL`/`has_more` (default `chunk_size: 1000`); a `:timeout` opt bounds
+  each RUN/PULL receive (default `:infinity`), raising
+  `%Arcadic.TransportError{reason: :timeout}` on breach; guarded off HTTP and inside
+  transactions with a typed `:not_supported`.
+- `Arcadic.Transport.Bolt.setup/1` — single-source `transport_options` builder
+  (`[bolt: pool, bolt_opts: opts]`).
+- `Arcadic.Telemetry.event/3` — allowlist-validated manual telemetry for lazy ops;
+  `[:arcadic, :query_stream, :start | :stop]` events (value-free).
+
+### Fixed
+
+- `Arcadic.Transport.Bolt` now threads `conn.database` into every Bolt RUN/BEGIN, so
+  `with_database/2` selects the database on Bolt (was hitting the connection default).
+- Bolt `transaction/3` maps a commit-failure to a typed `%Arcadic.Error{reason:
+  :transaction_error}` instead of leaking DBConnection's bare `:rollback` atom.
