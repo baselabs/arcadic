@@ -1,0 +1,39 @@
+# Build artifacts
+_build/
+erl_crash.dump
+*.beam
+*.ez
+
+# Dependencies
+deps/
+
+# ExDoc output
+/doc/
+
+# Dialyzer PLTs
+priv/plts/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+*.DS_Store
+
+# AI tools
+/.serena/
+/.expert/
+/.gemini/
+/.cursor/
+/.opencode/
+/.antigravity/
+/.codex/
+/.claude/
+/.agent/
+/.aider/
+
+# Lifecycle artifacts — brainstorm specs, plans, exec notes, reviews, handoffs.
+# Local-only, NEVER tracked or published. CHARTER.md/AGENTS.md live at the repo
+# root (tracked); published guides live in documentation/ (tracked).
+/docs/
