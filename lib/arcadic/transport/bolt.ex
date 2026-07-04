@@ -148,7 +148,7 @@ if Code.ensure_loaded?(Boltx) do
     end
 
     defp stream_start(conn, bolt_opts, statement, params, timeout) do
-      case Boltx.Connection.connect(bolt_opts) do
+      case bolt_connect(bolt_opts) do
         {:ok, state} ->
           case stream_run(state.client, statement, params, run_extra(conn), timeout) do
             {:ok, run_success} ->
@@ -162,11 +162,26 @@ if Code.ensure_loaded?(Boltx) do
           end
 
         {:error, reason} ->
-          # boltx does not hand back a socket handle on a connect/handshake failure,
-          # so arcadic cannot disconnect it here; raise a REDACTED typed error rather
-          # than the raw MatchError, which could embed a server auth message (Rule 3).
+          # A failed connect hands back no socket handle, so arcadic cannot disconnect
+          # here; raise a REDACTED typed error (never the raw exception, which could
+          # embed server bytes — Rule 3). NOTE: a post-handshake auth rejection leaves
+          # boltx's own socket open (boltx discards its client on the `do_init` error
+          # without closing) — arcadic has no handle to reap it; tracked as an upstream
+          # boltx fix, not closeable here without reimplementing Boltx.Connection.connect.
           raise stream_error(reason)
       end
+    end
+
+    # Boltx.Connection.connect/1 returns {:error, _} for refused / timeout / auth
+    # failures, but it RAISES (FunctionClauseError in Boltx.Client.decode_version/1)
+    # when the endpoint is open yet not a Bolt v4 server — e.g. the HTTP port, whose
+    # handshake reply is non-negotiable bytes. Convert any such raise to a redacted
+    # :bolt_protocol_error so the "connect failures raise %Arcadic.TransportError{}"
+    # contract holds and no server bytes escape in a raw exception.
+    defp bolt_connect(bolt_opts) do
+      Boltx.Connection.connect(bolt_opts)
+    rescue
+      _ -> {:error, :bolt_protocol_error}
     end
 
     defp stream_next(%{done: true} = acc, _chunk, _timeout), do: {:halt, acc}

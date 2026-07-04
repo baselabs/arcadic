@@ -102,8 +102,37 @@ defmodule Arcadic.Integration.BoltStreamTest do
 
     {:ok, stream} = Arcadic.query_stream(conn, "RETURN 1 AS x")
     err = assert_raise Arcadic.TransportError, fn -> Enum.to_list(stream) end
-    # Redaction: no host/password bytes leak into the raised error.
-    refute inspect(err) =~ host
-    refute inspect(err) =~ pass
+    # Redaction: no host/password bytes leak into the raised error. Assert on booleans
+    # (not `=~ pass`) so a regression does not echo the live credential into ExUnit output.
+    rendered = inspect(err)
+    refute String.contains?(rendered, host), "host leaked into the raised transport error"
+    refute String.contains?(rendered, pass), "password leaked into the raised transport error"
+  end
+
+  test "a stream to an OPEN non-Bolt endpoint (the HTTP port) raises a typed error, not a raw exception",
+       %{host: host, http_port: http_port, pass: pass} do
+    # Point Bolt at the HTTP port: TCP connects, but the handshake reply is non-Bolt
+    # bytes, so boltx's decode_version/1 (single binary clause) FunctionClauseErrors
+    # inside Boltx.Connection.connect. arcadic must convert that raise to a typed
+    # (redacted) TransportError — never let the raw exception escape.
+    bad_opts =
+      Bolt.resolve_opts(
+        hostname: host,
+        port: http_port,
+        username: "root",
+        password: pass,
+        connect_timeout: 2_000
+      )
+
+    conn =
+      Conn.new("http://#{host}:#{http_port}", @db,
+        auth: {"root", pass},
+        transport: Bolt,
+        transport_options: [bolt_opts: bad_opts]
+      )
+
+    {:ok, stream} = Arcadic.query_stream(conn, "RETURN 1 AS x")
+    err = assert_raise Arcadic.TransportError, fn -> Enum.to_list(stream) end
+    refute String.contains?(inspect(err), pass), "password leaked into the raised transport error"
   end
 end
