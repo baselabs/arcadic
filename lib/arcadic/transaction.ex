@@ -26,9 +26,14 @@ defmodule Arcadic.Transaction do
   end
 
   def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
-    # span auto-emits :exception + reraises when the fun raises through run/3.
     Telemetry.span(:transaction, %{isolation: opts[:isolation]}, fn ->
-      result = run(conn, fun, opts)
+      result =
+        if function_exported?(conn.transport, :transaction, 3) do
+          conn.transport.transaction(conn, fun, opts)
+        else
+          run(conn, fun, opts)
+        end
+
       {result, %{reason: reason_tag(result)}}
     end)
   end

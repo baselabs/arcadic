@@ -54,4 +54,10 @@ defmodule Arcadic.Transport do
   @callback execute_async(Conn.t(), request(), opts :: keyword()) ::
               :ok | {:error, Error.t() | TransportError.t()}
   @optional_callbacks execute_async: 3
+
+  @doc "Native fun-based transaction (for transports whose sessions are not detachable, e.g. Bolt). Optional."
+  @callback transaction(Conn.t(), (Conn.t() -> result), opts :: keyword()) ::
+              {:ok, result} | {:error, term()}
+            when result: var
+  @optional_callbacks transaction: 3
 end

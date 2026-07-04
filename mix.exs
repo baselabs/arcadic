@@ -46,6 +46,7 @@ defmodule Arcadic.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      {:boltx, "~> 0.0.6", optional: true},
 
       # Dev/Test
       {:plug, "~> 1.0", only: :test},
