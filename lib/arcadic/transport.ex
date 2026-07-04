@@ -49,4 +49,9 @@ defmodule Arcadic.Transport do
                       list_databases: 1,
                       database_exists?: 2,
                       ready?: 1
+
+  @doc "Fire-and-forget write (server enqueues, does not await). Optional — HTTP implements it."
+  @callback execute_async(Conn.t(), request(), opts :: keyword()) ::
+              :ok | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks execute_async: 3
 end

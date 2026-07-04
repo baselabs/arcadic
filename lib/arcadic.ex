@@ -63,6 +63,23 @@ defmodule Arcadic do
   def command!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
     do: bang(command(conn, statement, params, opts))
 
+  @doc """
+  Fire-and-forget write: sends `awaitResponse: false`; the server enqueues and
+  returns HTTP 202. Returns `:ok` on enqueue — the caller CANNOT confirm the write
+  landed (that is the defined semantic; use `command/4` for confirmable writes).
+  """
+  @spec command_async(Conn.t(), String.t(), map(), keyword()) :: :ok | {:error, Exception.t()}
+  def command_async(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    opts = validate_opts!(opts, @command_opts)
+    language = opts[:language] || "cypher"
+    request = %{statement: statement, params: params, language: language}
+
+    Telemetry.span(:command, %{language: language, mode: :write, async?: true}, fn ->
+      result = conn.transport.execute_async(conn, request, opts)
+      {result, %{reason: async_reason(result)}}
+    end)
+  end
+
   @doc "Run a function within a session transaction. See `Arcadic.Transaction.transaction/3`."
   @spec transaction(Conn.t(), (Conn.t() -> result), keyword()) :: {:ok, result} | {:error, term()}
         when result: var
@@ -89,6 +106,9 @@ defmodule Arcadic do
 
   defp reason_of(%{reason: reason}), do: reason
   defp reason_of(_), do: :error
+
+  defp async_reason(:ok), do: :ok
+  defp async_reason({:error, err}), do: reason_of(err)
 
   defp bang({:ok, rows}), do: rows
   defp bang({:error, error}), do: raise(error)

@@ -173,6 +173,28 @@ defmodule Arcadic.Transport.HTTP do
   end
 
   @impl true
+  def execute_async(%Conn{} = conn, request, opts) do
+    body = request |> build_body(opts) |> Map.put(:awaitResponse, false)
+
+    case post(conn, "/api/v1/command/#{conn.database}", body, opts) do
+      {:ok, %Req.Response{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %Req.Response{status: status, body: b}} when is_map(b) ->
+        {:error, Error.from_response(status, b)}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+      {:error, %{reason: reason}} ->
+        {:error, %TransportError{reason: reason}}
+
+      {:error, _} ->
+        {:error, %TransportError{reason: :unknown}}
+    end
+  end
+
+  @impl true
   def ready?(%Conn{} = conn) do
     case raw_get(conn, "/api/v1/ready") do
       {:ok, %Req.Response{status: 204}} -> {:ok, true}
