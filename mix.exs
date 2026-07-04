@@ -87,7 +87,10 @@ defmodule Arcadic.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
-      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"]
+      # `mix deps.audit` is MixAudit's own CVE-scan task — do NOT alias it (an alias of
+      # the same name shadows it and can't call it without recursion). `mix audit` is the
+      # composite: unused-lock check + retired-hex check + MixAudit's CVE scan.
+      audit: ["deps.unlock --check-unused", "hex.audit", "deps.audit"]
     ]
   end
 end
