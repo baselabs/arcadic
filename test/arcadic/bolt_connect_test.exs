@@ -2,6 +2,7 @@ defmodule Arcadic.BoltConnectTest do
   use ExUnit.Case, async: false
   alias Arcadic.Test.BoltFakeServer
   alias Arcadic.Transport.Bolt
+  alias Arcadic.Transport.Bolt.Connection
 
   # tcp_inet ports OWNED BY this test process — isolates the arcadic-side client
   # socket from the fake server's listen/accept sockets and from concurrent suites.
@@ -58,7 +59,7 @@ defmodule Arcadic.BoltConnectTest do
   test "pool connect/1 returns a typed exception and leaks no fd on a non-Bolt endpoint" do
     {:ok, port} = BoltFakeServer.start(:non_bolt)
     before = own_tcp_ports()
-    result = Arcadic.Transport.Bolt.Connection.connect(opts_for(port))
+    result = Connection.connect(opts_for(port))
     # DBConnection requires {:error, Exception.t()} — a bare atom reason is normalized.
     assert {:error, %Arcadic.TransportError{reason: reason}} = result
     assert reason in [:version_negotiation_error, :bolt_protocol_error]

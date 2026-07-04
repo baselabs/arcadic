@@ -2,6 +2,7 @@ defmodule Arcadic.Integration.BoltTest do
   use ExUnit.Case, async: false
   @moduletag :integration_bolt
   alias Arcadic.{Conn, Transport}
+  alias Arcadic.Transport.Bolt.Connection
 
   setup_all do
     host = System.get_env("ARCADIC_BOLT_HOST") || flunk("set ARCADIC_BOLT_HOST")
@@ -90,7 +91,7 @@ defmodule Arcadic.Integration.BoltTest do
     before = count.()
 
     assert {:error, %Boltx.Error{code: :unauthorized}} =
-             Arcadic.Transport.Bolt.Connection.connect(opts)
+             Connection.connect(opts)
 
     assert count.() - before == 0
   end
