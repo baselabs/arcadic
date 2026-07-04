@@ -56,7 +56,8 @@ if Code.ensure_loaded?(Boltx) do
     and uses the non-TLS `bolt` scheme (ArcadeDB Bolt is TLS-disabled by default).
     """
     @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
-    def start_link(opts), do: Boltx.start_link(resolve_opts(opts))
+    def start_link(opts),
+      do: DBConnection.start_link(Arcadic.Transport.Bolt.Connection, resolve_opts(opts))
 
     @doc """
     Start a Bolt pool AND return the `transport_options` for a Conn in one call, so
@@ -70,7 +71,7 @@ if Code.ensure_loaded?(Boltx) do
     def setup(opts) do
       resolved = resolve_opts(opts)
 
-      with {:ok, pool} <- Boltx.start_link(resolved) do
+      with {:ok, pool} <- DBConnection.start_link(Arcadic.Transport.Bolt.Connection, resolved) do
         {:ok, [bolt: pool, bolt_opts: resolved]}
       end
     end
