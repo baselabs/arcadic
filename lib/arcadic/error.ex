@@ -44,8 +44,12 @@ defmodule Arcadic.Error do
     }
   end
 
-  # Order matters: the begin-400 body has no `exception` key.
-  defp reason_for(400, %{"error" => msg}) when is_binary(msg) do
+  # Only the begin-400 body is handled here — it has NO `exception` key. A 400 that
+  # DOES carry an `exception` FQN (e.g. QueryNotIdempotentException when /query rejects
+  # a write) must fall through to the exception-matching clause, else it is
+  # misclassified as :server_error.
+  defp reason_for(400, %{"error" => msg} = body)
+       when is_binary(msg) and not is_map_key(body, "exception") do
     if msg =~ "isolationLevel", do: :invalid_begin_body, else: :server_error
   end
 

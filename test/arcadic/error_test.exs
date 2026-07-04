@@ -28,6 +28,15 @@ defmodule Arcadic.ErrorTest do
       assert %Error{reason: :invalid_begin_body} = Error.from_response(400, body)
     end
 
+    test "maps a 400 carrying an exception FQN to the exception reason, not :server_error" do
+      body = %{
+        "error" => "boom",
+        "exception" => "com.arcadedb.exception.QueryNotIdempotentException"
+      }
+
+      assert %Error{reason: :not_idempotent} = Error.from_response(400, body)
+    end
+
     test "falls back to :server_error for an unmapped exception" do
       body = %{"error" => "x", "exception" => "com.arcadedb.exception.SomethingNew"}
       assert %Error{reason: :server_error} = Error.from_response(500, body)
