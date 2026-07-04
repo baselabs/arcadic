@@ -43,6 +43,18 @@ defmodule Arcadic.QueryStreamTest do
     end
   end
 
+  describe "Bolt.resolve_opts/1" do
+    test "applies the ArcadeDB v4 defaults and nests auth" do
+      r = Bolt.resolve_opts(hostname: "h", port: 7687, username: "root", password: "pw")
+      assert r[:scheme] == "bolt"
+      assert r[:versions] == [4.4, 4.3, 4.2, 4.1]
+      assert r[:auth] == [username: "root", password: "pw"]
+      assert r[:hostname] == "h"
+      refute Keyword.has_key?(r, :username)
+      refute Keyword.has_key?(r, :password)
+    end
+  end
+
   describe "Bolt.map_transaction_outcome/1 (F6)" do
     test "passes through ok and intentional rollback reasons" do
       assert Bolt.map_transaction_outcome({:ok, 42}) == {:ok, 42}

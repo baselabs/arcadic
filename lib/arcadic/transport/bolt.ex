@@ -41,16 +41,35 @@ if Code.ensure_loaded?(Boltx) do
     and uses the non-TLS `bolt` scheme (ArcadeDB Bolt is TLS-disabled by default).
     """
     @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
-    def start_link(opts) do
+    def start_link(opts), do: Boltx.start_link(resolve_opts(opts))
+
+    @doc """
+    Start a Bolt pool AND return the `transport_options` for a Conn in one call, so
+    the pool (`:bolt`, for execute/transaction/ready?) and the per-stream connect opts
+    (`:bolt_opts`, for query_stream) cannot drift to different hosts/credentials.
+
+        {:ok, topts} = Arcadic.Transport.Bolt.setup(hostname: h, port: p, username: "root", password: pw)
+        conn = Arcadic.connect(url, db, auth: {"root", pw}, transport: Arcadic.Transport.Bolt, transport_options: topts)
+    """
+    @spec setup(keyword()) :: {:ok, keyword()} | {:error, term()}
+    def setup(opts) do
+      resolved = resolve_opts(opts)
+
+      with {:ok, pool} <- Boltx.start_link(resolved) do
+        {:ok, [bolt: pool, bolt_opts: resolved]}
+      end
+    end
+
+    @doc false
+    @spec resolve_opts(keyword()) :: keyword()
+    def resolve_opts(opts) do
       defaults = [scheme: "bolt", versions: [4.4, 4.3, 4.2, 4.1], pool_size: 1]
       {username, opts} = Keyword.pop(opts, :username)
       {password, opts} = Keyword.pop(opts, :password)
 
-      boltx_opts =
-        Keyword.merge(defaults, opts)
-        |> Keyword.put(:auth, username: username, password: password)
-
-      Boltx.start_link(boltx_opts)
+      defaults
+      |> Keyword.merge(opts)
+      |> Keyword.put(:auth, username: username, password: password)
     end
 
     @impl true
