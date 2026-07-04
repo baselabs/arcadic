@@ -49,3 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_database/2` selects the database on Bolt (was hitting the connection default).
 - Bolt `transaction/3` maps a commit-failure to a typed `%Arcadic.Error{reason:
   :transaction_error}` instead of leaking DBConnection's bare `:rollback` atom.
+- `Arcadic.Transport.Bolt` — a failed Bolt connect (wrong password, or a Bolt conn
+  pointed at a non-Bolt port) no longer leaks a `:gen_tcp` socket. arcadic now owns the
+  connect handshake and HELLO on both the per-stream connection and the DBConnection
+  pool, closing the socket on every failure; a bad-password stream connect surfaces
+  `:unauthorized`, and the connect HELLO is bounded by `connect_timeout`.
