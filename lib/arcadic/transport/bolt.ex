@@ -96,30 +96,46 @@ if Code.ensure_loaded?(Boltx) do
       # (and `Boltx.rollback/2` over `DBConnection.rollback/2`). We call DBConnection
       # directly: boltx's wrapper carries a spurious `no_return` success typing that
       # dialyzer propagates to every caller, whereas the underlying DBConnection
-      # functions are typed cleanly. Runtime semantics are identical.
+      # functions are typed cleanly. `extra_parameters: run_extra(conn)` threads
+      # `db: conn.database` into BEGIN so the tx targets the right ArcadeDB database.
       outcome =
-        DBConnection.transaction(bolt(conn), fn tx_ref ->
-          tx = %{
-            conn
-            | session_id: "bolt",
-              transport_options: Keyword.put(conn.transport_options, :bolt, tx_ref)
-          }
+        DBConnection.transaction(
+          bolt(conn),
+          fn tx_ref ->
+            tx = %{
+              conn
+              | session_id: "bolt",
+                transport_options: Keyword.put(conn.transport_options, :bolt, tx_ref)
+            }
 
-          try do
-            fun.(tx)
-          catch
-            :throw, {@rollback_throw, reason} ->
-              DBConnection.rollback(tx_ref, {:arcadic_rollback, reason})
-          end
-        end)
+            try do
+              fun.(tx)
+            catch
+              :throw, {@rollback_throw, reason} ->
+                DBConnection.rollback(tx_ref, {:arcadic_rollback, reason})
+            end
+          end,
+          extra_parameters: run_extra(conn)
+        )
 
-      case outcome do
-        {:ok, result} -> {:ok, result}
-        {:error, {:arcadic_rollback, reason}} -> {:error, reason}
-        {:error, %Boltx.Error{} = e} -> {:error, bolt_error(e)}
-        {:error, other} -> {:error, other}
-      end
+      map_transaction_outcome(outcome)
     end
+
+    # Typed, value-free mapping of the DBConnection.transaction outcome. The bare
+    # `:rollback` atom is DBConnection's commit-failure signal (F6) — never leak it;
+    # any other unexpected term becomes a value-free transport error, never a raw
+    # passthrough (the passthrough is the exact leak F6 closes).
+    @doc false
+    @spec map_transaction_outcome(term()) :: {:ok, term()} | {:error, term()}
+    def map_transaction_outcome({:ok, result}), do: {:ok, result}
+    def map_transaction_outcome({:error, {:arcadic_rollback, reason}}), do: {:error, reason}
+    def map_transaction_outcome({:error, %Boltx.Error{} = e}), do: {:error, bolt_error(e)}
+
+    def map_transaction_outcome({:error, :rollback}),
+      do: {:error, %Error{reason: :transaction_error, message: "bolt transaction commit failed"}}
+
+    def map_transaction_outcome({:error, _other}),
+      do: {:error, %TransportError{reason: :transaction_error}}
 
     @impl true
     def ready?(%Conn{} = conn) do

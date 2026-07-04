@@ -42,4 +42,31 @@ defmodule Arcadic.QueryStreamTest do
              }
     end
   end
+
+  describe "Bolt.map_transaction_outcome/1 (F6)" do
+    test "passes through ok and intentional rollback reasons" do
+      assert Bolt.map_transaction_outcome({:ok, 42}) == {:ok, 42}
+      assert Bolt.map_transaction_outcome({:error, {:arcadic_rollback, :nope}}) == {:error, :nope}
+    end
+
+    test "maps DBConnection's bare :rollback commit-failure to a typed error" do
+      assert {:error, %Arcadic.Error{reason: :transaction_error}} =
+               Bolt.map_transaction_outcome({:error, :rollback})
+    end
+
+    test "maps a Boltx.Error via the reason taxonomy" do
+      e = %Boltx.Error{
+        code: :syntax_error,
+        bolt: %{code: "Neo.ClientError.Statement.SyntaxError"}
+      }
+
+      assert {:error, %Arcadic.Error{reason: :parse_error}} =
+               Bolt.map_transaction_outcome({:error, e})
+    end
+
+    test "maps any other unexpected term to a typed, value-free transport error (no bare passthrough)" do
+      assert {:error, %Arcadic.TransportError{reason: :transaction_error}} =
+               Bolt.map_transaction_outcome({:error, :something_unexpected})
+    end
+  end
 end
