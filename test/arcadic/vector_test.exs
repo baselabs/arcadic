@@ -20,4 +20,79 @@ defmodule Arcadic.VectorTest do
       assert {:error, :invalid_identifier} = Vector.index_ref("Doc", "weird-name?")
     end
   end
+
+  describe "create_dense_index/5" do
+    test "emits CREATE INDEX IF NOT EXISTS with required + optional METADATA, language sql" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, c.request_path, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => [%{"operation" => "create index"}]})
+      end)
+
+      assert :ok =
+               Vector.create_dense_index(conn(), "Doc", "embedding", 1536,
+                 similarity: :cosine,
+                 encoding: :float32,
+                 quantization: :none,
+                 max_connections: 16,
+                 beam_width: 100
+               )
+
+      assert_received {:cmd, "/api/v1/command/mydb", %{"language" => "sql", "command" => cmd}}
+
+      assert cmd ==
+               "CREATE INDEX IF NOT EXISTS ON Doc (embedding) LSM_VECTOR METADATA " <>
+                 "{dimensions:1536, similarity:'COSINE', maxConnections:16, beamWidth:100, " <>
+                 "encoding:'FLOAT32', quantization:'NONE'}"
+    end
+
+    test "defaults: similarity cosine, maxConnections 16, beamWidth 100; no encoding/quantization" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+        Req.Test.json(c, %{"result" => [%{}]})
+      end)
+
+      assert :ok = Vector.create_dense_index(conn(), "Doc", "embedding", 3)
+
+      assert_received {:cmd,
+                       "CREATE INDEX IF NOT EXISTS ON Doc (embedding) LSM_VECTOR METADATA " <>
+                         "{dimensions:3, similarity:'COSINE', maxConnections:16, beamWidth:100}"}
+    end
+
+    test "validates the identifier BEFORE any request (no stub → a request would error loudly)" do
+      assert {:error, :invalid_identifier} =
+               Vector.create_dense_index(conn(), "Doc; DROP", "embedding", 3)
+    end
+
+    test "rejects an unknown metadata opt key value-free (server would silently swallow it)" do
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        Vector.create_dense_index(conn(), "Doc", "embedding", 3, encodng: :float32)
+      end
+    end
+
+    test "rejects bad enum / non-integer values value-free (no value echoed)" do
+      assert_raise ArgumentError, ~r/similarity/, fn ->
+        Vector.create_dense_index(conn(), "Doc", "embedding", 3, similarity: :manhattan)
+      end
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.create_dense_index(conn(), "Doc", "embedding", 0)
+        end
+
+      assert err.message =~ "dimensions"
+      refute err.message =~ "manhattan"
+    end
+
+    test "create_dense_index! raises on a server error" do
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{"error" => "boom", "exception" => "com.arcadedb.index.IndexException"})
+      end)
+
+      assert_raise Arcadic.Error, fn ->
+        Vector.create_dense_index!(conn(), "Doc", "embedding", 3)
+      end
+    end
+  end
 end
