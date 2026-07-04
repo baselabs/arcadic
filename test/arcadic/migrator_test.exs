@@ -45,8 +45,9 @@ defmodule Arcadic.MigratorTest do
 
   test "migrate/2 ensures the type, runs pending up, and records the version" do
     Req.Test.stub(__MODULE__, fn c ->
-      cmd = Jason.decode!(Req.Test.raw_body(c))["command"]
-      send(self(), {:cmd, cmd})
+      decoded = Jason.decode!(Req.Test.raw_body(c))
+      cmd = decoded["command"]
+      send(self(), {:cmd, cmd, decoded["params"]})
 
       cond do
         cmd =~ "SELECT version" ->
@@ -61,12 +62,15 @@ defmodule Arcadic.MigratorTest do
     end)
 
     assert {:ok, 1} = Migrator.migrate(conn(), Registry)
-    assert_received {:cmd, "CREATE DOCUMENT TYPE _arcadic_migrations IF NOT EXISTS"}
-    assert_received {:cmd, "SELECT version FROM _arcadic_migrations ORDER BY version"}
-    assert_received {:cmd, "CREATE VERTEX TYPE Foo"}
+    assert_received {:cmd, "CREATE DOCUMENT TYPE _arcadic_migrations IF NOT EXISTS", _}
+    assert_received {:cmd, "SELECT version FROM _arcadic_migrations ORDER BY version", _}
+    assert_received {:cmd, "CREATE VERTEX TYPE Foo", _}
 
+    # The version rides a bound param (:v), never interpolated into the statement
+    # (params-only, Rule 1). The INSERT statement has no literal "1"; the value is in params.
     assert_received {:cmd,
-                     "INSERT INTO _arcadic_migrations SET version = :v, applied_at = sysdate()"}
+                     "INSERT INTO _arcadic_migrations SET version = :v, applied_at = sysdate()",
+                     %{"v" => 1}}
   end
 
   test "status/2 reports up/down per version" do
