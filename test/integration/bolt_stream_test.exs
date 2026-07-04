@@ -29,7 +29,15 @@ defmodule Arcadic.Integration.BoltStreamTest do
       )
 
     on_exit(fn -> Server.drop_database(admin, db) end)
-    {:ok, conn: conn, admin: admin, host: host, http_port: http_port, pass: pass, db: db}
+
+    {:ok,
+     conn: conn,
+     admin: admin,
+     host: host,
+     bolt_port: bolt_port,
+     http_port: http_port,
+     pass: pass,
+     db: db}
   end
 
   test "streams a large result in ordered chunks with a small chunk_size", %{conn: conn} do
@@ -135,5 +143,65 @@ defmodule Arcadic.Integration.BoltStreamTest do
     {:ok, stream} = Arcadic.query_stream(conn, "RETURN 1 AS x")
     err = assert_raise Arcadic.TransportError, fn -> Enum.to_list(stream) end
     refute String.contains?(inspect(err), pass), "password leaked into the raised transport error"
+  end
+
+  # tcp_inet ports owned by THIS test process — the enumerator owns the stream's
+  # client socket, so a connect leak shows here as a surviving port.
+  defp own_tcp_count do
+    me = self()
+
+    Enum.count(Port.list(), fn p ->
+      Port.info(p, :name) == {:name, ~c"tcp_inet"} and
+        Port.info(p, :connected) == {:connected, me}
+    end)
+  end
+
+  test "a bad-password stream connect leaks no fd and surfaces :unauthorized (redacted)",
+       %{host: host, bolt_port: bolt_port, http_port: http_port, pass: pass, db: db} do
+    bad =
+      Bolt.resolve_opts(
+        hostname: host,
+        port: bolt_port,
+        username: "root",
+        password: "WRONG_#{pass}"
+      )
+
+    conn =
+      Conn.new("http://#{host}:#{http_port}", db,
+        auth: {"root", pass},
+        transport: Bolt,
+        transport_options: [bolt_opts: bad]
+      )
+
+    before = own_tcp_count()
+    {:ok, stream} = Arcadic.query_stream(conn, "RETURN 1 AS x")
+    err = assert_raise Arcadic.Error, fn -> Enum.to_list(stream) end
+    assert err.reason == :unauthorized
+    assert own_tcp_count() - before == 0
+    refute String.contains?(inspect(err), pass), "password leaked into the raised error"
+  end
+
+  test "an http-port stream connect leaks no fd (redacted typed error)",
+       %{host: host, http_port: http_port, pass: pass, db: db} do
+    bad =
+      Bolt.resolve_opts(
+        hostname: host,
+        port: http_port,
+        username: "root",
+        password: pass,
+        connect_timeout: 2_000
+      )
+
+    conn =
+      Conn.new("http://#{host}:#{http_port}", db,
+        auth: {"root", pass},
+        transport: Bolt,
+        transport_options: [bolt_opts: bad]
+      )
+
+    before = own_tcp_count()
+    {:ok, stream} = Arcadic.query_stream(conn, "RETURN 1 AS x")
+    assert_raise Arcadic.TransportError, fn -> Enum.to_list(stream) end
+    assert own_tcp_count() - before == 0
   end
 end

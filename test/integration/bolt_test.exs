@@ -64,4 +64,34 @@ defmodule Arcadic.Integration.BoltTest do
   test "ready? does a RETURN 1 health check", %{conn: conn} do
     assert {:ok, true} = Arcadic.Server.ready?(conn)
   end
+
+  test "pool connect/1 with a bad password leaks no fd and returns :unauthorized" do
+    host = System.get_env("ARCADIC_BOLT_HOST")
+    port = String.to_integer(System.get_env("ARCADIC_BOLT_PORT") || "7687")
+    pass = System.get_env("ARCADIC_BOLT_PASSWORD")
+
+    opts =
+      Arcadic.Transport.Bolt.resolve_opts(
+        hostname: host,
+        port: port,
+        username: "root",
+        password: "WRONG_#{pass}"
+      )
+
+    me = self()
+
+    count = fn ->
+      Enum.count(Port.list(), fn p ->
+        Port.info(p, :name) == {:name, ~c"tcp_inet"} and
+          Port.info(p, :connected) == {:connected, me}
+      end)
+    end
+
+    before = count.()
+
+    assert {:error, %Boltx.Error{code: :unauthorized}} =
+             Arcadic.Transport.Bolt.Connection.connect(opts)
+
+    assert count.() - before == 0
+  end
 end
