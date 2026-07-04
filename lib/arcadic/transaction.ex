@@ -28,7 +28,8 @@ defmodule Arcadic.Transaction do
   def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
     Telemetry.span(:transaction, %{isolation: opts[:isolation]}, fn ->
       result =
-        if function_exported?(conn.transport, :transaction, 3) do
+        if Code.ensure_loaded?(conn.transport) and
+             function_exported?(conn.transport, :transaction, 3) do
           conn.transport.transaction(conn, fun, opts)
         else
           run(conn, fun, opts)
@@ -57,6 +58,12 @@ defmodule Arcadic.Transaction do
         :throw, {@rollback_throw, reason} ->
           _ = safe_rollback(tx)
           {:error, reason}
+
+        # Any other non-local exit (a bare throw or an exit) must still roll the
+        # session back before it propagates — otherwise the transaction leaks open.
+        kind, value when kind in [:throw, :exit] ->
+          _ = safe_rollback(tx)
+          :erlang.raise(kind, value, __STACKTRACE__)
       end
     end
   end
@@ -70,7 +77,15 @@ defmodule Arcadic.Transaction do
 
   @doc "Begin a session; returns a session-scoped conn."
   @spec begin(Conn.t(), keyword()) :: {:ok, Conn.t()} | {:error, Error.t() | TransportError.t()}
-  def begin(%Conn{} = conn, opts \\ []) do
+  def begin(conn, opts \\ [])
+
+  # A conn already carrying a session must not open a nested one (mirrors the
+  # transaction/3 nested guard; low-level begin/2 returns a tagged error).
+  def begin(%Conn{session_id: sid}, _opts) when is_binary(sid) do
+    {:error, %Error{reason: :transaction_error, message: "already in a session"}}
+  end
+
+  def begin(%Conn{} = conn, opts) do
     with {:ok, session_id} <- conn.transport.begin(conn, opts),
          do: {:ok, %{conn | session_id: session_id}}
   end

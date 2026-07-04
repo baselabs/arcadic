@@ -120,4 +120,28 @@ defmodule Arcadic.TransactionTest do
   test "manual rollback/1 with no active session is a no-op :ok" do
     assert :ok = Transaction.rollback(conn())
   end
+
+  test "a non-rollback throw in the fun rolls back and re-propagates the throw" do
+    tx_stub()
+
+    assert catch_throw(Arcadic.transaction(conn(), fn _tx -> throw(:custom) end)) == :custom
+
+    assert_received {:call, "/api/v1/begin/mydb", _, _}
+    assert_received {:call, "/api/v1/rollback/mydb", _, ["AS-tx1"]}
+  end
+
+  test "an exit in the fun rolls back and re-propagates the exit" do
+    tx_stub()
+
+    assert catch_exit(Arcadic.transaction(conn(), fn _tx -> exit(:boom) end)) == :boom
+
+    assert_received {:call, "/api/v1/begin/mydb", _, _}
+    assert_received {:call, "/api/v1/rollback/mydb", _, ["AS-tx1"]}
+  end
+
+  test "manual begin/2 on a conn already in a session returns an error without a network call" do
+    # No stub set — the nested-session guard must short-circuit before any request.
+    tx = %{conn() | session_id: "AS-existing"}
+    assert {:error, %Arcadic.Error{reason: :transaction_error}} = Transaction.begin(tx)
+  end
 end
