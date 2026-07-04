@@ -45,9 +45,10 @@ it.
 - **Command:** `POST /api/v1/command/<db>` with basic auth and body
   `{"language":"cypher","command":"…","params":{…}}`. `language` also accepts
   `"sql"`, `"gremlin"`, `"graphql"`, `"mongo"`, `"sqlscript"`.
-- **Result envelope:** `{"user":"…","result":[ {…} ]}`. Scalar rows carry an
-  `@`-prefixed type-tag key (e.g. `"@props":"c:3"`) — **strip `@`-prefixed keys**
-  in normalization; return `result`.
+- **Result envelope:** `{"user":"…","result":[ {…} ]}`. Rows may carry `@`-prefixed
+  keys: `@props` is serializer noise (**strip it**), but `@rid`/`@type`/`@cat`
+  (`v`/`e`)/`@in`/`@out` are record + graph identity (**keep them**). Return
+  `result`. (Verified: spec §15 P4/P15.)
 - **Transactions (session-based):**
   - `POST /api/v1/begin/<db>` — **call with NO body.** A JSON body that lacks
     `isolationLevel` returns **HTTP 400** (`Missing parameter 'isolationLevel'`);
