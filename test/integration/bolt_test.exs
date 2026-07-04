@@ -6,13 +6,22 @@ defmodule Arcadic.Integration.BoltTest do
   setup_all do
     host = System.get_env("ARCADIC_BOLT_HOST") || flunk("set ARCADIC_BOLT_HOST")
     port = String.to_integer(System.get_env("ARCADIC_BOLT_PORT") || "7687")
+    http_port = String.to_integer(System.get_env("ARCADIC_BOLT_HTTP_PORT") || "2480")
     pass = System.get_env("ARCADIC_BOLT_PASSWORD") || flunk("set ARCADIC_BOLT_PASSWORD")
+
+    # Self-contained: drop any leftover DB, then create a fresh empty one per run.
+    # A fresh DB makes the suite idempotent (BoltTx count is exactly 1) and ensures
+    # the DB the Bolt transport now targets (conn.database) actually exists.
+    admin = Conn.new("http://#{host}:#{http_port}", "boltspike", auth: {"root", pass})
+    _ = Arcadic.Server.drop_database(admin, "boltspike")
+    :ok = Arcadic.Server.create_database(admin, "boltspike")
+    on_exit(fn -> Arcadic.Server.drop_database(admin, "boltspike") end)
 
     {:ok, bolt} =
       Transport.Bolt.start_link(hostname: host, port: port, username: "root", password: pass)
 
     conn =
-      Conn.new("http://#{host}:2481", "boltspike",
+      Conn.new("http://#{host}:#{http_port}", "boltspike",
         auth: {"root", pass},
         transport: Transport.Bolt,
         transport_options: [bolt: bolt]
