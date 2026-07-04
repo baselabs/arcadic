@@ -2,6 +2,12 @@ defmodule Arcadic.AsyncTest do
   use ExUnit.Case, async: true
   alias Arcadic.Conn
 
+  # A transport that deliberately omits the OPTIONAL execute_async/3 callback.
+  defmodule NoAsyncTransport do
+    @moduledoc false
+    def execute(_conn, _mode, _request, _opts), do: {:ok, []}
+  end
+
   defp conn,
     do:
       Conn.new("http://arcade.invalid", "mydb",
@@ -60,5 +66,13 @@ defmodule Arcadic.AsyncTest do
     # selective receive matches THIS test's own async span, never a cross-talk event.
     assert_received {[:arcadic, :command, :stop], ^ref, _m, %{async?: true}}
     :telemetry.detach(ref)
+  end
+
+  test "command_async returns a typed :not_supported error on a transport without execute_async/3" do
+    c =
+      Conn.new("http://arcade.invalid", "mydb", auth: {"root", "x"}, transport: NoAsyncTransport)
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} =
+             Arcadic.command_async(c, "CREATE (n)")
   end
 end

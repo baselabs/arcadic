@@ -82,6 +82,19 @@ defmodule Arcadic.QueryCommandTest do
     assert_received {[:arcadic, :query, :stop], ^ref, _m, meta}
     assert meta.mode == :read
     refute Map.has_key?(meta, :database)
+    # query spans do NOT carry in_transaction? (spec §10 lists it for command only)
+    refute Map.has_key?(meta, :in_transaction?)
+    :telemetry.detach(ref)
+  end
+
+  test "a command span inside a session is flagged in_transaction?: true (spec §10)" do
+    # Pinning `in_transaction?: true` makes the selective receive immune to cross-talk
+    # from concurrent standalone commands (which emit `in_transaction?: false`).
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :command, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => []}) end)
+    tx = %{conn() | session_id: "AS-1"}
+    Arcadic.command(tx, "CREATE (n)")
+    assert_received {[:arcadic, :command, :stop], ^ref, _m, %{in_transaction?: true}}
     :telemetry.detach(ref)
   end
 end

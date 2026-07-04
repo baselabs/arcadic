@@ -75,7 +75,7 @@ defmodule Arcadic do
     request = %{statement: statement, params: params, language: language}
 
     Telemetry.span(:command, %{language: language, mode: :write, async?: true}, fn ->
-      result = conn.transport.execute_async(conn, request, opts)
+      result = run_async(conn, request, opts)
       {result, %{reason: async_reason(result)}}
     end)
   end
@@ -96,7 +96,7 @@ defmodule Arcadic do
     request = %{statement: statement, params: params, language: language}
     op = if(mode == :read, do: :query, else: :command)
 
-    Telemetry.span(op, %{language: language, mode: mode}, fn ->
+    Telemetry.span(op, start_meta(mode, language, conn), fn ->
       case conn.transport.execute(conn, mode, request, opts) do
         {:ok, rows} = ok -> {ok, %{http_status: 200, reason: :ok, row_count: length(rows)}}
         {:error, err} = error -> {error, %{reason: reason_of(err)}}
@@ -104,8 +104,26 @@ defmodule Arcadic do
     end)
   end
 
+  # Command spans carry `in_transaction?` (spec §10 telemetry table); query spans do not.
+  defp start_meta(:write, language, conn),
+    do: %{language: language, mode: :write, in_transaction?: not is_nil(conn.session_id)}
+
+  defp start_meta(mode, language, _conn), do: %{language: language, mode: mode}
+
   defp reason_of(%{reason: reason}), do: reason
   defp reason_of(_), do: :error
+
+  # Async is an OPTIONAL transport capability — a transport without execute_async/3
+  # (Bolt, a minimal mock) gets a typed error, never an UndefinedFunctionError.
+  defp run_async(conn, request, opts) do
+    if Code.ensure_loaded?(conn.transport) and
+         function_exported?(conn.transport, :execute_async, 3) do
+      conn.transport.execute_async(conn, request, opts)
+    else
+      {:error,
+       %Arcadic.Error{reason: :not_supported, message: "transport does not support async writes"}}
+    end
+  end
 
   defp async_reason(:ok), do: :ok
   defp async_reason({:error, err}), do: reason_of(err)
