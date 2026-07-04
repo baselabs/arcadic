@@ -6,7 +6,7 @@ defmodule Arcadic.Test.BoltFakeServer do
   arcadic-side client socket is, which is exactly what the fd-delta probe measures.
   """
 
-  # scenario: :version_negotiation | :non_bolt | :stall
+  # scenario: :version_negotiation | :non_bolt | :stall | :garbled_hello | :stall_after_handshake
   # Returns {:ok, port} to point leak_safe_connect at (hostname: "127.0.0.1", port: port).
   def start(scenario) do
     {:ok, lsock} =
@@ -36,4 +36,28 @@ defmodule Arcadic.Test.BoltFakeServer do
 
   # timeout: complete TCP + read handshake, then never reply
   defp reply(_sock, :stall), do: Process.sleep(:infinity)
+
+  # HELLO leg garbled: negotiate v4.4, drain the HELLO request, then send a well-formed
+  # Bolt frame the client's parser cannot classify (an IGNORED 0x7E carrying a server
+  # payload). boltx's prepare_generic_messages RAISES a CaseClauseError whose term embeds
+  # this payload — the tripwire for the connect-path redaction of a HELLO-response raise.
+  defp reply(sock, :garbled_hello) do
+    :gen_tcp.send(sock, <<0, 0, 4, 4>>)
+    _ = :gen_tcp.recv(sock, 0, 1_000)
+
+    payload =
+      Boltx.BoltProtocol.MessageEncoder.encode(0x7E, [%{"message" => "SERVER_HELLO_SECRET"}])
+
+    :gen_tcp.send(sock, payload)
+  end
+
+  # HELLO leg stalls: negotiate v4.4 (so handshake + assert_v4_band pass), drain the HELLO
+  # request, then never reply — the connect must time out at the HELLO recv, bounded by
+  # connect_timeout (Decision L7), not hang. Distinct from :stall, which times out at the
+  # earlier handshake recv.
+  defp reply(sock, :stall_after_handshake) do
+    :gen_tcp.send(sock, <<0, 0, 4, 4>>)
+    _ = :gen_tcp.recv(sock, 0, 1_000)
+    Process.sleep(:infinity)
+  end
 end

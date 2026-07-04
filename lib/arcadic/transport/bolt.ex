@@ -25,6 +25,11 @@ if Code.ensure_loaded?(Boltx) do
     > statement-agnostic by design (params-only; it never parses statement
     > semantics), so a write issued through `query/4` on Bolt executes. Use
     > `command/4` for writes on Bolt.
+
+    > **Never enable boltx debug logging against arcadic.** `config :boltx, log: true`
+    > (or `:log_hex`) makes boltx debug-log the full HELLO payload — including the auth
+    > `credentials` (the password). arcadic drives the HELLO itself and never enables
+    > this; keep it off so a credential cannot reach a log line (Critical Rule 3).
     """
 
     @behaviour Arcadic.Transport
@@ -260,8 +265,23 @@ if Code.ensure_loaded?(Boltx) do
       payload = HelloMessage.encode(client.bolt_version, bolt_opts)
 
       with :ok <- Client.send_packet(client, payload) do
-        Client.recv_packets(client, &Client.prepare_generic_messages/2, timeout)
+        recv_hello(client, timeout)
       end
+    end
+
+    # The HELLO response is the one connect leg where server-controlled bytes flow through
+    # boltx's parser. prepare_generic_messages RAISES (e.g. CaseClauseError) on an
+    # unrecognized message, and that raise carries the server payload in its term — a Rule 3
+    # leak if it rode the caller's raise (stream) or the connection crash log (pool). Redact
+    # any parse raise to a value-free typed reason. The top-level rescue in leak_safe_connect
+    # still fails loud on genuine code-shape defects (encode/send arity drift); the live
+    # path-C test stays the boltx-bump tripwire (it asserts :unauthorized specifically). A
+    # FAILURE reply and a timeout are {:error, _} returns (not raises), so they pass through.
+    @spec recv_hello(boltx_client(), timeout()) :: {:ok, map()} | {:error, boltx_error() | atom()}
+    defp recv_hello(client, timeout) do
+      Client.recv_packets(client, &Client.prepare_generic_messages/2, timeout)
+    rescue
+      _ -> {:error, :bolt_protocol_error}
     end
 
     # arcadic pins Bolt v4 ([4.4, 4.3, 4.2, 4.1]); the HELLO-only auth band is [3.0, 5.1).
