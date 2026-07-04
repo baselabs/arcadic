@@ -54,4 +54,14 @@ defmodule Arcadic.BoltConnectTest do
     assert {:error, :timeout} = Bolt.leak_safe_connect(opts_for(port))
     assert own_tcp_ports() - before == 0
   end
+
+  test "pool connect/1 returns a typed exception and leaks no fd on a non-Bolt endpoint" do
+    {:ok, port} = BoltFakeServer.start(:non_bolt)
+    before = own_tcp_ports()
+    result = Arcadic.Transport.Bolt.Connection.connect(opts_for(port))
+    # DBConnection requires {:error, Exception.t()} — a bare atom reason is normalized.
+    assert {:error, %Arcadic.TransportError{reason: reason}} = result
+    assert reason in [:version_negotiation_error, :bolt_protocol_error]
+    assert own_tcp_ports() - before == 0
+  end
 end
