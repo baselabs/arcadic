@@ -53,4 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointed at a non-Bolt port) no longer leaks a `:gen_tcp` socket. arcadic now owns the
   connect handshake and HELLO on both the per-stream connection and the DBConnection
   pool, closing the socket on every failure; a bad-password stream connect surfaces
-  `:unauthorized`, and the connect HELLO is bounded by `connect_timeout`.
+  `:unauthorized`, and the connect HELLO is bounded by `connect_timeout`. Connect-time
+  errors are redacted on both sites: a HELLO response arcadic's parser cannot classify
+  returns a value-free `:bolt_protocol_error` instead of a raw exception carrying server
+  bytes, and the DBConnection pool's connect error drops the server-supplied failure
+  message (keeping the error code/class) so it cannot ride a connect-failure log line.
