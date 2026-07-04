@@ -91,6 +91,54 @@ defmodule Arcadic.QueryStreamTest do
     end
   end
 
+  describe "Bolt.assert_has_more_key!/2 (drift guard)" do
+    test "raises a bolt_protocol_error when the first chunk's success map lacks has_more" do
+      err = assert_raise Arcadic.TransportError, fn -> Bolt.assert_has_more_key!(%{}, true) end
+      assert err.reason == :bolt_protocol_error
+      # non-first chunk and present-key are permissive (present-key on first chunk
+      # returns nil — the `unless` guard's value when its condition is false):
+      assert Bolt.assert_has_more_key!(%{}, false) == :ok
+      assert Bolt.assert_has_more_key!(%{"has_more" => true}, true) == nil
+    end
+  end
+
+  describe "Bolt.query_stream/3 guards (server-free)" do
+    test "refuses a session/tx conn (defense in depth)" do
+      conn = %{bolt_conn() | session_id: "bolt", transport_options: [bolt_opts: []]}
+
+      assert {:error,
+              %Arcadic.Error{
+                reason: :not_supported,
+                message: "streaming is not available inside a transaction"
+              }} =
+               Bolt.query_stream(
+                 conn,
+                 %{statement: "RETURN 1", params: %{}, language: "cypher"},
+                 []
+               )
+    end
+
+    test "refuses when transport_options[:bolt_opts] is absent" do
+      conn =
+        Conn.new("http://h:2480", "db",
+          auth: {"u", "p"},
+          transport: Bolt,
+          transport_options: [bolt: :p]
+        )
+
+      assert {:error,
+              %Arcadic.Error{
+                reason: :not_supported,
+                message: "bolt streaming requires transport_options[:bolt_opts]"
+              }} =
+               Bolt.query_stream(
+                 conn,
+                 %{statement: "RETURN 1", params: %{}, language: "cypher"},
+                 []
+               )
+    end
+  end
+
   describe "Arcadic.query_stream/4 facade guards" do
     test "returns :not_supported on the HTTP transport" do
       conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})

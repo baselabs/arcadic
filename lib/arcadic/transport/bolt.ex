@@ -29,8 +29,12 @@ if Code.ensure_loaded?(Boltx) do
 
     @behaviour Arcadic.Transport
 
-    alias Arcadic.{Conn, Error, TransportError}
+    alias Arcadic.{Conn, Error, Telemetry, TransportError}
+    alias Boltx.BoltProtocol.Message.{PullMessage, RunMessage}
+    alias Boltx.Client
     alias Boltx.Types.{Duration, Point}
+
+    import Boltx.BoltProtocol.ServerResponse, only: [statement_result: 1, pull_result: 2]
 
     @rollback_throw :arcadic_rollback
 
@@ -108,6 +112,136 @@ if Code.ensure_loaded?(Boltx) do
       do: {name, Point.format_param(p)}
 
     defp format_param({name, value}), do: {name, {:ok, value}}
+
+    @impl true
+    def query_stream(%Conn{session_id: sid}, _request, _opts) when is_binary(sid) do
+      {:error,
+       %Error{reason: :not_supported, message: "streaming is not available inside a transaction"}}
+    end
+
+    def query_stream(%Conn{} = conn, %{statement: statement, params: params}, opts) do
+      case conn.transport_options[:bolt_opts] do
+        nil ->
+          {:error,
+           %Error{
+             reason: :not_supported,
+             message: "bolt streaming requires transport_options[:bolt_opts]"
+           }}
+
+        bolt_opts ->
+          chunk = Keyword.get(opts, :chunk_size, 1000)
+          timeout = Keyword.get(opts, :timeout, :infinity)
+          {:ok, build_stream(conn, bolt_opts, statement, format_params(params), chunk, timeout)}
+      end
+    end
+
+    # A dedicated raw connection per stream (the pool's DBConnection cursor callbacks
+    # are non-functional stubs, so it cannot page). Stream.resource guarantees the
+    # after-fun runs on normal end, early halt, and error; the BEAM reaps the
+    # enumerator-owned socket on an untrappable :kill.
+    defp build_stream(conn, bolt_opts, statement, params, chunk, timeout) do
+      Stream.resource(
+        fn -> stream_start(conn, bolt_opts, statement, params, timeout) end,
+        fn acc -> stream_next(acc, chunk, timeout) end,
+        fn acc -> stream_stop(acc) end
+      )
+    end
+
+    defp stream_start(conn, bolt_opts, statement, params, timeout) do
+      case Boltx.Connection.connect(bolt_opts) do
+        {:ok, state} ->
+          case stream_run(state.client, statement, params, run_extra(conn), timeout) do
+            {:ok, run_success} ->
+              Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
+              %{state: state, run: run_success, rows: 0, done: false, first: true}
+
+            {:error, reason} ->
+              # after-fun does NOT run for a start-fun raise — tear down here first.
+              _ = Boltx.Connection.disconnect(:normal, state)
+              raise stream_error(reason)
+          end
+
+        {:error, reason} ->
+          # boltx does not hand back a socket handle on a connect/handshake failure,
+          # so arcadic cannot disconnect it here; raise a REDACTED typed error rather
+          # than the raw MatchError, which could embed a server auth message (Rule 3).
+          raise stream_error(reason)
+      end
+    end
+
+    defp stream_next(%{done: true} = acc, _chunk, _timeout), do: {:halt, acc}
+
+    defp stream_next(%{state: state, run: run, first: first} = acc, chunk, timeout) do
+      case stream_pull(state.client, %{n: chunk}, timeout) do
+        {:ok, pull} ->
+          success_data = pull_result(pull, :success_data)
+          assert_has_more_key!(success_data, first)
+          rows = Boltx.Response.new(statement_result(result_run: run, result_pull: pull)).results
+          acc = %{acc | rows: acc.rows + length(rows), first: false}
+
+          if Map.get(success_data, "has_more", false),
+            do: {rows, acc},
+            else: {rows, %{acc | done: true}}
+
+        {:error, reason} ->
+          raise stream_error(reason)
+      end
+    end
+
+    defp stream_stop(%{state: state, rows: rows, done: done}) do
+      # A lazy Stream.resource after-fun cannot observe WHY enumeration ended, so the
+      # reason distinguishes only "drained" (:ok) from "stopped early/error" (:halted).
+      reason = if done, do: :ok, else: :halted
+
+      Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: rows}, %{
+        mode: :read,
+        reason: reason
+      })
+
+      _ = Boltx.Connection.disconnect(:normal, state)
+      :ok
+    end
+
+    # boltx's send_run/send_pull hardcode an :infinity recv; reimplement the frame
+    # exchange so `opts[:timeout]` bounds each RUN and PULL (default :infinity, set to
+    # bound a stalled-but-alive server). Same return shapes as Client.send_run/send_pull.
+    defp stream_run(client, statement, params, extra, timeout) do
+      payload = RunMessage.encode(client.bolt_version, statement, params, extra)
+
+      with :ok <- Client.send_packet(client, payload) do
+        Client.recv_packets(client, &RunMessage.prepare_messages/2, timeout)
+      end
+    end
+
+    defp stream_pull(client, extra, timeout) do
+      payload = PullMessage.encode(client.bolt_version, extra)
+
+      with :ok <- Client.send_packet(client, payload) do
+        Client.recv_packets(client, &PullMessage.prepare_messages/2, timeout)
+      end
+    end
+
+    # `has_more` is a raw server SUCCESS key (not a boltx symbol). Assert its presence
+    # on the first chunk so a driver/server drift fails LOUD instead of silently
+    # truncating every stream to its first chunk.
+    @doc false
+    @spec assert_has_more_key!(map(), boolean()) :: :ok | nil
+    def assert_has_more_key!(success_data, true) do
+      unless Map.has_key?(success_data, "has_more") do
+        raise %TransportError{reason: :bolt_protocol_error}
+      end
+    end
+
+    def assert_has_more_key!(_success_data, false), do: :ok
+
+    # Mid-stream errors reuse bolt_error/1 so no row/param bytes leak into the raised
+    # exception's message or inspect (Critical Rule 3). A finite-timeout breach arrives
+    # as %Boltx.Error{code: :timeout} → :timeout; a socket-level send failure is a bare
+    # atom (e.g. :closed) — both handled before the struct fallback.
+    defp stream_error(%Boltx.Error{code: :timeout}), do: %TransportError{reason: :timeout}
+    defp stream_error(%Boltx.Error{} = e), do: bolt_error(e)
+    defp stream_error(reason) when is_atom(reason), do: %TransportError{reason: reason}
+    defp stream_error(other), do: %TransportError{reason: transport_reason(other)}
 
     @impl true
     def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
