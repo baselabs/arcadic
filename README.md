@@ -1,17 +1,31 @@
 # Arcadic
 
 A lean, framework-agnostic Elixir client for [ArcadeDB](https://arcadedb.com)
-over the **HTTP Cypher command API**.
+over the **HTTP Cypher command API**, with an optional Bolt transport for the
+query hot path.
 
 Arcadic is the "`postgrex` of ArcadeDB" — it ships Cypher/SQL to ArcadeDB and
-manages connections and transactions, and nothing more. It is deliberately
-**tenant-blind and framework-agnostic**: no Ash, no multitenancy, no data
-classification. Those belong one layer up, in
+manages connections, sessions, and transactions, and nothing more. It is
+deliberately **tenant-blind and framework-agnostic**: no Ash, no multitenancy,
+no data classification. Those belong one layer up, in
 [`ash_arcadic`](https://github.com/baselabs/ash_arcadic) (the "`ash_postgres` of
 ArcadeDB").
 
-The working rules for contributors and agents are in [`AGENTS.md`](AGENTS.md) —
-read it first.
+## Highlights
+
+- **Cypher-first, multi-language** — the default language is `"cypher"`; opt into
+  `sql`, `gremlin`, `graphql`, `mongo`, or `sqlscript` per call.
+- **Parameters only** — every dynamic value reaches ArcadeDB as a bound parameter
+  (`$name`), never string interpolation, so the injection surface stays closed.
+- **Typed errors with boundary redaction** — `Arcadic.Error` carries a typed
+  `reason`, HTTP status, and error class; raw parameter values and response rows
+  never enter an error message, log line, or `inspect/1` output.
+- **Session transactions** — `transaction/3` opens an ArcadeDB session and commits
+  on normal return, rolls back and reraises on exception (postgrex semantics).
+- **Pluggable transport** — HTTP (Req/Finch) by default, with an optional Bolt v4
+  transport for the query hot path and lazy result streaming.
+- **Batteries included** — server admin, a migration runner, allowlist-validated
+  identifiers, and value-free telemetry spans.
 
 ## Quickstart
 
@@ -29,19 +43,17 @@ conn = Arcadic.connect("http://localhost:2480", "mydb", auth: {"root", pass})
   end)
 ```
 
-Every dynamic value reaches ArcadeDB **only as a bound parameter** (`$name`) —
-never string interpolation. `query/4` hits the idempotent read endpoint;
-`command/4` hits the write endpoint. Both return `{:ok, rows}` or
-`{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`; `query!/4` and
-`command!/4` return the rows or raise. `command_async/4` fire-and-forgets
-(server enqueues, returns `:ok` on 202 — the caller cannot confirm the write
-landed). The default language is `"cypher"`; pass `language: "sql"` (or
+Every dynamic value reaches ArcadeDB **only as a bound parameter** (`$name`).
+`query/4` hits the idempotent read endpoint; `command/4` hits the write endpoint.
+Both return `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`;
+`query!/4` and `command!/4` return the rows or raise. `command_async/4` submits a
+fire-and-forget write, returning `:ok` once ArcadeDB accepts it for processing
+(HTTP 202). The default language is `"cypher"`; pass `language: "sql"` (or
 `gremlin`/`graphql`/`mongo`/`sqlscript`) to switch.
 
 `Arcadic.transaction/3` opens an ArcadeDB session, runs the fun with a
 session-scoped conn, and commits on normal return. An exception rolls back and
-reraises (postgrex semantics); `Arcadic.rollback/2` aborts intentionally and
-yields `{:error, reason}`.
+reraises; `Arcadic.rollback/2` aborts intentionally and yields `{:error, reason}`.
 
 ## Production pool
 
@@ -99,11 +111,13 @@ end
 
 ## Bolt transport (optional)
 
-Admin is HTTP-only, but the query hot path can run over Bolt via the optional
-`boltx` dependency. Add `{:boltx, "~> 0.0.6"}`, start a Bolt connection with
-`Arcadic.Transport.Bolt.start_link/1` (it pins Bolt v4 —
-`versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which ArcadeDB
-requires, and takes `username`/`password`), then pass the connection reference:
+The query hot path can run over Bolt via the optional
+[`boltx`](https://hex.pm/packages/boltx) dependency. Add `{:boltx, "~> 0.0.6"}`,
+start a Bolt connection with `Arcadic.Transport.Bolt.start_link/1` (it pins Bolt
+v4 — `versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which
+ArcadeDB uses, and takes `username`/`password`), then pass the connection
+reference. Server admin runs over HTTP; use an HTTP conn for it even when queries
+go over Bolt.
 
 ```elixir
 {:ok, bolt} =
@@ -119,6 +133,9 @@ conn =
   )
 ```
 
+For paging large result sets, `Arcadic.query_stream/4` returns a lazy `Stream.t()`
+of rows over Bolt, chunked via `PULL`.
+
 ## Layering
 
 ```
@@ -131,32 +148,23 @@ Arcadic  ← this lib (HTTP Cypher transport, sessions/transactions — tenant-b
 ArcadeDB            (native OpenCypher engine)
 ```
 
-## Why greenfield, not `arcadex`?
-
-The existing [`arcadex`](https://hex.pm/packages/arcadex) hex package covers the
-same niche and was a useful HTTP body-shape reference. Arcadic is a greenfield
-rewrite on strictly mechanical grounds — roughly 80% of the surface is different
-code, not a fork:
-
-- **Cypher-first defaults** — the default language is `"cypher"`, with SQL and
-  the other engines opt-in per call.
-- **Typed error taxonomy + boundary redaction** — `Arcadic.Error` carries a
-  typed `reason`, and raw values never enter an error message, log line, or
-  `inspect/1` output (`detail` is quarantined).
-- **Session rework off the real response header** — transactions read the
-  session id from the verified `arcadedb-session-id` response header.
-- **Identifier-allowlist validation** — every identifier that reaches a URL path
-  or statement is validated before the wire.
-- **`Req.Test` suite** — the test surface stubs HTTP with `Req.Test` rather than
-  Bypass.
-
 ## Installation
 
-Not yet published. During co-development, depend on it by path:
+Arcadic is developed alongside
+[`ash_arcadic`](https://github.com/baselabs/ash_arcadic). Depend on it by path
+during co-development:
 
 ```elixir
-{:arcadic, path: "../arcadic"}
+def deps do
+  [
+    {:arcadic, path: "../arcadic"},
+    # optional, for the Bolt transport:
+    {:boltx, "~> 0.0.6"}
+  ]
+end
 ```
+
+Once published to Hex, `{:arcadic, "~> 0.1"}` will pull it directly.
 
 ## Development
 
@@ -165,6 +173,24 @@ mix deps.get
 mix test
 mix quality   # format --check-formatted + credo --strict + dialyzer
 ```
+
+Contributor and agent working rules — including the params-only, redaction, and
+tenant-blind invariants — live in [`AGENTS.md`](AGENTS.md).
+
+## Credits
+
+- [**ArcadeDB**](https://arcadedb.com) — the multi-model database Arcadic speaks to.
+- [**arcadex**](https://hex.pm/packages/arcadex) — prior-art ArcadeDB client that
+  served as a reference for the HTTP command-API request/response shapes.
+- [**boltx**](https://hex.pm/packages/boltx) — the Bolt protocol driver behind the
+  optional Bolt transport.
+- [**Req**](https://hex.pm/packages/req) / [**Finch**](https://hex.pm/packages/finch)
+  — the HTTP client and pool behind the default transport.
+- [**DBConnection**](https://hex.pm/packages/db_connection) — connection pooling for
+  the Bolt transport.
+
+The `postgrex`/`ash_postgres` split that inspired Arcadic and `ash_arcadic` is the
+work of the Elixir Ecto and Ash communities.
 
 ## License
 
