@@ -25,6 +25,7 @@ defmodule Arcadic do
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
   @command_opts ~w(language limit serializer timeout retries)a
   @query_opts ~w(language limit serializer timeout)a
+  @query_stream_opts ~w(chunk_size timeout)a
 
   @doc "Build a connection handle. See `Arcadic.Conn.new/3`."
   @spec connect(String.t(), String.t(), keyword()) :: Conn.t()
@@ -78,6 +79,42 @@ defmodule Arcadic do
       result = run_async(conn, request, opts)
       {result, %{reason: async_reason(result)}}
     end)
+  end
+
+  @doc """
+  Lazily stream a large read result as raw row maps (**Bolt-only**). Returns
+  `{:ok, Stream.t()}` or `{:error, %Arcadic.Error{reason: :not_supported}}` when the
+  transport has no cursor contract (HTTP) or the conn is inside a transaction.
+
+  Enumerating the stream opens a dedicated connection for its lifetime and pulls
+  `:chunk_size` rows per round-trip (default 1000). `:timeout` bounds each RUN and
+  PULL receive (default `:infinity`; set it to bound a stalled server) — a breach
+  raises `%Arcadic.TransportError{reason: :timeout}`. Any protocol error mid-stream
+  RAISES a typed error; the connection is always torn down on completion, early
+  halt, or error.
+  """
+  @spec query_stream(Conn.t(), String.t(), map(), keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Arcadic.Error.t()}
+  def query_stream(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    opts = validate_opts!(opts, @query_stream_opts)
+
+    cond do
+      not is_nil(conn.session_id) ->
+        {:error,
+         %Arcadic.Error{
+           reason: :not_supported,
+           message: "streaming is not available inside a transaction"
+         }}
+
+      not (Code.ensure_loaded?(conn.transport) and
+               function_exported?(conn.transport, :query_stream, 3)) ->
+        {:error,
+         %Arcadic.Error{reason: :not_supported, message: "transport does not support streaming"}}
+
+      true ->
+        request = %{statement: statement, params: params, language: "cypher"}
+        conn.transport.query_stream(conn, request, opts)
+    end
   end
 
   @doc "Run a function within a session transaction. See `Arcadic.Transaction.transaction/3`."

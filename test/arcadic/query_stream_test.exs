@@ -3,6 +3,15 @@ defmodule Arcadic.QueryStreamTest do
   alias Arcadic.{Conn, Transport.Bolt}
   alias Boltx.Types.{Duration, Point}
 
+  defmodule CaptureTransport do
+    # Not a full @behaviour impl — the facade guards on function_exported?/3, which
+    # only needs this one function present. Captures the request the facade builds.
+    def query_stream(_conn, request, _opts) do
+      send(self(), {:captured_request, request})
+      {:ok, []}
+    end
+  end
+
   defp bolt_conn(db \\ "mydb"),
     do:
       Conn.new("http://h:2480", db,
@@ -79,6 +88,52 @@ defmodule Arcadic.QueryStreamTest do
     test "maps any other unexpected term to a typed, value-free transport error (no bare passthrough)" do
       assert {:error, %Arcadic.TransportError{reason: :transaction_error}} =
                Bolt.map_transaction_outcome({:error, :something_unexpected})
+    end
+  end
+
+  describe "Arcadic.query_stream/4 facade guards" do
+    test "returns :not_supported on the HTTP transport" do
+      conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
+
+      assert {:error,
+              %Arcadic.Error{
+                reason: :not_supported,
+                message: "transport does not support streaming"
+              }} =
+               Arcadic.query_stream(conn, "MATCH (n) RETURN n")
+    end
+
+    test "returns :not_supported inside a transaction (session_id set)" do
+      conn = %{bolt_conn() | session_id: "bolt"}
+
+      assert {:error,
+              %Arcadic.Error{
+                reason: :not_supported,
+                message: "streaming is not available inside a transaction"
+              }} =
+               Arcadic.query_stream(conn, "MATCH (n) RETURN n")
+    end
+
+    test "rejects unknown options" do
+      conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
+      assert_raise ArgumentError, fn -> Arcadic.query_stream(conn, "RETURN 1", %{}, bogus: 1) end
+    end
+
+    test "passes the value as a bound param, never interpolated into the statement" do
+      conn =
+        Conn.new("http://h:2480", "db",
+          auth: {"u", "p"},
+          transport: CaptureTransport,
+          transport_options: []
+        )
+
+      stmt = "MATCH (n:User {email:$e}) RETURN n"
+      assert {:ok, []} = Arcadic.query_stream(conn, stmt, %{"e" => "secret@example.com"})
+
+      assert_received {:captured_request,
+                       %{statement: ^stmt, params: %{"e" => "secret@example.com"}}}
+
+      refute stmt =~ "secret@example.com"
     end
   end
 end
