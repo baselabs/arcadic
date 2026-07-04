@@ -54,8 +54,11 @@ defmodule Arcadic.AsyncTest do
     end)
 
     Arcadic.command_async(conn(), "CREATE (n)")
-    assert_received {[:arcadic, :command, :stop], ^ref, _m, meta}
-    assert meta.async? == true
+    # `async: true` + a GLOBAL telemetry event means this handler also fires for
+    # `:command:stop` events emitted by CONCURRENT tests (sync `command`, tx
+    # `command!`) whose meta lacks `async?`. Pin `async?: true` in the pattern so the
+    # selective receive matches THIS test's own async span, never a cross-talk event.
+    assert_received {[:arcadic, :command, :stop], ^ref, _m, %{async?: true}}
     :telemetry.detach(ref)
   end
 end
