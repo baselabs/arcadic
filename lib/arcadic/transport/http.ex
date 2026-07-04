@@ -131,8 +131,15 @@ defmodule Arcadic.Transport.HTTP do
   end
 
   # Result handling for a query/command response.
-  defp handle_result({:ok, %Req.Response{status: status, body: body}}) when status in 200..299 do
+  defp handle_result({:ok, %Req.Response{status: status, body: body}})
+       when status in 200..299 and is_map(body) do
     Result.normalize(body)
+  end
+
+  # A 2xx whose body is empty/non-map (Req leaves an empty body as "") is a
+  # no-result success — degrade to an empty row list, never a FunctionClauseError.
+  defp handle_result({:ok, %Req.Response{status: status}}) when status in 200..299 do
+    {:ok, []}
   end
 
   defp handle_result({:ok, %Req.Response{status: status, body: body}}) when is_map(body) do
@@ -176,7 +183,7 @@ defmodule Arcadic.Transport.HTTP do
   def execute_async(%Conn{} = conn, request, opts) do
     body = request |> build_body(opts) |> Map.put(:awaitResponse, false)
 
-    case post(conn, "/api/v1/command/#{conn.database}", body, opts) do
+    case post(conn, "/api/v1/#{endpoint(:write)}/#{conn.database}", body, opts) do
       {:ok, %Req.Response{status: status}} when status in 200..299 ->
         :ok
 
@@ -213,7 +220,8 @@ defmodule Arcadic.Transport.HTTP do
       headers: headers(conn),
       retry: false,
       finch: conn.transport_options[:finch],
-      plug: conn.transport_options[:plug]
+      plug: conn.transport_options[:plug],
+      receive_timeout: conn.timeout
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Req.get()

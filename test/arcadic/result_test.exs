@@ -32,4 +32,10 @@ defmodule Arcadic.ResultTest do
   test "returns an empty list when result is absent" do
     assert Result.normalize(%{"user" => "root"}) == {:ok, []}
   end
+
+  test "returns an empty list when result is present but not a list (out of contract)" do
+    # A scalar `result` (e.g. an async-accept string) must not crash Enum.map.
+    assert Result.normalize(%{"result" => "Command accepted for asynchronous execution"}) ==
+             {:ok, []}
+  end
 end

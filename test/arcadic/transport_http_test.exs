@@ -89,6 +89,13 @@ defmodule Arcadic.Transport.HTTPTest do
     assert {:ok, [%{"c" => 1}]} = req(conn(), :read, cypher("RETURN 1 AS c"))
   end
 
+  test "a 2xx with an empty (non-map) body is a no-result success, not a crash" do
+    # Req leaves an empty response body as "" — clause 1 of handle_result must not
+    # hand a non-map to Result.normalize (FunctionClauseError); it degrades to {:ok, []}.
+    Req.Test.stub(__MODULE__, fn conn -> Plug.Conn.send_resp(conn, 200, "") end)
+    assert {:ok, []} = req(conn(), :write, cypher("CREATE (n)"))
+  end
+
   test "maps a 500 error body to a typed Arcadic.Error" do
     Req.Test.stub(__MODULE__, fn conn ->
       conn

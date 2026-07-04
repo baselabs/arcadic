@@ -13,9 +13,12 @@ defmodule Arcadic.Result do
   @spec normalize(map()) :: {:ok, [map()]}
   def normalize(body) when is_map(body) do
     rows =
-      body
-      |> Map.get("result", [])
-      |> Enum.map(&strip_row/1)
+      case Map.get(body, "result", []) do
+        list when is_list(list) -> Enum.map(list, &strip_row/1)
+        # A missing or non-list `result` (no-result command / DDL / out-of-contract
+        # scalar) is an empty row set — never a crash.
+        _ -> []
+      end
 
     {:ok, rows}
   end
