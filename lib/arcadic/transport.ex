@@ -41,4 +41,12 @@ defmodule Arcadic.Transport do
 
   @doc "Server readiness."
   @callback ready?(Conn.t()) :: {:ok, boolean()} | {:error, TransportError.t()}
+
+  @optional_callbacks begin: 2,
+                      commit: 1,
+                      rollback: 1,
+                      server_command: 2,
+                      list_databases: 1,
+                      database_exists?: 2,
+                      ready?: 1
 end
