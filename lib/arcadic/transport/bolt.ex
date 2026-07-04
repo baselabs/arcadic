@@ -30,6 +30,7 @@ if Code.ensure_loaded?(Boltx) do
     @behaviour Arcadic.Transport
 
     alias Arcadic.{Conn, Error, TransportError}
+    alias Boltx.Types.{Duration, Point}
 
     @rollback_throw :arcadic_rollback
 
@@ -54,12 +55,40 @@ if Code.ensure_loaded?(Boltx) do
 
     @impl true
     def execute(%Conn{} = conn, _mode, %{statement: statement, params: params}, _opts) do
-      case Boltx.query(bolt(conn), statement, params) do
-        {:ok, %Boltx.Response{results: results}} -> {:ok, results}
+      query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
+
+      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
+        {:ok, _query, %Boltx.Response{results: results}} -> {:ok, results}
         {:error, %Boltx.Error{} = e} -> {:error, bolt_error(e)}
         {:error, other} -> {:error, %TransportError{reason: transport_reason(other)}}
       end
     end
+
+    # The `db` extra selects the ArcadeDB database per RUN/BEGIN (Boltx's RunMessage
+    # defaults mode to "w" — kept statement-agnostic). Shared by execute, transaction,
+    # and query_stream so conn.database is honored uniformly across Bolt ops.
+    @doc false
+    @spec run_extra(Conn.t()) :: %{db: String.t()}
+    def run_extra(%Conn{database: database}), do: %{db: database}
+
+    # Mirror Boltx.query/4's param formatting so a Duration/Point param binds
+    # identically whether it goes through execute or the low-level stream path.
+    @doc false
+    @spec format_params(map()) :: map()
+    def format_params(params) do
+      params
+      |> Enum.map(&format_param/1)
+      |> Enum.map(fn {k, {:ok, value}} -> {k, value} end)
+      |> Map.new()
+    end
+
+    defp format_param({name, %Duration{} = d}),
+      do: {name, Duration.format_param(d)}
+
+    defp format_param({name, %Point{} = p}),
+      do: {name, Point.format_param(p)}
+
+    defp format_param({name, value}), do: {name, {:ok, value}}
 
     @impl true
     def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
