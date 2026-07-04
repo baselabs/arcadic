@@ -3,28 +3,105 @@ defmodule Arcadic do
   A lean, framework-agnostic Elixir client for [ArcadeDB](https://arcadedb.com)
   over the **HTTP Cypher command API**.
 
-  Arcadic is the "`postgrex` of ArcadeDB": it ships queries and manages
-  connections/transactions, and nothing more. It is deliberately **tenant-blind
-  and framework-agnostic** — it has no notion of Ash, multitenancy, or data
-  classification. Those concerns live one layer up, in the `ash_arcadic` data
-  layer (the "`ash_postgres` of ArcadeDB"). See `docs/CHARTER.md`.
+  Arcadic is the "`postgrex` of ArcadeDB": it ships Cypher/SQL, manages
+  connections and session transactions, and normalizes responses — nothing more.
+  It is deliberately **tenant-blind and framework-agnostic**. Multitenancy,
+  classification, and Ash resources live one layer up, in `ash_arcadic`.
 
-  ## Status
+      conn = Arcadic.connect("http://localhost:2480", "mydb", auth: {"root", pass})
+      {:ok, rows} = Arcadic.query(conn, "MATCH (n:User) RETURN n LIMIT $lim", %{"lim" => 10})
+      {:ok, [user]} = Arcadic.command(conn, "CREATE (u:User {name:$n}) RETURN u", %{"n" => "Jo"})
 
-  Scaffold only — no implementation yet. The verified ArcadeDB HTTP contract this
-  module will wrap (endpoint shapes, the `begin` gotcha, session transactions,
-  the result envelope, `MERGE` support) is documented in `docs/CHARTER.md` and
-  `AGENTS.md`. The public surface is designed via `/brainstorm-autopilot` before
-  any code lands.
+      {:ok, result} = Arcadic.transaction(conn, fn tx ->
+        Arcadic.command!(tx, "MERGE (u:User {id:$id})", %{"id" => "u1"})
+      end)
 
-  ## Planned surface (subject to the brainstorm)
-
-    * `connect/2` — build a connection handle (base URL, database, auth).
-    * `execute/4` — run a statement in a chosen language (`"cypher"` default).
-    * `query/3` / `command/3` — read / write convenience wrappers.
-    * `transaction/2` — session-scoped `begin`/`commit`/`rollback`.
-
-  All dynamic values reach ArcadeDB **only as bound parameters**, never string
-  interpolation (see `AGENTS.md` → Critical Rules).
+  All dynamic values reach ArcadeDB **only as bound parameters** (`$name`), never
+  string interpolation.
   """
+
+  alias Arcadic.{Conn, Telemetry}
+
+  @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
+  @command_opts ~w(language limit serializer timeout retries)a
+  @query_opts ~w(language limit serializer timeout)a
+
+  @doc "Build a connection handle. See `Arcadic.Conn.new/3`."
+  @spec connect(String.t(), String.t(), keyword()) :: Conn.t()
+  defdelegate connect(base_url, database, opts \\ []), to: Conn, as: :new
+
+  @doc "Derive a same-pool handle on another database. See `Arcadic.Conn.with_database/2`."
+  @spec with_database(Conn.t(), String.t()) :: Conn.t()
+  defdelegate with_database(conn, database), to: Conn
+
+  @doc """
+  Run a read statement (`POST /api/v1/query`). The server rejects non-idempotent
+  statements. Returns `{:ok, rows}` or `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
+  """
+  @spec query(Conn.t(), String.t(), map(), keyword()) :: {:ok, [map()]} | {:error, Exception.t()}
+  def query(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    run(conn, :read, statement, params, validate_opts!(opts, @query_opts))
+  end
+
+  @doc "Run a read statement, returning the rows or raising."
+  @spec query!(Conn.t(), String.t(), map(), keyword()) :: [map()]
+  def query!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang(query(conn, statement, params, opts))
+
+  @doc """
+  Run a write statement (`POST /api/v1/command`). Returns `{:ok, rows}` or
+  `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
+  """
+  @spec command(Conn.t(), String.t(), map(), keyword()) ::
+          {:ok, [map()]} | {:error, Exception.t()}
+  def command(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    run(conn, :write, statement, params, validate_opts!(opts, @command_opts))
+  end
+
+  @doc "Run a write statement, returning the rows or raising."
+  @spec command!(Conn.t(), String.t(), map(), keyword()) :: [map()]
+  def command!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang(command(conn, statement, params, opts))
+
+  # ── internals ──────────────────────────────────────────────────────────────
+
+  defp run(conn, mode, statement, params, opts) do
+    language = opts[:language] || "cypher"
+    request = %{statement: statement, params: params, language: language}
+    op = if(mode == :read, do: :query, else: :command)
+
+    Telemetry.span(op, %{language: language, mode: mode}, fn ->
+      case conn.transport.execute(conn, mode, request, opts) do
+        {:ok, rows} = ok -> {ok, %{http_status: 200, reason: :ok, row_count: length(rows)}}
+        {:error, err} = error -> {error, %{reason: reason_of(err)}}
+      end
+    end)
+  end
+
+  defp reason_of(%{reason: reason}), do: reason
+  defp reason_of(_), do: :error
+
+  defp bang({:ok, rows}), do: rows
+  defp bang({:error, error}), do: raise(error)
+
+  defp validate_opts!(opts, allowed) do
+    if language = opts[:language], do: validate_language!(language)
+
+    case Keyword.keys(opts) -- allowed do
+      [] ->
+        opts
+
+      bad ->
+        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
+    end
+  end
+
+  defp validate_language!(language) when language in @language_allowlist, do: :ok
+
+  defp validate_language!(language),
+    do:
+      raise(
+        ArgumentError,
+        "unknown language #{inspect(language)}; allowed: #{inspect(@language_allowlist)}"
+      )
 end
