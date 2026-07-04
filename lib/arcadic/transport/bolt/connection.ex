@@ -16,10 +16,19 @@ if Code.ensure_loaded?(Boltx) do
     def connect(opts) do
       case Bolt.leak_safe_connect(opts) do
         {:ok, state} -> {:ok, state}
-        {:error, %Boltx.Error{} = e} -> {:error, e}
+        {:error, %Boltx.Error{} = e} -> {:error, redact(e)}
         {:error, reason} -> {:error, %TransportError{reason: reason}}
       end
     end
+
+    # DBConnection logs a returned connect error via Exception.format_banner /
+    # crash_reason. A %Boltx.Error{} carries the server FAILURE `message` (free text) in
+    # its `bolt` map; that must not ride into the log (Rule 3). Strip the message while
+    # preserving the exception type and the error code (spec L9 — :unauthorized retained)
+    # and bolt.code (the Neo4j status class, Rule-3-permitted). Mirrors bolt_error/1, which
+    # keeps only bolt.code on the streaming path.
+    defp redact(%Boltx.Error{bolt: %{} = bolt} = e), do: %{e | bolt: Map.put(bolt, :message, nil)}
+    defp redact(%Boltx.Error{} = e), do: e
 
     @impl true
     defdelegate disconnect(err, state), to: Boltx.Connection

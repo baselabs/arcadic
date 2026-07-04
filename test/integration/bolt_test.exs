@@ -90,9 +90,18 @@ defmodule Arcadic.Integration.BoltTest do
 
     before = count.()
 
-    assert {:error, %Boltx.Error{code: :unauthorized}} =
+    assert {:error, %Boltx.Error{code: :unauthorized} = err} =
              Connection.connect(opts)
 
     assert count.() - before == 0
+
+    # Redaction (Rule 3): the server FAILURE message must not survive on the returned
+    # struct, so it cannot ride DBConnection's connect-failure crash_reason / format_banner
+    # log. The error CLASS (bolt.code) is preserved (Rule-3-permitted); the free-text
+    # message is stripped. Goes RED against the pre-fix raw passthrough (bolt.message ==
+    # "Authentication failed").
+    assert err.bolt.code == "Neo.ClientError.Security.Unauthorized"
+    assert err.bolt.message == nil
+    refute String.contains?(inspect(err), pass)
   end
 end
