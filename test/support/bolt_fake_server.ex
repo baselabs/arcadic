@@ -6,6 +6,8 @@ defmodule Arcadic.Test.BoltFakeServer do
   arcadic-side client socket is, which is exactly what the fd-delta probe measures.
   """
 
+  alias Boltx.BoltProtocol.MessageEncoder
+
   # scenario: :version_negotiation | :non_bolt | :stall | :garbled_hello | :stall_after_handshake
   # Returns {:ok, port} to point leak_safe_connect at (hostname: "127.0.0.1", port: port).
   def start(scenario) do
@@ -45,8 +47,7 @@ defmodule Arcadic.Test.BoltFakeServer do
     :gen_tcp.send(sock, <<0, 0, 4, 4>>)
     _ = :gen_tcp.recv(sock, 0, 1_000)
 
-    payload =
-      Boltx.BoltProtocol.MessageEncoder.encode(0x7E, [%{"message" => "SERVER_HELLO_SECRET"}])
+    payload = MessageEncoder.encode(0x7E, [%{"message" => "SERVER_HELLO_SECRET"}])
 
     :gen_tcp.send(sock, payload)
   end
