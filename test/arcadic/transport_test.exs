@@ -17,4 +17,9 @@ defmodule Arcadic.TransportTest do
       assert cb in callbacks, "missing callback #{inspect(cb)}"
     end
   end
+
+  test "declares query_stream/3 as an optional callback" do
+    assert {:query_stream, 3} in Arcadic.Transport.behaviour_info(:callbacks)
+    assert {:query_stream, 3} in Arcadic.Transport.behaviour_info(:optional_callbacks)
+  end
 end
