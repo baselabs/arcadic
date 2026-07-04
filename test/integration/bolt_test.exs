@@ -9,19 +9,20 @@ defmodule Arcadic.Integration.BoltTest do
     http_port = String.to_integer(System.get_env("ARCADIC_BOLT_HTTP_PORT") || "2480")
     pass = System.get_env("ARCADIC_BOLT_PASSWORD") || flunk("set ARCADIC_BOLT_PASSWORD")
 
-    # Self-contained: drop any leftover DB, then create a fresh empty one per run.
-    # A fresh DB makes the suite idempotent (BoltTx count is exactly 1) and ensures
-    # the DB the Bolt transport now targets (conn.database) actually exists.
-    admin = Conn.new("http://#{host}:#{http_port}", "boltspike", auth: {"root", pass})
-    _ = Arcadic.Server.drop_database(admin, "boltspike")
-    :ok = Arcadic.Server.create_database(admin, "boltspike")
-    on_exit(fn -> Arcadic.Server.drop_database(admin, "boltspike") end)
+    # Self-contained + per-run randomized DB name: a mispointed ARCADIC_BOLT_HOST cannot
+    # collide with (and drop) real data. A fresh DB makes the suite idempotent (BoltTx
+    # count is exactly 1) and ensures the DB the Bolt transport targets actually exists.
+    db = "boltspike_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    admin = Conn.new("http://#{host}:#{http_port}", db, auth: {"root", pass})
+    _ = Arcadic.Server.drop_database(admin, db)
+    :ok = Arcadic.Server.create_database(admin, db)
+    on_exit(fn -> Arcadic.Server.drop_database(admin, db) end)
 
     {:ok, bolt} =
       Transport.Bolt.start_link(hostname: host, port: port, username: "root", password: pass)
 
     conn =
-      Conn.new("http://#{host}:#{http_port}", "boltspike",
+      Conn.new("http://#{host}:#{http_port}", db,
         auth: {"root", pass},
         transport: Transport.Bolt,
         transport_options: [bolt: bolt]

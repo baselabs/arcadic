@@ -3,17 +3,18 @@ defmodule Arcadic.Integration.BoltStreamTest do
   @moduletag :integration_bolt
   alias Arcadic.{Conn, Server, Transport.Bolt}
 
-  @db "arcadic_stream_it"
-
   setup_all do
     host = System.get_env("ARCADIC_BOLT_HOST") || flunk("set ARCADIC_BOLT_HOST")
     bolt_port = String.to_integer(System.get_env("ARCADIC_BOLT_PORT") || "7687")
     http_port = String.to_integer(System.get_env("ARCADIC_BOLT_HTTP_PORT") || "2480")
     pass = System.get_env("ARCADIC_BOLT_PASSWORD") || flunk("set ARCADIC_BOLT_PASSWORD")
 
-    admin = Conn.new("http://#{host}:#{http_port}", @db, auth: {"root", pass})
-    _ = Server.drop_database(admin, @db)
-    :ok = Server.create_database(admin, @db)
+    # Per-run randomized DB name so a mispointed ARCADIC_BOLT_HOST cannot collide with
+    # (and drop) real data; the suite stays self-contained and idempotent.
+    db = "arcadic_stream_it_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    admin = Conn.new("http://#{host}:#{http_port}", db, auth: {"root", pass})
+    _ = Server.drop_database(admin, db)
+    :ok = Server.create_database(admin, db)
 
     {:ok, _} =
       Arcadic.command(admin, "UNWIND range(1,7) AS i CREATE (n:Row {i:i}) RETURN count(n)")
@@ -21,14 +22,14 @@ defmodule Arcadic.Integration.BoltStreamTest do
     {:ok, topts} = Bolt.setup(hostname: host, port: bolt_port, username: "root", password: pass)
 
     conn =
-      Conn.new("http://#{host}:#{http_port}", @db,
+      Conn.new("http://#{host}:#{http_port}", db,
         auth: {"root", pass},
         transport: Bolt,
         transport_options: topts
       )
 
-    on_exit(fn -> Server.drop_database(admin, @db) end)
-    {:ok, conn: conn, admin: admin, host: host, http_port: http_port, pass: pass}
+    on_exit(fn -> Server.drop_database(admin, db) end)
+    {:ok, conn: conn, admin: admin, host: host, http_port: http_port, pass: pass, db: db}
   end
 
   test "streams a large result in ordered chunks with a small chunk_size", %{conn: conn} do
@@ -43,8 +44,8 @@ defmodule Arcadic.Integration.BoltStreamTest do
     assert Enum.to_list(stream) == []
   end
 
-  test "with_database/2 selects the streamed database", %{conn: conn} do
-    derived = Arcadic.with_database(conn, @db)
+  test "with_database/2 selects the streamed database", %{conn: conn, db: db} do
+    derived = Arcadic.with_database(conn, db)
     {:ok, stream} = Arcadic.query_stream(derived, "MATCH (n:Row) RETURN count(n) AS c")
     assert [%{"c" => 7}] = Enum.to_list(stream)
   end
@@ -88,13 +89,13 @@ defmodule Arcadic.Integration.BoltStreamTest do
   end
 
   test "a stream to an unreachable endpoint raises a typed (redacted) error, not a MatchError",
-       %{host: host, http_port: http_port, pass: pass} do
+       %{host: host, http_port: http_port, pass: pass, db: db} do
     # A closed Bolt port → Boltx.Connection.connect returns {:error, _}; the stream must
     # surface a typed Arcadic error (redacted), never a raw MatchError.
     bad_opts = Bolt.resolve_opts(hostname: host, port: 65_535, username: "root", password: pass)
 
     conn =
-      Conn.new("http://#{host}:#{http_port}", @db,
+      Conn.new("http://#{host}:#{http_port}", db,
         auth: {"root", pass},
         transport: Bolt,
         transport_options: [bolt_opts: bad_opts]
@@ -110,7 +111,7 @@ defmodule Arcadic.Integration.BoltStreamTest do
   end
 
   test "a stream to an OPEN non-Bolt endpoint (the HTTP port) raises a typed error, not a raw exception",
-       %{host: host, http_port: http_port, pass: pass} do
+       %{host: host, http_port: http_port, pass: pass, db: db} do
     # Point Bolt at the HTTP port: TCP connects, but the handshake reply is non-Bolt
     # bytes, so boltx's decode_version/1 (single binary clause) FunctionClauseErrors
     # inside Boltx.Connection.connect. arcadic must convert that raise to a typed
@@ -125,7 +126,7 @@ defmodule Arcadic.Integration.BoltStreamTest do
       )
 
     conn =
-      Conn.new("http://#{host}:#{http_port}", @db,
+      Conn.new("http://#{host}:#{http_port}", db,
         auth: {"root", pass},
         transport: Bolt,
         transport_options: [bolt_opts: bad_opts]
