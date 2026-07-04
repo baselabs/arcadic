@@ -152,4 +152,60 @@ defmodule Arcadic.Transport.HTTP do
   # single clause is exhaustive per the type — a `_` catch-all would be dead code
   # (dialyzer `pattern_match_cov`).
   defp inspect_reason(%{__struct__: mod}), do: mod
+
+  @impl true
+  def server_command(%Conn{} = conn, command) do
+    conn |> post("/api/v1/server", %{command: command}, []) |> unwrap_body()
+  end
+
+  @impl true
+  def list_databases(%Conn{} = conn) do
+    case get(conn, "/api/v1/databases") do
+      {:ok, %{"result" => names}} when is_list(names) -> {:ok, names}
+      {:ok, _} -> {:ok, []}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @impl true
+  def database_exists?(%Conn{} = conn, name) do
+    with {:ok, names} <- list_databases(conn), do: {:ok, name in names}
+  end
+
+  @impl true
+  def ready?(%Conn{} = conn) do
+    case raw_get(conn, "/api/v1/ready") do
+      {:ok, %Req.Response{status: 204}} -> {:ok, true}
+      {:ok, %Req.Response{}} -> {:ok, false}
+      {:error, %{reason: reason}} -> {:error, %TransportError{reason: reason}}
+      {:error, _} -> {:error, %TransportError{reason: :unknown}}
+    end
+  end
+
+  # GET returning a decoded body map (for /databases).
+  defp get(%Conn{} = conn, path), do: conn |> raw_get(path) |> unwrap_body()
+
+  defp raw_get(%Conn{} = conn, path) do
+    [
+      url: conn.base_url <> path,
+      headers: headers(conn),
+      retry: false,
+      finch: conn.transport_options[:finch],
+      plug: conn.transport_options[:plug]
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Req.get()
+  end
+
+  defp unwrap_body({:ok, %Req.Response{status: status, body: body}}) when status in 200..299,
+    do: {:ok, body}
+
+  defp unwrap_body({:ok, %Req.Response{status: status, body: body}}) when is_map(body),
+    do: {:error, Error.from_response(status, body)}
+
+  defp unwrap_body({:ok, %Req.Response{status: status}}),
+    do: {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+  defp unwrap_body({:error, %{reason: reason}}), do: {:error, %TransportError{reason: reason}}
+  defp unwrap_body({:error, _}), do: {:error, %TransportError{reason: :unknown}}
 end
