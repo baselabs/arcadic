@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.Schema` — tenant-blind schema introspection: `types/1`, `properties/2`, `indexes/2`
+  (with a `:type` filter), `buckets/1` (all + `!`). SQL-only `SELECT FROM schema:*`; a caller type
+  name binds as a `$param` and is `Identifier`-shape-guarded (value-free); ArcadeDB's `@props`
+  serializer noise is deep-stripped at every nesting depth.
+- `Arcadic.Import` — `database/3` (+ `!`) wrapping `IMPORT DATABASE`. The source URL is validated
+  against a positive character allowlist (closing the interpolated-URL injection surface, since the
+  URL cannot be a bound parameter and ArcadeDB honours backslash-escapes inside string literals) and
+  a scheme allowlist (`http`/`https`/`file`); `with:` accepts number/boolean import settings. Import
+  errors are reflected faithfully — a private/loopback host trips ArcadeDB's SSRF guard
+  (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure's
+  `ServerSecurityException` via `error.exception`).
+
 ## [0.3.0] - 2026-07-05
 
 ### Added

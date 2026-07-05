@@ -37,6 +37,17 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `sparse_neighbors/8` rank by `score` (sparse rows carry no `distance`). Create sparse
   indexes **before** loading rows — they do not retro-index existing data (a
   `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you do).
+- **`Arcadic.Schema`** — read-only schema introspection: `types/1`, `properties/2`,
+  `indexes/2` (with a `:type` filter), `buckets/1` (all + `!`). SQL-only `SELECT FROM
+  schema:*`; a caller type name binds as a `$param` and is `Identifier`-shape-guarded;
+  ArcadeDB's `@props` serializer noise is deep-stripped at every depth. `indexes/2` returns
+  both logical and physical per-bucket rows (filter on `fileId` absence for logical-only).
+- **`Arcadic.Import`** — `database/3` (+ `!`): `IMPORT DATABASE` bulk load. The source URL is
+  interpolated (ArcadeDB rejects a bound `:url`) behind a positive character + scheme
+  (`http`/`https`/`file`) allowlist that closes the SQL-literal injection surface, value-free on
+  rejection; `with:` takes number/boolean settings. A private/loopback host trips ArcadeDB's SSRF
+  guard (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure via
+  `error.exception`); `file://` is server-local.
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
@@ -45,10 +56,19 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 
 ## Bulk loading
 
-- For a **large initial load**, prefer ArcadeDB's index-deferred bulk import over an
-  `INSERT`/`CREATE EDGE` loop: `Arcadic.command(conn, "IMPORT DATABASE '<url>'", %{}, language:
-  "sql")` imports CSV / JSON / GraphML / Neo4j / OrientDB exports server-side (the source URL must
-  be reachable by the server).
+- For a **large initial load**, prefer ArcadeDB's server-side import over an `INSERT`/`CREATE EDGE`
+  loop: `Arcadic.Import.database(conn, "https://host/export.jsonl.tgz")` imports CSV / JSON /
+  GraphML / Neo4j / OrientDB / ArcadeDB exports. The source URL is validated (positive character +
+  scheme allowlist, value-free) rather than hand-interpolated — do NOT hand-build an
+  `IMPORT DATABASE '<url>'` string, which reopens the injection surface. The URL must be reachable
+  by the SERVER; ArcadeDB blocks private/loopback hosts by default, so use a public URL or a
+  server-local `file://`. Optional `with:` number/boolean settings tune the load (e.g.
+  `with: [commitEvery: 10_000]`).
+- For an **index-deferred incremental** load, order it yourself: create the type, bulk-load the
+  rows (a `command/4` loop or one `transaction/3`), then create the index — a `LSM_TREE`/dense
+  `LSM_VECTOR` index retro-indexes existing rows, but a `LSM_SPARSE_VECTOR` index must be created
+  BEFORE the load (see `Arcadic.Vector`). arcadic ships no generic index-deferral helper because
+  the correct ordering is index-type-specific.
 - For batched **incremental** writes, wrap them in `transaction/3` (one commit for many
   statements) instead of auto-committing each `command/4`.
 

@@ -32,8 +32,13 @@ ArcadeDB").
   DDL plus nearest-neighbour, sparse, and hybrid-fusion query builders
   (`Arcadic.Vector`) with a candidate-set `filter` and `group_by`/`group_size`
   shaping, all params-only and value-free.
+- **Schema & import** — read-only schema introspection (`Arcadic.Schema` —
+  types / properties / indexes / buckets, `@props`-stripped) and server-side bulk
+  load (`Arcadic.Import.database/3`, `IMPORT DATABASE`) behind a positive-allowlist
+  URL validator that closes the interpolated-URL injection surface.
 - **Batteries included** — server admin, a migration runner, vector search,
-  allowlist-validated identifiers, and value-free telemetry spans.
+  schema introspection, bulk import, allowlist-validated identifiers, and
+  value-free telemetry spans.
 
 ## Quickstart
 
@@ -165,6 +170,37 @@ rows are ranked by `score` (higher is better); `sparse_neighbors/8` rows carry `
 and no `distance`. The Ash-native data-layer surface remains a non-goal (owned by the
 sibling `ash_arcadic`).
 
+## Schema introspection & bulk import
+
+`Arcadic.Schema` reflects the live schema, tenant-blind and `@props`-stripped. Every
+query is arcadic's own fixed `SELECT FROM schema:*` literal; a caller type name binds as
+a `$param` (never interpolated) and is identifier-shape-guarded.
+
+```elixir
+{:ok, types}   = Arcadic.Schema.types(conn)
+{:ok, props}   = Arcadic.Schema.properties(conn, "User")
+{:ok, indexes} = Arcadic.Schema.indexes(conn, type: "User")
+{:ok, buckets} = Arcadic.Schema.buckets(conn)
+```
+
+`indexes/2` returns both logical and physical per-bucket rows (filter on the absence of
+`fileId` for logical-only).
+
+`Arcadic.Import.database/3` bulk-loads a database export server-side via `IMPORT DATABASE`.
+The source URL cannot be a bound parameter (ArcadeDB rejects it), so it is interpolated
+behind a **positive character allowlist** (RFC 3986 minus the single quote and backslash —
+which closes the SQL-literal injection surface, since ArcadeDB honours backslash-escapes)
+plus a scheme allowlist (`http` / `https` / `file`). Rejections are value-free.
+
+```elixir
+{:ok, _} = Arcadic.Import.database(conn, "https://host/export.jsonl.tgz")
+{:ok, _} = Arcadic.Import.database(conn, "file:///srv/exports/dump", with: [commitEvery: 10_000])
+```
+
+The server must be able to reach the URL — ArcadeDB blocks private/loopback hosts by
+default (surfaced as `%Arcadic.Error{reason: :unauthorized, exception: "java.lang.SecurityException"}`,
+distinct from an auth failure), so use a public URL or a server-local `file://` path.
+
 ## Bolt transport (optional)
 
 The query hot path can run over Bolt via the optional
@@ -264,13 +300,18 @@ client (a *profile*, not a neo4j comparison):
 ### Bulk loading
 
 The ingest figure above is per-statement *client writes*. To load a large dataset, use
-ArcadeDB's **index-deferred** bulk facilities — far faster than any `INSERT`/`CREATE EDGE` loop:
+ArcadeDB's bulk facilities — far faster than any `INSERT`/`CREATE EDGE` loop:
 
-- `IMPORT DATABASE '<url>'`, issued straight through the driver —
-  `Arcadic.command(conn, "IMPORT DATABASE 'https://…/data.csv'", %{}, language: "sql")` — imports
-  CSV / JSON / GraphML / Neo4j / OrientDB exports server-side (the URL must be reachable by the
-  server).
-- the standalone ArcadeDB Importer for file pipelines with column mapping.
+- `Arcadic.Import.database/3` — `Arcadic.Import.database(conn, "https://…/data.csv.tgz")` imports
+  CSV / JSON / GraphML / Neo4j / OrientDB / ArcadeDB exports server-side. The URL is validated
+  (positive character + scheme allowlist, value-free) rather than hand-interpolated, and must be
+  reachable by the server (private/loopback hosts are blocked; use a public URL or a `file://` path).
+  Optional `with:` number/boolean settings tune the load (e.g. `with: [commitEvery: 10_000]`).
+- for an **index-deferred incremental** load, order it yourself — create the type, bulk-load the
+  rows (a `command/4` loop or one `Arcadic.transaction/3`), then create the index. A `LSM_TREE` or
+  dense `LSM_VECTOR` index retro-indexes existing rows, but an `LSM_SPARSE_VECTOR` index must be
+  created **before** the load (see [Vector search](#vector-search)); the correct ordering is
+  index-type-specific, so arcadic ships no generic index-deferral helper.
 - for batched incremental writes, wrap them in `Arcadic.transaction/3` (one commit for many
   statements) instead of auto-committing each.
 
