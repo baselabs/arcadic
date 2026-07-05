@@ -55,4 +55,37 @@ defmodule Arcadic.SchemaTest do
     stub([%{"name" => "Person", "type" => "vertex"}])
     assert [%{"name" => "Person"}] = Schema.types!(conn())
   end
+
+  @secret_type "Secret_pii_type_name_must_never_enter_the_statement"
+
+  test "properties/2 binds the type as a param (never in the statement) and un-nests to a bare list" do
+    stub([
+      %{
+        "properties" => [%{"name" => "name", "type" => "STRING", "@props" => "custom:10"}],
+        "@props" => "properties:9"
+      }
+    ])
+
+    assert {:ok, [prop]} = Schema.properties(conn(), @secret_type)
+    assert_received {:body, body}
+    assert body["command"] == "SELECT properties FROM schema:types WHERE name = :t"
+    refute body["command"] =~ @secret_type
+    assert body["params"] == %{"t" => @secret_type}
+    assert prop == %{"name" => "name", "type" => "STRING"}
+  end
+
+  test "properties/2 returns {:ok, []} for an absent (valid-shape) type" do
+    stub([])
+    assert {:ok, []} = Schema.properties(conn(), "NoSuchType")
+  end
+
+  test "properties/2 rejects a bad-shape type name value-free (no wire, no echo)" do
+    Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+    assert {:error, :invalid_identifier} = Schema.properties(conn(), "bad name!")
+    refute_received {:body, _}
+  end
+
+  test "properties!/2 raises the invalid_identifier value-free" do
+    assert_raise ArgumentError, fn -> Schema.properties!(conn(), "bad name!") end
+  end
 end

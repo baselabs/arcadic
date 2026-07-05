@@ -31,6 +31,32 @@ defmodule Arcadic.Schema do
   @spec buckets!(Conn.t()) :: [map()]
   def buckets!(%Conn{} = conn), do: bang(buckets(conn))
 
+  @doc """
+  Lists the properties of `type` (each with `name`, `type`, `default`, …), `@props`-stripped.
+  `type` is `Arcadic.Identifier`-shape-guarded (a value-free `{:error, :invalid_identifier}` on a
+  bad shape — the offending name is never echoed) AND bound as a `$param` — never interpolated.
+  Returns `{:ok, []}` when the type does not exist (or has no properties); use `types/1` to
+  distinguish absence from emptiness.
+  """
+  @spec properties(Conn.t(), String.t()) ::
+          {:ok, [map()]} | {:error, Exception.t() | :invalid_identifier}
+  def properties(%Conn{} = conn, type) do
+    with :ok <- Arcadic.Identifier.validate(type),
+         {:ok, rows} <-
+           Arcadic.query(
+             conn,
+             "SELECT properties FROM schema:types WHERE name = :t",
+             %{"t" => type},
+             language: "sql"
+           ) do
+      {:ok, unwrap_properties(rows)}
+    end
+  end
+
+  @doc "Lists the properties of `type`, returning them or raising."
+  @spec properties!(Conn.t(), String.t()) :: [map()]
+  def properties!(%Conn{} = conn, type), do: bang(properties(conn, type))
+
   # Runs a fixed schema:* SELECT (SQL-only) and deep-strips @props from every returned row.
   defp query(%Conn{} = conn, statement, params \\ %{}) do
     case Arcadic.query(conn, statement, params, language: "sql") do
@@ -51,6 +77,16 @@ defmodule Arcadic.Schema do
   defp strip_props_deep(list) when is_list(list), do: Enum.map(list, &strip_props_deep/1)
   defp strip_props_deep(other), do: other
 
+  # schema:types projects the properties column as a single WRAPPED row [%{"properties" => [...]}]
+  # (probed live). Un-nest to the bare property list and deep-strip each. Absent type → no row → [].
+  defp unwrap_properties([%{"properties" => props} | _]) when is_list(props),
+    do: Enum.map(props, &strip_props_deep/1)
+
+  defp unwrap_properties(_), do: []
+
   defp bang({:ok, rows}), do: rows
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)
+
+  defp bang({:error, reason}),
+    do: raise(ArgumentError, "schema operation failed: #{inspect(reason)}")
 end
