@@ -101,10 +101,13 @@ defmodule Arcadic.Vector do
   @fuse_opts [:fusion, :weights, :k]
 
   @doc """
-  Runs a hybrid fusion over dense neighbour subqueries. `neighbor_specs` is a list of
-  `{type, property, query_vector, k}`, each built as a validated `vector.neighbors`
+  Runs a hybrid fusion over dense neighbour subqueries. `neighbor_specs` is a non-empty
+  list of `{type, property, query_vector, k}`, each built as a validated `vector.neighbors`
   subquery with distinct indexed params. `opts`: `fusion` (`:rrf` default | `:dbsf` |
   `:linear`), `weights` (list of numbers), `k` (pos_integer).
+
+  Fused rows are ranked by ArcadeDB's fusion `score` (higher = better) rather than the
+  `distance` that `neighbors/6` returns.
   """
   @spec fuse(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -129,10 +132,12 @@ defmodule Arcadic.Vector do
 
   # --- private ---
 
-  defp build_subqueries(specs) do
+  defp build_subqueries(specs) when is_list(specs) and specs != [] do
     specs
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, [], %{}}, fn {{type, property, vec, k}, i}, {:ok, subs, params} ->
+    |> Enum.reduce_while({:ok, [], %{}}, fn {spec, i}, {:ok, subs, params} ->
+      {type, property, vec, k} = require_spec!(spec)
+
       case index_ref(type, property) do
         {:ok, ref} ->
           k = require_pos_int!(k, "k")
@@ -150,6 +155,20 @@ defmodule Arcadic.Vector do
     end
   end
 
+  defp build_subqueries(_specs) do
+    raise ArgumentError,
+          "neighbor_specs must be a non-empty list of {type, property, query_vector, k} tuples"
+  end
+
+  defp require_spec!({_type, _property, _vec, _k} = spec), do: spec
+
+  defp require_spec!(_spec),
+    do:
+      raise(
+        ArgumentError,
+        "each neighbor_spec must be a {type, property, query_vector, k} tuple"
+      )
+
   # fusion + optional weights (validated numbers) + k (validated int), interpolated as
   # developer-supplied fusion config (not caller data).
   defp fuse_opts(fusion, opts) do
@@ -164,6 +183,7 @@ defmodule Arcadic.Vector do
         acc
 
       {:ok, weights} ->
+        weights = require_list!(weights, "weights")
         acc <> ", weights:[#{Enum.map_join(weights, ", ", &require_number!(&1, "weights"))}]"
     end
   end

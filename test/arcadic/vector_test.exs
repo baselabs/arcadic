@@ -70,17 +70,23 @@ defmodule Arcadic.VectorTest do
     end
 
     test "rejects bad enum / non-integer values value-free (no value echoed)" do
-      assert_raise ArgumentError, ~r/similarity/, fn ->
-        Vector.create_dense_index(conn(), "Doc", "embedding", 3, similarity: :manhattan)
-      end
+      # bind the error the OFFENDING value flowed through, so the refute can go red
+      # if that validator ever echoes the value (the redaction Critical Rule, D9).
+      sim_err =
+        assert_raise ArgumentError, fn ->
+          Vector.create_dense_index(conn(), "Doc", "embedding", 3, similarity: :manhattan)
+        end
 
-      err =
+      assert sim_err.message =~ "similarity"
+      refute sim_err.message =~ "manhattan"
+
+      dim_err =
         assert_raise ArgumentError, fn ->
           Vector.create_dense_index(conn(), "Doc", "embedding", 0)
         end
 
-      assert err.message =~ "dimensions"
-      refute err.message =~ "manhattan"
+      assert dim_err.message =~ "dimensions"
+      refute dim_err.message =~ "0"
     end
 
     test "create_dense_index! raises on a server error" do
@@ -173,6 +179,22 @@ defmodule Arcadic.VectorTest do
         Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, ef_serch: 100)
       end
     end
+
+    test "builds the opts object with only max_distance when ef_search omitted" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} = Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, max_distance: 0.3)
+
+      assert_received {:cmd, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.neighbors('Doc[embedding]', :vec, :k, {maxDistance: :md}))"
+
+      assert body["params"] == %{"vec" => [1.0], "k" => 3, "md" => 0.3}
+    end
   end
 
   describe "fuse/3" do
@@ -222,6 +244,57 @@ defmodule Arcadic.VectorTest do
                  {"Doc", "embedding", [1.0], 2},
                  {"Doc]", "embedding", [1.0], 2}
                ])
+    end
+
+    test "rejects non-list weights value-free (no value echoed)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}], weights: "SEKRIT")
+        end
+
+      assert err.message =~ "weights"
+      refute err.message =~ "SEKRIT"
+    end
+
+    test "rejects a non-list, empty, or malformed neighbor_specs value-free" do
+      # non-list specs must not leak the value through an uncontrolled Enumerable crash
+      nonlist = assert_raise ArgumentError, fn -> Vector.fuse(conn(), "SEKRIT_SPECS") end
+      assert nonlist.message =~ "neighbor_specs"
+      refute nonlist.message =~ "SEKRIT_SPECS"
+
+      # empty specs must reject rather than emit malformed `vector.fuse(, {...})`
+      assert_raise ArgumentError, ~r/neighbor_specs/, fn -> Vector.fuse(conn(), []) end
+
+      # a malformed spec tuple must raise a controlled value-free error, not FunctionClauseError
+      bad =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{"Doc", "embedding", "SEKRIT_ELEM"}])
+        end
+
+      assert bad.message =~ "neighbor_spec"
+      refute bad.message =~ "SEKRIT_ELEM"
+    end
+
+    test "composes weights and k fusion opts into the fusion object (params-only for caller vectors)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0], 3}],
+                 weights: [0.7, 0.3],
+                 k: 10
+               )
+
+      assert_received {:cmd, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.fuse(" <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "{fusion:'RRF', weights:[0.7, 0.3], k:10}))"
+
+      assert body["params"] == %{"vec0" => [1.0, 0.0], "k0" => 3}
     end
   end
 end
