@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.Vector` — dense vector search: `create_dense_index/5`, `drop_dense_index/3`,
+  `neighbors/6`, `fuse/3` (+ `!` variants) over ArcadeDB `LSM_VECTOR` indexes. Tenant-blind;
+  caller values bind as params; index refs identifier-validated; metadata keys/values
+  allowlisted. Sparse retrieval and the Ash-native surface are named non-goals.
+
 ## [0.1.0] - 2026-07-04
 
 ### Added
