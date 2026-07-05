@@ -16,7 +16,7 @@ try do
 
   # 1) INGEST — one-shot bulk load, wall-clock timed (not a Benchee repeatable op).
   {load_us, {nodes, edges}} = :timer.tc(fn -> Graph.load(conn, cfg) end)
-  Graph.report_ingest(load_us, nodes, edges)
+  Graph.report_ingest(cfg.ingest, load_us, nodes, edges)
 
   seeds = Graph.seed_uids(cfg)
   rids = Graph.sample_rids(conn, cfg)

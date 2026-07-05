@@ -20,6 +20,7 @@ Knobs (env vars):
 | `ARCADIC_BENCH_NODES` | `5000` | Person vertices |
 | `ARCADIC_BENCH_DEGREE` | `10` | avg out-degree (edges = nodes × degree) |
 | `ARCADIC_BENCH_MAX_DEPTH` | `4` | max k-hop traversal depth |
+| `ARCADIC_BENCH_INGEST` | `rid` | `rid` = @rid-addressed bulk write; `subquery` = naive uid-lookup `CREATE EDGE` |
 | `ARCADIC_BENCH_BATCH` | `500` | statements per `sqlscript` ingest request |
 | `ARCADIC_BENCH_SEEDS` | `50` | random seed nodes the timed queries rotate over |
 | `ARCADIC_BENCH_PARALLEL` | `1` | concurrent Benchee workers per job (the "load" dimension) |
@@ -31,8 +32,10 @@ pre-existing database.
 
 ## What it measures
 
-1. **Ingest throughput** — wall-clock to bulk-load N nodes + N×degree edges via batched
-   `sqlscript`; reports nodes/sec + edges/sec.
+1. **Ingest throughput** — wall-clock to load N nodes + N×degree edges; reports nodes/sec +
+   edges/sec. `rid` mode (default) captures each vertex's `@rid` and creates edges by identity;
+   `subquery` mode is the naive uid-lookup path. Both are per-statement *client writes*, not a
+   bulk-load — for real bulk loading see [Bulk loading](RESULTS.md#bulk-loading) in RESULTS.md.
 2. **k-hop traversal latency by depth** — `SELECT count(*) FROM (TRAVERSE out('KNOWS') …
    MAXDEPTH d)` from random seeds, depths 1..max; Benchee p50/p95/p99. Plus an average
    **fan-out per depth** shape metric.

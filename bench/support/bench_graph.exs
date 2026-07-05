@@ -23,6 +23,9 @@ defmodule Arcadic.Bench.Graph do
     %{
       url: System.get_env("ARCADIC_BENCH_URL", "http://127.0.0.1:2480"),
       password: System.get_env("ARCADIC_BENCH_PASSWORD") || raise("set ARCADIC_BENCH_PASSWORD"),
+      # "rid" = RID-addressed (multi-row INSERT capturing @rid, edges by @rid — no per-edge
+      # index lookup). "subquery" = the naive CREATE EDGE FROM (SELECT WHERE uid=..) path.
+      ingest: System.get_env("ARCADIC_BENCH_INGEST", "rid"),
       nodes: env_int("ARCADIC_BENCH_NODES", 5_000),
       degree: env_int("ARCADIC_BENCH_DEGREE", 10),
       max_depth: env_int("ARCADIC_BENCH_MAX_DEPTH", 4),
@@ -64,29 +67,59 @@ defmodule Arcadic.Bench.Graph do
   @doc "Loads `nodes` Person vertices + `nodes * degree` random KNOWS edges. Returns {node_count, edge_count}."
   def load(conn, cfg) do
     :rand.seed(:exsss, {cfg.seed, cfg.seed, cfg.seed})
-    load_persons(conn, cfg)
-    edge_count = load_edges(conn, cfg)
-    {cfg.nodes, edge_count}
+
+    case cfg.ingest do
+      "subquery" -> load_subquery(conn, cfg)
+      _ -> load_fast(conn, cfg)
+    end
   end
 
-  defp load_persons(conn, cfg) do
-    0..(cfg.nodes - 1)
+  # random edge list, deterministic under the seeded RNG
+  defp edge_list(cfg) do
+    for uid <- 0..(cfg.nodes - 1), _ <- 1..cfg.degree, do: {uid, :rand.uniform(cfg.nodes) - 1}
+  end
+
+  # --- RID-addressed fast path: multi-row INSERT captures @rid; edges reference @rid directly
+  #     (no per-edge index lookup). This isolates the engine's write speed from the client's
+  #     lookup overhead — the representative in-driver bulk-write number.
+  defp load_fast(conn, cfg) do
+    rid_map = insert_persons_fast(conn, cfg)
+    edges = edge_list(cfg)
+
+    edges
     |> Enum.chunk_every(cfg.batch)
     |> Enum.each(fn chunk ->
       script =
-        Enum.map_join(chunk, ";\n", fn uid ->
-          "INSERT INTO Person SET uid = #{uid}, name = 'p_#{uid}'"
+        Enum.map_join(chunk, ";\n", fn {a, b} ->
+          "CREATE EDGE KNOWS FROM #{Map.fetch!(rid_map, a)} TO #{Map.fetch!(rid_map, b)}"
         end)
 
       Arcadic.command!(conn, script, %{}, language: "sqlscript")
     end)
+
+    {cfg.nodes, length(edges)}
   end
 
-  defp load_edges(conn, cfg) do
-    edges =
-      for uid <- 0..(cfg.nodes - 1), _ <- 1..cfg.degree do
-        {uid, :rand.uniform(cfg.nodes) - 1}
-      end
+  defp insert_persons_fast(conn, cfg) do
+    0..(cfg.nodes - 1)
+    |> Enum.chunk_every(cfg.batch)
+    |> Enum.reduce(%{}, fn chunk, acc ->
+      values = Enum.map_join(chunk, ",", fn uid -> "(#{uid},'p_#{uid}')" end)
+
+      {:ok, rows} =
+        Arcadic.command(conn, "INSERT INTO Person (uid, name) VALUES #{values}", %{},
+          language: "sql"
+        )
+
+      Enum.into(rows, acc, fn r -> {r["uid"], r["@rid"]} end)
+    end)
+  end
+
+  # --- naive path: CREATE EDGE via uid subquery (2 indexed lookups per edge). Kept for the
+  #     comparison in RESULTS.md; the difference is a *client-pattern* effect, not the engine.
+  defp load_subquery(conn, cfg) do
+    load_persons_sub(conn, cfg)
+    edges = edge_list(cfg)
 
     edges
     |> Enum.chunk_every(cfg.batch)
@@ -100,7 +133,20 @@ defmodule Arcadic.Bench.Graph do
       Arcadic.command!(conn, script, %{}, language: "sqlscript")
     end)
 
-    length(edges)
+    {cfg.nodes, length(edges)}
+  end
+
+  defp load_persons_sub(conn, cfg) do
+    0..(cfg.nodes - 1)
+    |> Enum.chunk_every(cfg.batch)
+    |> Enum.each(fn chunk ->
+      script =
+        Enum.map_join(chunk, ";\n", fn uid ->
+          "INSERT INTO Person SET uid = #{uid}, name = 'p_#{uid}'"
+        end)
+
+      Arcadic.command!(conn, script, %{}, language: "sqlscript")
+    end)
   end
 
   # --- the timed queries ---
@@ -164,21 +210,31 @@ defmodule Arcadic.Bench.Graph do
      Endpoint   : #{cfg.url}   (HTTP, arcadic driver)
      Throwaway  : #{db}
      Dataset    : #{cfg.nodes} Person, ~#{cfg.nodes * cfg.degree} KNOWS (degree #{cfg.degree}), rng-seed #{cfg.seed}
+     Ingest     : #{cfg.ingest}   (rid = @rid-addressed | subquery = uid-lookup CREATE EDGE)
      Depths     : 1..#{cfg.max_depth}   Seeds: #{cfg.seeds}   Parallel: #{cfg.parallel}   Time/job: #{cfg.time}s
      Host       : <RECORD YOUR HARDWARE HERE> -- single-node; engine+round-trip, not a comparison
     ==============================================================================
     """)
   end
 
-  def report_ingest(load_us, nodes, edges) do
+  def report_ingest(mode, load_us, nodes, edges) do
     secs = load_us / 1_000_000
 
+    note =
+      case mode do
+        "subquery" ->
+          "naive CREATE EDGE via uid subquery (2 index lookups/edge) -- client pattern, not engine"
+
+        _ ->
+          "@rid-addressed bulk write over batched HTTP; the representative in-driver ingest number"
+      end
+
     IO.puts("""
-     INGEST (batched sqlscript over HTTP)
+     INGEST (#{mode})
        total          : #{Float.round(secs, 3)} s  for #{nodes} nodes + #{edges} edges
        nodes/sec      : #{round(nodes / secs)}
        edges/sec      : #{round(edges / secs)}
-       (folds in batched-HTTP round-trips + server write; not a pure engine ingest number)
+       (#{note})
     """)
   end
 
