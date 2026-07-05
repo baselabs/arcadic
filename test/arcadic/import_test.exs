@@ -82,6 +82,24 @@ defmodule Arcadic.ImportTest do
     assert_raise ArgumentError, fn -> Import.database(conn(), long) end
   end
 
+  test "database/3 rejects an unknown top-level opt key value-free (no wire, no value echo)" do
+    no_wire()
+
+    err =
+      assert_raise ArgumentError, fn ->
+        Import.database(conn(), "https://host/x", wtih: [secretSetting: "SENTINEL_VALUE_9f3a"])
+      end
+
+    refute err.message =~ "SENTINEL_VALUE_9f3a"
+    refute_received {:body, _}
+  end
+
+  test "database/3 rejects non-keyword opts value-free (no wire)" do
+    no_wire()
+    assert_raise ArgumentError, fn -> Import.database(conn(), "https://host/x", %{with: []}) end
+    refute_received {:body, _}
+  end
+
   test "with: rejects a string value and a bad-shape name value-free" do
     no_wire()
 
