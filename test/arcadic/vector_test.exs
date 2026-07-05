@@ -174,4 +174,54 @@ defmodule Arcadic.VectorTest do
       end
     end
   end
+
+  describe "fuse/3" do
+    test "composes N validated neighbour subqueries with distinct indexed params + fusion strategy" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => [%{"@rid" => "#1:0"}]})
+      end)
+
+      assert {:ok, [%{"@rid" => "#1:0"}]} =
+               Vector.fuse(
+                 conn(),
+                 [{"Doc", "embedding", [1.0, 0.0], 3}, {"Doc", "embedding", [0.0, 1.0], 3}],
+                 fusion: :rrf
+               )
+
+      assert_received {:req, body}
+      assert body["language"] == "sql"
+
+      assert body["command"] ==
+               "SELECT expand(vector.fuse(" <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec1, :k1))), " <>
+                 "{fusion:'RRF'}))"
+
+      assert body["params"] == %{"vec0" => [1.0, 0.0], "k0" => 3, "vec1" => [0.0, 1.0], "k1" => 3}
+    end
+
+    test "defaults fusion to RRF and rejects a bad fusion strategy value-free" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} = Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}])
+      assert_received {:cmd, cmd}
+      assert cmd =~ "{fusion:'RRF'}"
+
+      assert_raise ArgumentError, ~r/fusion/, fn ->
+        Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}], fusion: :magic)
+      end
+    end
+
+    test "rejects a bad identifier in any spec value-free" do
+      assert {:error, :invalid_identifier} =
+               Vector.fuse(conn(), [
+                 {"Doc", "embedding", [1.0], 2},
+                 {"Doc]", "embedding", [1.0], 2}
+               ])
+    end
+  end
 end

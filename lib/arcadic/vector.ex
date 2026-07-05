@@ -97,7 +97,83 @@ defmodule Arcadic.Vector do
   def neighbors!(%Conn{} = conn, type, property, query_vector, k, opts \\ []),
     do: bang(neighbors(conn, type, property, query_vector, k, opts))
 
+  @fusions %{rrf: "RRF", dbsf: "DBSF", linear: "LINEAR"}
+  @fuse_opts [:fusion, :weights, :k]
+
+  @doc """
+  Runs a hybrid fusion over dense neighbour subqueries. `neighbor_specs` is a list of
+  `{type, property, query_vector, k}`, each built as a validated `vector.neighbors`
+  subquery with distinct indexed params. `opts`: `fusion` (`:rrf` default | `:dbsf` |
+  `:linear`), `weights` (list of numbers), `k` (pos_integer).
+  """
+  @spec fuse(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) ::
+          {:ok, [map()]} | {:error, atom() | Exception.t()}
+  def fuse(%Conn{} = conn, neighbor_specs, opts \\ []) do
+    validate_opt_keys!(opts, @fuse_opts)
+    fusion = enum!(@fusions, Keyword.get(opts, :fusion, :rrf), "fusion")
+
+    with {:ok, subqueries, params} <- build_subqueries(neighbor_specs) do
+      sql =
+        "SELECT expand(vector.fuse(#{Enum.join(subqueries, ", ")}, {#{fuse_opts(fusion, opts)}}))"
+
+      Arcadic.query(conn, sql, params, language: "sql")
+    end
+  end
+
+  @doc "Runs a hybrid fusion, returning rows or raising."
+  @spec fuse!(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) :: [
+          map()
+        ]
+  def fuse!(%Conn{} = conn, neighbor_specs, opts \\ []),
+    do: bang(fuse(conn, neighbor_specs, opts))
+
   # --- private ---
+
+  defp build_subqueries(specs) do
+    specs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, [], %{}}, fn {{type, property, vec, k}, i}, {:ok, subs, params} ->
+      case index_ref(type, property) do
+        {:ok, ref} ->
+          k = require_pos_int!(k, "k")
+          vec = require_list!(vec, "query_vector")
+          sub = "(SELECT expand(vector.neighbors('#{ref}', :vec#{i}, :k#{i})))"
+          {:cont, {:ok, [sub | subs], Map.merge(params, %{"vec#{i}" => vec, "k#{i}" => k})}}
+
+        {:error, :invalid_identifier} = err ->
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, subs, params} -> {:ok, Enum.reverse(subs), params}
+      {:error, _} = err -> err
+    end
+  end
+
+  # fusion + optional weights (validated numbers) + k (validated int), interpolated as
+  # developer-supplied fusion config (not caller data).
+  defp fuse_opts(fusion, opts) do
+    "fusion:'#{fusion}'"
+    |> maybe_weights(opts)
+    |> maybe_fuse_k(opts)
+  end
+
+  defp maybe_weights(acc, opts) do
+    case Keyword.fetch(opts, :weights) do
+      :error ->
+        acc
+
+      {:ok, weights} ->
+        acc <> ", weights:[#{Enum.map_join(weights, ", ", &require_number!(&1, "weights"))}]"
+    end
+  end
+
+  defp maybe_fuse_k(acc, opts) do
+    case Keyword.fetch(opts, :k) do
+      :error -> acc
+      {:ok, k} -> acc <> ", k:#{require_pos_int!(k, "k")}"
+    end
+  end
 
   # Builds the ", {efSearch: :ef, maxDistance: :md}" opts object + its params (only
   # provided keys). Values bind as params — never interpolated (probed).
