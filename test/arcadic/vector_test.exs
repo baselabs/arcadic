@@ -506,6 +506,82 @@ defmodule Arcadic.VectorTest do
     end
   end
 
+  describe "sparse_neighbors/8" do
+    test "binds tokens/weights/k as params and composes sparse opts (never interpolated)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => [%{"@rid" => "#1:0", "score" => 1.5, "@props" => "x"}]})
+      end)
+
+      assert {:ok, [%{"@rid" => "#1:0", "score" => 1.5}]} =
+               Vector.sparse_neighbors(
+                 conn(),
+                 "Doc",
+                 "tokens",
+                 "weights",
+                 [1, 3, 5],
+                 [0.9, 0.5, 0.2],
+                 10,
+                 filter: ["#1:0"],
+                 group_by: "category",
+                 group_size: 1
+               )
+
+      assert_received {:req, body}
+      assert body["language"] == "sql"
+
+      assert body["command"] ==
+               "SELECT expand(vector.sparseNeighbors('Doc[tokens,weights]', :toks, :wts, :k, " <>
+                 "{filter: :rids, groupBy: :gb, groupSize: :gs}))"
+
+      assert body["params"] == %{
+               "toks" => [1, 3, 5],
+               "wts" => [0.9, 0.5, 0.2],
+               "k" => 10,
+               "rids" => ["#1:0"],
+               "gb" => "category",
+               "gs" => 1
+             }
+
+      refute body["command"] =~ "#1:0"
+      refute body["command"] =~ "category"
+    end
+
+    test "omits the opts object when no opts given (bare sparse query, default shape)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.sparse_neighbors(conn(), "Doc", "tokens", "weights", [1, 2], [0.5, 0.5], 5)
+
+      assert_received {:cmd, cmd}
+
+      assert cmd ==
+               "SELECT expand(vector.sparseNeighbors('Doc[tokens,weights]', :toks, :wts, :k))"
+    end
+
+    test "rejects ef_search/max_distance client-side value-free (sparse allowlist)" do
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        Vector.sparse_neighbors(conn(), "Doc", "tokens", "weights", [1], [0.1], 5, ef_search: 64)
+      end
+    end
+
+    test "validates identifiers and value-free-rejects bad k / non-list query vectors" do
+      assert {:error, :invalid_identifier} =
+               Vector.sparse_neighbors(conn(), "Doc]", "tokens", "weights", [1], [0.1], 5)
+
+      assert_raise ArgumentError, ~r/k must be a positive integer/, fn ->
+        Vector.sparse_neighbors(conn(), "Doc", "tokens", "weights", [1], [0.1], 0)
+      end
+
+      assert_raise ArgumentError, ~r/query_tokens/, fn ->
+        Vector.sparse_neighbors(conn(), "Doc", "tokens", "weights", "nope", [0.1], 5)
+      end
+    end
+  end
+
   describe "create_sparse_index/5 + drop_sparse_index/4" do
     test "bare DDL when no opts" do
       stub_sparse_ddl()

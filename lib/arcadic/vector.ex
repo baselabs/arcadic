@@ -172,6 +172,86 @@ defmodule Arcadic.Vector do
   def neighbors!(%Conn{} = conn, type, property, query_vector, k, opts \\ []),
     do: bang(neighbors(conn, type, property, query_vector, k, opts))
 
+  @sparse_query_opts [:filter, :group_by, :group_size]
+
+  @doc """
+  Runs a sparse (learned-sparse / BM25-style) nearest-neighbour search over an
+  `LSM_SPARSE_VECTOR` index, returning rows ranked by a top-level **`score`** (higher = better;
+  there is no `distance`). `query_tokens`/`query_weights`/`k` bind as params. `opts`: `filter`
+  (candidate RID set), `group_by`, `group_size` — `ef_search`/`max_distance` are not accepted
+  (rejected client-side value-free). See `create_sparse_index/5` for the index coverage caveat.
+  """
+  @spec sparse_neighbors(
+          Conn.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          [integer()],
+          [number()],
+          pos_integer(),
+          keyword()
+        ) :: {:ok, [map()]} | {:error, atom() | Exception.t()}
+  def sparse_neighbors(
+        %Conn{} = conn,
+        type,
+        tokens_property,
+        weights_property,
+        query_tokens,
+        query_weights,
+        k,
+        opts \\ []
+      ) do
+    with {:ok, ref} <- sparse_index_ref(type, tokens_property, weights_property) do
+      k = require_pos_int!(k, "k")
+      query_tokens = require_list!(query_tokens, "query_tokens")
+      query_weights = require_list!(query_weights, "query_weights")
+      {opt_obj, opt_params} = build_query_opts(opts, @sparse_query_opts)
+      sql = "SELECT expand(vector.sparseNeighbors('#{ref}', :toks, :wts, :k#{opt_obj}))"
+
+      Arcadic.query(
+        conn,
+        sql,
+        Map.merge(%{"toks" => query_tokens, "wts" => query_weights, "k" => k}, opt_params),
+        language: "sql"
+      )
+    end
+  end
+
+  @doc "Runs a sparse nearest-neighbour search, returning rows or raising."
+  @spec sparse_neighbors!(
+          Conn.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          [integer()],
+          [number()],
+          pos_integer(),
+          keyword()
+        ) :: [map()]
+  def sparse_neighbors!(
+        %Conn{} = conn,
+        type,
+        tokens_property,
+        weights_property,
+        query_tokens,
+        query_weights,
+        k,
+        opts \\ []
+      ),
+      do:
+        bang(
+          sparse_neighbors(
+            conn,
+            type,
+            tokens_property,
+            weights_property,
+            query_tokens,
+            query_weights,
+            k,
+            opts
+          )
+        )
+
   @fusions %{rrf: "RRF", dbsf: "DBSF", linear: "LINEAR"}
   @fuse_opts [:fusion, :weights, :k, :filter, :group_by, :group_size]
 
