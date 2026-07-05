@@ -67,7 +67,7 @@ defmodule Arcadic.Vector do
   def drop_dense_index!(%Conn{} = conn, type, property),
     do: bang(drop_dense_index(conn, type, property))
 
-  @query_opts [:ef_search, :max_distance]
+  @query_opts [:ef_search, :max_distance, :filter]
 
   @doc """
   Runs a dense nearest-neighbour search, returning rows ranked closest-first (each
@@ -87,7 +87,7 @@ defmodule Arcadic.Vector do
     with {:ok, ref} <- index_ref(type, property) do
       k = require_pos_int!(k, "k")
       query_vector = require_list!(query_vector, "query_vector")
-      {opt_obj, opt_params} = build_query_opts(opts)
+      {opt_obj, opt_params} = build_query_opts(opts, @query_opts)
       sql = "SELECT expand(vector.neighbors('#{ref}', :vec, :k#{opt_obj}))"
 
       Arcadic.query(conn, sql, Map.merge(%{"vec" => query_vector, "k" => k}, opt_params),
@@ -205,13 +205,16 @@ defmodule Arcadic.Vector do
     end
   end
 
-  # Builds the ", {efSearch: :ef, maxDistance: :md}" opts object + its params (only
-  # provided keys). Values bind as params — never interpolated (probed).
-  defp build_query_opts(opts) do
-    validate_opt_keys!(opts, @query_opts)
+  # Builds the ", {efSearch: :ef, …}" opts object + its params (only provided keys, in
+  # `allowed` order). Values bind as params — never interpolated (probed). `allowed` is the
+  # per-function allowlist passed by each caller (dense vs sparse), so this helper is reusable:
+  # `neighbors/6` calls it today; `sparse_neighbors/8` (a later task) will reuse it with its own
+  # allowlist. (`fuse/3` builds its own opts via `fuse_opts/2` and does not route through here.)
+  defp build_query_opts(opts, allowed) do
+    validate_opt_keys!(opts, allowed)
 
     {pairs, params} =
-      Enum.reduce(@query_opts, {[], %{}}, fn key, {pairs, params} ->
+      Enum.reduce(allowed, {[], %{}}, fn key, {pairs, params} ->
         case Keyword.fetch(opts, key) do
           :error -> {pairs, params}
           {:ok, value} -> add_query_opt(key, value, pairs, params)
@@ -232,11 +235,39 @@ defmodule Arcadic.Vector do
       {["maxDistance: :md" | pairs],
        Map.put(params, "md", require_number!(value, "max_distance"))}
 
+  defp add_query_opt(:filter, value, pairs, params),
+    do: {["filter: :rids" | pairs], Map.put(params, "rids", validate_rids!(value))}
+
   defp require_list!(v, _label) when is_list(v), do: v
   defp require_list!(_v, label), do: raise(ArgumentError, "#{label} must be a list of numbers")
 
   defp require_number!(v, _label) when is_number(v), do: v
   defp require_number!(_v, label), do: raise(ArgumentError, "#{label} must be a number")
+
+  @rid_pattern ~r/\A#\d+:\d+\z/
+
+  # A candidate-set filter must be a NON-EMPTY list of #<bucket>:<pos> RID strings. An empty
+  # list is silently ignored by the server (returns everything) — fail loud. Value-free: the
+  # offending RID is never echoed (Rule 3). Binds as a param; NOT an injection defense.
+  defp validate_rids!([_ | _] = rids) do
+    Enum.each(rids, fn
+      rid when is_binary(rid) ->
+        unless Regex.match?(@rid_pattern, rid) do
+          raise ArgumentError, "filter must be a list of #<bucket>:<pos> RID strings"
+        end
+
+      _ ->
+        raise ArgumentError, "filter must be a list of #<bucket>:<pos> RID strings"
+    end)
+
+    rids
+  end
+
+  defp validate_rids!([]),
+    do: raise(ArgumentError, "filter must be a non-empty list of RIDs")
+
+  defp validate_rids!(_),
+    do: raise(ArgumentError, "filter must be a non-empty list of RIDs")
 
   defp build_metadata(dimensions, opts) do
     validate_opt_keys!(opts, @index_opts)

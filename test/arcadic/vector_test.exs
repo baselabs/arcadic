@@ -218,6 +218,45 @@ defmodule Arcadic.VectorTest do
 
       assert body["params"] == %{"vec" => [1.0], "k" => 3, "md" => 0.3}
     end
+
+    test "filter binds a non-empty RID list as a param and restricts (never interpolated)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.neighbors(conn(), "Doc", "embedding", [1.0, 0.0, 0.0], 5,
+                 filter: ["#1:0", "#1:2"]
+               )
+
+      assert_received {:req, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.neighbors('Doc[embedding]', :vec, :k, {filter: :rids}))"
+
+      assert body["params"] == %{"vec" => [1.0, 0.0, 0.0], "k" => 5, "rids" => ["#1:0", "#1:2"]}
+      refute body["command"] =~ "#1:0"
+    end
+
+    test "empty filter list raises value-free (the server silently ignores it = bypass)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, filter: [])
+        end
+
+      assert err.message =~ "non-empty"
+    end
+
+    test "malformed RID in filter raises value-free (no RID echoed)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, filter: ["not-a-rid"])
+        end
+
+      assert err.message =~ "RID"
+      refute err.message =~ "not-a-rid"
+    end
   end
 
   describe "fuse/3" do
