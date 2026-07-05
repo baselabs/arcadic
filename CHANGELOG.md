@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-05
+
 ### Added
 
-- `Arcadic.Vector` — dense vector search: `create_dense_index/5`, `drop_dense_index/3`,
-  `neighbors/6`, `fuse/3` (+ `!` variants) over ArcadeDB `LSM_VECTOR` indexes. Tenant-blind;
-  caller values bind as params; index refs identifier-validated; metadata keys/values and
-  query/fusion option inputs are allowlisted and validated value-free. Sparse retrieval and
-  the Ash-native surface are named non-goals.
+- `Arcadic.Vector` — dense vector search over ArcadeDB `LSM_VECTOR` indexes:
+  `create_dense_index/5` (+ `!`), `drop_dense_index/3` (+ `!`), `neighbors/6` (+ `!`),
+  `fuse/3` (+ `!`), and `index_ref/2`. Tenant-blind; the query vector, `k`, `ef_search`,
+  and `max_distance` bind as params; index refs are identifier-validated; metadata
+  keys/values and query/fusion option inputs are allowlisted and validated value-free
+  (`similarity`, `encoding`, `quantization`, `fusion` against their ArcadeDB enums).
+  `neighbors/6` rows carry a `distance` whose scale depends on the index `similarity`
+  (COSINE `0..1` ascending; DOT_PRODUCT negative); `fuse/3` rows are ranked by `score`.
+  Sparse retrieval and the Ash-native surface are named non-goals.
 
 ## [0.1.0] - 2026-07-04
 

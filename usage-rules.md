@@ -25,6 +25,12 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `Arcadic.MigrationRegistry` (`use` + `migrations [...]`), `Arcadic.Migrator`
   (`migrate/2`, `status/2`, `rollback/3`, `reset/2`, `pending_migrations/2`),
   tracking applied versions in `_arcadic_migrations`.
+- **`Arcadic.Vector`** — dense vector search over ArcadeDB `LSM_VECTOR`:
+  `create_dense_index/5` (+ `!`), `drop_dense_index/3` (+ `!`), `neighbors/6` (+ `!`),
+  `fuse/3` (+ `!`), `index_ref/2`. Tenant-blind; query vector / `k` / `ef_search` /
+  `max_distance` bind as params, index refs are identifier-validated, and metadata /
+  query / fusion option inputs are allowlisted and validated value-free. `distance`
+  scale is similarity-dependent; `fuse/3` rows rank by `score`.
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.

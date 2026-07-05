@@ -26,8 +26,10 @@ ArcadeDB").
   on normal return, rolls back and reraises on exception (postgrex semantics).
 - **Pluggable transport** — HTTP (Req/Finch) by default, with an optional Bolt v4
   transport for the query hot path and lazy result streaming.
-- **Batteries included** — server admin, a migration runner, allowlist-validated
-  identifiers, and value-free telemetry spans.
+- **Vector search** — dense `LSM_VECTOR` index DDL plus nearest-neighbour and
+  hybrid-fusion query builders (`Arcadic.Vector`), params-only and value-free.
+- **Batteries included** — server admin, a migration runner, vector search,
+  allowlist-validated identifiers, and value-free telemetry spans.
 
 ## Quickstart
 
@@ -110,6 +112,35 @@ end
 
 {:ok, _count} = Arcadic.Migrator.migrate(conn, MyApp.Migrations)
 ```
+
+## Vector search
+
+`Arcadic.Vector` builds ArcadeDB dense-vector index DDL and nearest-neighbour /
+hybrid-fusion queries. Create an `LSM_VECTOR` index (idempotent — `IF NOT EXISTS`),
+then search. The query vector, `k`, and options bind as parameters; the index
+reference is identifier-validated before it reaches the statement.
+
+```elixir
+:ok =
+  Arcadic.Vector.create_dense_index(conn, "Doc", "embedding", 1536, similarity: :cosine)
+
+{:ok, rows} =
+  Arcadic.Vector.neighbors(conn, "Doc", "embedding", query_vector, 10, max_distance: 0.3)
+
+# hybrid fusion over multiple dense subqueries
+{:ok, fused} =
+  Arcadic.Vector.fuse(
+    conn,
+    [{"Doc", "embedding", dense_a, 20}, {"Doc", "embedding", dense_b, 20}],
+    fusion: :rrf
+  )
+```
+
+`neighbors/6` rows carry a `distance` whose scale depends on the index `similarity`
+(COSINE `0..1` ascending, so smaller is nearer; DOT_PRODUCT is negative, so a small
+positive `max_distance` filters nothing — choose thresholds per similarity). `fuse/3`
+rows are ranked by `score` (higher is better). Sparse retrieval and the Ash-native
+data-layer surface are non-goals.
 
 ## Bolt transport (optional)
 
