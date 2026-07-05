@@ -30,7 +30,7 @@ defmodule Arcadic.Import do
   index-deferral helper because the correct ordering is index-type-specific and arcadic is
   tenant-blind.
   """
-  alias Arcadic.Conn
+  alias Arcadic.{Conn, Opts}
 
   @schemes ~w(http https file)
   @url_pattern ~r/\A[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+\z/
@@ -49,7 +49,7 @@ defmodule Arcadic.Import do
   @spec database(Conn.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, Exception.t()}
   def database(%Conn{} = conn, url, opts \\ []) do
     validate_url!(url)
-    validate_opt_keys!(opts, [:with])
+    Opts.validate_keys!(opts, [:with])
     with_clause = build_with(Keyword.get(opts, :with, []))
     Arcadic.command(conn, "IMPORT DATABASE '#{url}'#{with_clause}", %{}, language: "sql")
   end
@@ -57,25 +57,6 @@ defmodule Arcadic.Import do
   @doc "Imports `url`, returning the rows or raising."
   @spec database!(Conn.t(), String.t(), keyword()) :: [map()]
   def database!(%Conn{} = conn, url, opts \\ []), do: bang(database(conn, url, opts))
-
-  # Guard opts BEFORE reading a key: Keyword.keyword?/1 first (Keyword.get/Keyword.keys on a
-  # non-keyword raises a message that ECHOES the offending term — a Rule-3 leak); then reject
-  # unknown keys value-free so a misspelled option (e.g. `wtih:`) fails loud instead of being
-  # silently dropped (fail-open). Mirrors `Arcadic.Schema`/`Arcadic.Vector`; bad KEYS are option
-  # names, never caller values.
-  defp validate_opt_keys!(opts, allowed) do
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError, "opts must be a keyword list"
-    end
-
-    case Keyword.keys(opts) -- allowed do
-      [] ->
-        :ok
-
-      bad ->
-        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
-    end
-  end
 
   # --- URL validation: positive allowlist, value-free, fail-closed before any wire call ---
 

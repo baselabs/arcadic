@@ -12,7 +12,7 @@ defmodule Arcadic.Vector do
   validated against integer/allowlist checks before interpolation. Failures carry the
   invalid SHAPE only, never the offending value (AGENTS.md Critical Rule 3).
   """
-  alias Arcadic.{Conn, Identifier}
+  alias Arcadic.{Conn, Identifier, Opts}
 
   @doc "Builds the ArcadeDB index reference `\"Type[property]\"`, validating both identifiers."
   @spec index_ref(String.t(), String.t()) :: {:ok, String.t()} | {:error, :invalid_identifier}
@@ -275,7 +275,7 @@ defmodule Arcadic.Vector do
   @spec fuse(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
   def fuse(%Conn{} = conn, neighbor_specs, opts \\ []) do
-    validate_opt_keys!(opts, @fuse_opts)
+    Opts.validate_keys!(opts, @fuse_opts)
     fusion = enum!(@fusions, Keyword.get(opts, :fusion, :rrf), "fusion")
     filter = fuse_filter!(opts)
     {group_frag, group_params} = fuse_group_opts(opts)
@@ -400,7 +400,7 @@ defmodule Arcadic.Vector do
   # `neighbors/6` and `sparse_neighbors/8` both route through it with their own allowlists.
   # (`fuse/3` builds its own opts via `fuse_opts/2` and does not route through here.)
   defp build_query_opts(opts, allowed) do
-    validate_opt_keys!(opts, allowed)
+    Opts.validate_keys!(opts, allowed)
 
     {pairs, params} =
       Enum.reduce(allowed, {[], %{}}, fn key, {pairs, params} ->
@@ -479,7 +479,7 @@ defmodule Arcadic.Vector do
   end
 
   defp build_metadata(dimensions, opts) do
-    validate_opt_keys!(opts, @index_opts)
+    Opts.validate_keys!(opts, @index_opts)
     dims = require_pos_int!(dimensions, "dimensions")
     sim = enum!(@similarities, Keyword.get(opts, :similarity, :cosine), "similarity")
     mc = require_pos_int!(Keyword.get(opts, :max_connections, 16), "max_connections")
@@ -504,7 +504,7 @@ defmodule Arcadic.Vector do
   # KEY-allowlisted (server swallows unknown keys); modifier VALUE-allowlisted; source-verified
   # against LSMSparseVectorIndexMetadata.java.
   defp build_sparse_metadata(opts) do
-    validate_opt_keys!(opts, @sparse_index_opts)
+    Opts.validate_keys!(opts, @sparse_index_opts)
 
     parts =
       []
@@ -535,24 +535,6 @@ defmodule Arcadic.Vector do
     do: Arcadic.Telemetry.event([:arcadic, :vector, :sparse_index_preexisting], %{count: n}, %{})
 
   defp maybe_signal_preexisting(_), do: :ok
-
-  defp validate_opt_keys!(opts, allowed) do
-    # Guard the shape BEFORE Keyword.keys/1. On an improper keyword list (a non-atom key
-    # or a non-tuple element) Keyword.keys/1 raises a message that ECHOES the offending
-    # entry — a Rule-3 caller-value leak; on a non-list it raises a FunctionClauseError.
-    # Keyword.keyword?/1 is value-free and false for maps/atoms/improper lists.
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError, "opts must be a keyword list"
-    end
-
-    case Keyword.keys(opts) -- allowed do
-      [] ->
-        :ok
-
-      bad ->
-        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
-    end
-  end
 
   defp enum!(allowed, value, label) do
     case Map.fetch(allowed, value) do

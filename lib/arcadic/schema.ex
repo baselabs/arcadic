@@ -10,7 +10,7 @@ defmodule Arcadic.Schema do
   `@props`-stripped at all nesting depths (ArcadeDB's serializer emits an `@props` count hint on
   the row and inside each nested `properties`/`indexes` object).
   """
-  alias Arcadic.Conn
+  alias Arcadic.{Conn, Opts}
 
   @doc """
   Lists every type (vertex / edge / document). Each row carries `name`, `type`, `records`,
@@ -67,7 +67,7 @@ defmodule Arcadic.Schema do
   @spec indexes(Conn.t(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t() | :invalid_identifier}
   def indexes(%Conn{} = conn, opts \\ []) do
-    validate_opt_keys!(opts, [:type])
+    Opts.validate_keys!(opts, [:type])
 
     case Keyword.fetch(opts, :type) do
       :error ->
@@ -110,23 +110,6 @@ defmodule Arcadic.Schema do
     do: Enum.map(props, &strip_props_deep/1)
 
   defp unwrap_properties(_), do: []
-
-  # Guard opts BEFORE reading a key: Keyword.keyword?/1 first (Keyword.keys/1 on an improper
-  # list raises a message that ECHOES the offending entry — a Rule-3 leak); then reject unknown
-  # keys value-free (the bad KEYS are option names, never caller values).
-  defp validate_opt_keys!(opts, allowed) do
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError, "opts must be a keyword list"
-    end
-
-    case Keyword.keys(opts) -- allowed do
-      [] ->
-        :ok
-
-      bad ->
-        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
-    end
-  end
 
   defp bang({:ok, rows}), do: rows
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)
