@@ -74,6 +74,12 @@ defmodule Arcadic.Vector do
   carries the vertex's top-level fields plus `distance`). `query_vector` and `k` bind
   as params. `opts`: `ef_search` (pos_integer), `max_distance` (number) — both bind as
   params inside the query-options object.
+
+  `distance` (and therefore `max_distance`) semantics depend on the index's
+  `similarity`: COSINE yields `0..1` ascending (0 = identical); DOT_PRODUCT yields
+  NEGATIVE values (≈ -1 identical, less-negative = farther), so a small positive
+  `max_distance` filters nothing; EUCLIDEAN differs again. Choose thresholds per the
+  index's similarity.
   """
   @spec neighbors(Conn.t(), String.t(), String.t(), [number()], pos_integer(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -108,6 +114,10 @@ defmodule Arcadic.Vector do
 
   Fused rows are ranked by ArcadeDB's fusion `score` (higher = better) rather than the
   `distance` that `neighbors/6` returns.
+
+  `neighbor_specs` and `weights` are trusted developer-supplied config: the emitted
+  statement grows linearly with their length (no cap), matching arcadic's
+  no-statement-size-limit posture elsewhere.
   """
   @spec fuse(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -251,6 +261,14 @@ defmodule Arcadic.Vector do
   defp camel(:quantization), do: "quantization"
 
   defp validate_opt_keys!(opts, allowed) do
+    # Guard the shape BEFORE Keyword.keys/1. On an improper keyword list (a non-atom key
+    # or a non-tuple element) Keyword.keys/1 raises a message that ECHOES the offending
+    # entry — a Rule-3 caller-value leak; on a non-list it raises a FunctionClauseError.
+    # Keyword.keyword?/1 is value-free and false for maps/atoms/improper lists.
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError, "opts must be a keyword list"
+    end
+
     case Keyword.keys(opts) -- allowed do
       [] ->
         :ok

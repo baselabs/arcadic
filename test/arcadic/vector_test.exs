@@ -180,6 +180,29 @@ defmodule Arcadic.VectorTest do
       end
     end
 
+    test "rejects malformed opts value-free (improper keyword list / map)" do
+      # an improper keyword list carrying a caller value in the offending entry must NOT
+      # leak it — Keyword.keys/1 would echo the entry (Rule 3, shared validate_opt_keys!).
+      improper =
+        assert_raise ArgumentError, fn ->
+          Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, [{"SEKRIT_KEY", "PII"}])
+        end
+
+      assert improper.message =~ "keyword list"
+      refute improper.message =~ "SEKRIT_KEY"
+      refute improper.message =~ "PII"
+
+      # a non-list opts (map) must raise the controlled value-free ArgumentError,
+      # not a FunctionClauseError — and must not echo the value.
+      map_opts =
+        assert_raise ArgumentError, fn ->
+          Vector.create_dense_index(conn(), "Doc", "embedding", 3, %{secret: "PII"})
+        end
+
+      assert map_opts.message =~ "keyword list"
+      refute map_opts.message =~ "PII"
+    end
+
     test "builds the opts object with only max_distance when ef_search omitted" do
       Req.Test.stub(__MODULE__, fn c ->
         send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))})
