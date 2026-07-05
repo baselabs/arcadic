@@ -37,6 +37,15 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.Telemetry`** — value-free `:telemetry.span/3` spans.
 - **`Arcadic.Identifier`** — allowlist identifier validation.
 
+## Bulk loading
+
+- For a **large initial load**, prefer ArcadeDB's index-deferred bulk import over an
+  `INSERT`/`CREATE EDGE` loop: `Arcadic.command(conn, "IMPORT DATABASE '<url>'", %{}, language:
+  "sql")` imports CSV / JSON / GraphML / Neo4j / OrientDB exports server-side (the source URL must
+  be reachable by the server).
+- For batched **incremental** writes, wrap them in `transaction/3` (one commit for many
+  statements) instead of auto-committing each `command/4`.
+
 ## Non-negotiable rules
 
 - **Parameters only.** Every dynamic value goes into the request `params` map and

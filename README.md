@@ -217,6 +217,42 @@ Contributor and agent working rules — including the params-only, redaction, an
 tenant-blind invariants — live in
 [`AGENTS.md`](https://github.com/baselabs/arcadic/blob/main/AGENTS.md).
 
+## Benchmarks
+
+A load/traversal benchmark harness for ArcadeDB lives under
+[`bench/`](https://github.com/baselabs/arcadic/tree/main/bench) (not shipped in the package),
+driven by Benchee against a throwaway database:
+
+```bash
+ARCADIC_BENCH_URL=<url> ARCADIC_BENCH_PASSWORD=<pw> mix run bench/run.exs
+```
+
+It profiles ingest throughput, k-hop traversal latency by depth, point lookups, and
+throughput-under-concurrency. Methodology, knobs, and a full 100k-node result set are in
+[bench/README.md](https://github.com/baselabs/arcadic/blob/main/bench/README.md) and
+[bench/RESULTS.md](https://github.com/baselabs/arcadic/blob/main/bench/RESULTS.md). Headline
+figures — 100k `Person` / 1M `KNOWS`, single 2 GB-capped node, ArcadeDB 26.8.1, localhost, single
+client (a *profile*, not a neo4j comparison):
+
+| metric | figure |
+|---|---|
+| k-hop traversal p50 | 0.7 ms (1-hop) → 49 ms (4-hop, ~10k nodes reached) |
+| point lookup p50 | ~0.6 ms (`@rid` and indexed `uid` within ~6% once settled) |
+| client-write ingest | ~4.2k edges/s (RID-addressed; ~2.3× the naive uid-subquery path) |
+
+### Bulk loading
+
+The ingest figure above is per-statement *client writes*. To load a large dataset, use
+ArcadeDB's **index-deferred** bulk facilities — far faster than any `INSERT`/`CREATE EDGE` loop:
+
+- `IMPORT DATABASE '<url>'`, issued straight through the driver —
+  `Arcadic.command(conn, "IMPORT DATABASE 'https://…/data.csv'", %{}, language: "sql")` — imports
+  CSV / JSON / GraphML / Neo4j / OrientDB exports server-side (the URL must be reachable by the
+  server).
+- the standalone ArcadeDB Importer for file pipelines with column mapping.
+- for batched incremental writes, wrap them in `Arcadic.transaction/3` (one commit for many
+  statements) instead of auto-committing each.
+
 ## Credits
 
 - [**ArcadeDB**](https://arcadedb.com) — the multi-model database Arcadic speaks to.
