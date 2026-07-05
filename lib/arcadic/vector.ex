@@ -67,12 +67,15 @@ defmodule Arcadic.Vector do
   def drop_dense_index!(%Conn{} = conn, type, property),
     do: bang(drop_dense_index(conn, type, property))
 
-  @query_opts [:ef_search, :max_distance, :filter]
+  @query_opts [:ef_search, :max_distance, :filter, :group_by, :group_size]
 
   @doc """
   Runs a dense nearest-neighbour search, returning rows ranked closest-first (each
   carries the vertex's top-level fields plus `distance`). `query_vector` and `k` bind
-  as params. `opts`: `ef_search` (pos_integer), `max_distance` (number) — both bind as
+  as params. `opts`: `ef_search` (pos_integer), `max_distance` (number), `filter`
+  (non-empty list of `#<bucket>:<pos>` candidate RID strings — restricts the search to
+  that candidate set), `group_by` (property name to group results by; validated for
+  identifier shape), `group_size` (pos_integer — max results per group). All bind as
   params inside the query-options object.
 
   `distance` (and therefore `max_distance`) semantics depend on the index's
@@ -238,6 +241,12 @@ defmodule Arcadic.Vector do
   defp add_query_opt(:filter, value, pairs, params),
     do: {["filter: :rids" | pairs], Map.put(params, "rids", validate_rids!(value))}
 
+  defp add_query_opt(:group_by, value, pairs, params),
+    do: {["groupBy: :gb" | pairs], Map.put(params, "gb", validate_group_by!(value))}
+
+  defp add_query_opt(:group_size, value, pairs, params),
+    do: {["groupSize: :gs" | pairs], Map.put(params, "gs", require_pos_int!(value, "group_size"))}
+
   defp require_list!(v, _label) when is_list(v), do: v
   defp require_list!(_v, label), do: raise(ArgumentError, "#{label} must be a list of numbers")
 
@@ -268,6 +277,20 @@ defmodule Arcadic.Vector do
 
   defp validate_rids!(_),
     do: raise(ArgumentError, "filter must be a non-empty list of RIDs")
+
+  # group_by is a property name bound as a PARAM value (injection closed by the param — probed:
+  # a quote-breaking payload bound here is inert). Identifier.validate is a value-free client-side
+  # SHAPE guard catching a typo/empty name (an unvalidated wrong name silently returns mis-shaped
+  # rows) — NOT interpolation, NOT an injection defense.
+  defp validate_group_by!(value) do
+    case Identifier.validate(value) do
+      :ok ->
+        value
+
+      {:error, :invalid_identifier} ->
+        raise ArgumentError, "group_by must be a valid property identifier"
+    end
+  end
 
   defp build_metadata(dimensions, opts) do
     validate_opt_keys!(opts, @index_opts)

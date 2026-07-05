@@ -257,6 +257,60 @@ defmodule Arcadic.VectorTest do
       assert err.message =~ "RID"
       refute err.message =~ "not-a-rid"
     end
+
+    test "group_by (param-bound, Identifier-validated) and group_size (param-bound) compose with filter" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.neighbors(conn(), "Doc", "embedding", [1.0, 0.0, 0.0], 5,
+                 filter: ["#1:0"],
+                 group_by: "category",
+                 group_size: 2
+               )
+
+      assert_received {:req, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.neighbors('Doc[embedding]', :vec, :k, " <>
+                 "{filter: :rids, groupBy: :gb, groupSize: :gs}))"
+
+      assert body["params"] == %{
+               "vec" => [1.0, 0.0, 0.0],
+               "k" => 5,
+               "rids" => ["#1:0"],
+               "gb" => "category",
+               "gs" => 2
+             }
+
+      # the property name rides params, not the statement
+      refute body["command"] =~ "category"
+    end
+
+    test "group_by rejects a typo/empty property name value-free (Identifier shape guard)" do
+      for bad <- ["", "bad-name?", "x'; DROP"] do
+        assert_raise ArgumentError, ~r/group_by must be a valid property identifier/, fn ->
+          Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, group_by: bad)
+        end
+      end
+
+      # value-free: the offending name is never echoed
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, group_by: "SEKRIT'; DROP")
+        end
+
+      refute err.message =~ "SEKRIT"
+      refute err.message =~ "DROP"
+    end
+
+    test "group_size rejects a non-positive-integer value-free" do
+      assert_raise ArgumentError, ~r/group_size must be a positive integer/, fn ->
+        Vector.neighbors(conn(), "Doc", "embedding", [1.0], 3, group_size: 0)
+      end
+    end
   end
 
   describe "fuse/3" do
