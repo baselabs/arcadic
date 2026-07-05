@@ -9,6 +9,13 @@ defmodule Arcadic.VectorTest do
         transport_options: [plug: {Req.Test, __MODULE__}]
       )
 
+  defp stub_sparse_ddl(total_indexed \\ 0) do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => [%{"created" => true, "totalIndexed" => total_indexed}]})
+    end)
+  end
+
   describe "index_ref/2" do
     test "composes the server-derived ref for valid identifiers" do
       assert {:ok, "Doc[embedding]"} = Vector.index_ref("Doc", "embedding")
@@ -496,6 +503,87 @@ defmodule Arcadic.VectorTest do
       assert_raise ArgumentError, ~r/non-empty/, fn ->
         Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 3}], filter: [])
       end
+    end
+  end
+
+  describe "create_sparse_index/5 + drop_sparse_index/4" do
+    test "bare DDL when no opts" do
+      stub_sparse_ddl()
+      assert :ok = Vector.create_sparse_index(conn(), "Doc", "tokens", "weights")
+      assert_received {:cmd, "CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR"}
+    end
+
+    test "emits dimensions + modifier METADATA (value/key allowlisted)" do
+      stub_sparse_ddl()
+
+      assert :ok =
+               Vector.create_sparse_index(conn(), "Doc", "tokens", "weights",
+                 dimensions: 30_000,
+                 modifier: :idf
+               )
+
+      assert_received {:cmd,
+                       "CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR " <>
+                         "METADATA {dimensions:30000, modifier:'IDF'}"}
+    end
+
+    test "rejects bad dimensions / modifier / identifier / unknown key value-free" do
+      stub_sparse_ddl()
+
+      # dimensions / modifier carry a CALLER VALUE — the message must not echo it (Rule 3)
+      dim_err =
+        assert_raise ArgumentError, ~r/dimensions must be a positive integer/, fn ->
+          Vector.create_sparse_index(conn(), "Doc", "tokens", "weights", dimensions: "lots")
+        end
+
+      refute Exception.message(dim_err) =~ "lots"
+
+      mod_err =
+        assert_raise ArgumentError, ~r/invalid modifier/, fn ->
+          Vector.create_sparse_index(conn(), "Doc", "tokens", "weights", modifier: :bm25)
+        end
+
+      refute Exception.message(mod_err) =~ "bm25"
+
+      assert {:error, :invalid_identifier} =
+               Vector.create_sparse_index(conn(), "Doc", "tok`x", "weights")
+
+      # an option NAME is developer-supplied API surface (not caller data) — naming it is correct
+      assert_raise ArgumentError, ~r/unknown option/, fn ->
+        Vector.create_sparse_index(conn(), "Doc", "tokens", "weights", bogus: 1)
+      end
+    end
+
+    test "emits a value-free telemetry signal when the DDL reports pre-existing rows" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:arcadic, :vector, :sparse_index_preexisting]
+        ])
+
+      stub_sparse_ddl(7)
+      assert :ok = Vector.create_sparse_index(conn(), "Doc", "tokens", "weights")
+
+      assert_received {[:arcadic, :vector, :sparse_index_preexisting], ^ref, %{count: 7}, %{}}
+      :telemetry.detach(ref)
+    end
+
+    test "does NOT emit the telemetry signal when the DDL reports zero pre-existing rows" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:arcadic, :vector, :sparse_index_preexisting]
+        ])
+
+      stub_sparse_ddl(0)
+      assert :ok = Vector.create_sparse_index(conn(), "Doc", "tokens", "weights")
+
+      refute_received {[:arcadic, :vector, :sparse_index_preexisting], ^ref, _, _}
+      :telemetry.detach(ref)
+    end
+
+    test "drop emits the backtick-quoted IF EXISTS form" do
+      stub_sparse_ddl()
+      assert :ok = Vector.drop_sparse_index(conn(), "Doc", "tokens", "weights")
+      assert_received {:cmd, "DROP INDEX `Doc[tokens,weights]` IF EXISTS"}
     end
   end
 end

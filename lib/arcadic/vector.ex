@@ -28,6 +28,9 @@ defmodule Arcadic.Vector do
   @quantizations %{none: "NONE", int8: "INT8", binary: "BINARY", product: "PRODUCT"}
   @index_opts [:similarity, :encoding, :quantization, :max_connections, :beam_width]
 
+  @sparse_index_opts [:dimensions, :modifier]
+  @sparse_modifiers %{none: "NONE", idf: "IDF"}
+
   @doc """
   Creates a dense `LSM_VECTOR` index (idempotent — `IF NOT EXISTS`). `opts`:
   `similarity` (`:cosine` default | `:dot_product` | `:euclidean`), `encoding`
@@ -66,6 +69,69 @@ defmodule Arcadic.Vector do
   @spec drop_dense_index!(Conn.t(), String.t(), String.t()) :: :ok
   def drop_dense_index!(%Conn{} = conn, type, property),
     do: bang(drop_dense_index(conn, type, property))
+
+  @doc "Builds the sparse index ref `\"Type[tokens,weights]\"`, validating all three identifiers."
+  @spec sparse_index_ref(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, :invalid_identifier}
+  def sparse_index_ref(type, tokens_property, weights_property) do
+    with :ok <- Identifier.validate(type),
+         :ok <- Identifier.validate(tokens_property),
+         :ok <- Identifier.validate(weights_property) do
+      {:ok, "#{type}[#{tokens_property},#{weights_property}]"}
+    end
+  end
+
+  @doc """
+  Creates an `LSM_SPARSE_VECTOR` index over a `(tokens, weights)` property pair. `opts`:
+  `dimensions` (pos_integer, optional) and `modifier` (`:none` default | `:idf`). Both are
+  omitted from the DDL when not given (server defaults apply).
+
+  **Coverage caveat (ArcadeDB semantic):** a sparse index does NOT index rows that existed
+  BEFORE it was created — only rows inserted or updated afterwards are searchable (the DDL's
+  reported index count is misleading, and `REBUILD INDEX` throws on a sparse index). Create the
+  index before loading, or re-touch pre-existing rows. When the DDL reports pre-existing rows,
+  a value-free `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event is emitted.
+  """
+  @spec create_sparse_index(Conn.t(), String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def create_sparse_index(%Conn{} = conn, type, tokens_property, weights_property, opts \\ []) do
+    with {:ok, _ref} <- sparse_index_ref(type, tokens_property, weights_property) do
+      metadata = build_sparse_metadata(opts)
+
+      case Arcadic.command(
+             conn,
+             "CREATE INDEX ON #{type} (#{tokens_property}, #{weights_property}) LSM_SPARSE_VECTOR#{metadata}",
+             %{},
+             language: "sql"
+           ) do
+        {:ok, rows} ->
+          maybe_signal_preexisting(rows)
+          :ok
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  @doc "Creates a sparse vector index, raising on error."
+  @spec create_sparse_index!(Conn.t(), String.t(), String.t(), String.t(), keyword()) :: :ok
+  def create_sparse_index!(%Conn{} = conn, type, tokens_property, weights_property, opts \\ []),
+    do: bang(create_sparse_index(conn, type, tokens_property, weights_property, opts))
+
+  @doc "Drops a sparse vector index (idempotent — `IF EXISTS`)."
+  @spec drop_sparse_index(Conn.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def drop_sparse_index(%Conn{} = conn, type, tokens_property, weights_property) do
+    with {:ok, ref} <- sparse_index_ref(type, tokens_property, weights_property) do
+      command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
+    end
+  end
+
+  @doc "Drops a sparse vector index, raising on error."
+  @spec drop_sparse_index!(Conn.t(), String.t(), String.t(), String.t()) :: :ok
+  def drop_sparse_index!(%Conn{} = conn, type, tokens_property, weights_property),
+    do: bang(drop_sparse_index(conn, type, tokens_property, weights_property))
 
   @query_opts [:ef_search, :max_distance, :filter, :group_by, :group_size]
 
@@ -353,6 +419,42 @@ defmodule Arcadic.Vector do
 
   defp camel(:encoding), do: "encoding"
   defp camel(:quantization), do: "quantization"
+
+  # dimensions (int) + modifier (NONE|IDF) — both optional; no METADATA clause when neither given.
+  # KEY-allowlisted (server swallows unknown keys); modifier VALUE-allowlisted; source-verified
+  # against LSMSparseVectorIndexMetadata.java.
+  defp build_sparse_metadata(opts) do
+    validate_opt_keys!(opts, @sparse_index_opts)
+
+    parts =
+      []
+      |> maybe_dimensions(opts)
+      |> maybe_modifier(opts)
+
+    case Enum.reverse(parts) do
+      [] -> ""
+      list -> " METADATA {#{Enum.join(list, ", ")}}"
+    end
+  end
+
+  defp maybe_dimensions(parts, opts) do
+    case Keyword.fetch(opts, :dimensions) do
+      :error -> parts
+      {:ok, value} -> ["dimensions:#{require_pos_int!(value, "dimensions")}" | parts]
+    end
+  end
+
+  defp maybe_modifier(parts, opts) do
+    case Keyword.fetch(opts, :modifier) do
+      :error -> parts
+      {:ok, value} -> ["modifier:'#{enum!(@sparse_modifiers, value, "modifier")}'" | parts]
+    end
+  end
+
+  defp maybe_signal_preexisting([%{"totalIndexed" => n} | _]) when is_integer(n) and n > 0,
+    do: Arcadic.Telemetry.event([:arcadic, :vector, :sparse_index_preexisting], %{count: n}, %{})
+
+  defp maybe_signal_preexisting(_), do: :ok
 
   defp validate_opt_keys!(opts, allowed) do
     # Guard the shape BEFORE Keyword.keys/1. On an improper keyword list (a non-atom key
