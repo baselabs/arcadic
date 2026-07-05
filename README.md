@@ -1,5 +1,7 @@
 # Arcadic
 
+[![Hex.pm](https://img.shields.io/hexpm/v/arcadic.svg)](https://hex.pm/packages/arcadic)
+[![Hexdocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/arcadic)
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbaselabs%2Farcadic%2Fmain%2Fnotebooks%2Fgetting_started.livemd)
 
 A lean, framework-agnostic Elixir client for [ArcadeDB](https://arcadedb.com)
@@ -183,21 +185,21 @@ ArcadeDB            (native OpenCypher engine)
 
 ## Installation
 
-Arcadic is developed alongside
-[`ash_arcadic`](https://github.com/baselabs/ash_arcadic). Depend on it by path
-during co-development:
+Add `arcadic` from [Hex](https://hex.pm/packages/arcadic):
 
 ```elixir
 def deps do
   [
-    {:arcadic, path: "../arcadic"},
+    {:arcadic, "~> 0.2"},
     # optional, for the Bolt transport:
     {:boltx, "~> 0.0.6"}
   ]
 end
 ```
 
-Once published to Hex, `{:arcadic, "~> 0.1"}` will pull it directly.
+Arcadic is co-developed with its Ash data layer
+[`ash_arcadic`](https://github.com/baselabs/ash_arcadic); to hack on both together, point at
+a local checkout instead — `{:arcadic, path: "../arcadic"}`.
 
 ## Development
 
