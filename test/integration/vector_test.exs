@@ -21,6 +21,7 @@ defmodule Arcadic.Integration.VectorTest do
     Arcadic.command!(admin, "CREATE VERTEX TYPE Doc", %{}, language: "sql")
     Arcadic.command!(admin, "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS", %{}, language: "sql")
     Arcadic.command!(admin, "CREATE PROPERTY Doc.title STRING", %{}, language: "sql")
+    Arcadic.command!(admin, "CREATE PROPERTY Doc.category STRING", %{}, language: "sql")
 
     for {t, e} <- [{"cat", "[1.0,0.0,0.0]"}, {"dog", "[0.9,0.1,0.0]"}, {"car", "[0.0,0.0,1.0]"}] do
       Arcadic.command!(admin, "INSERT INTO Doc SET title='#{t}', embedding=#{e}", %{},
@@ -69,5 +70,99 @@ defmodule Arcadic.Integration.VectorTest do
     assert :ok = Vector.drop_dense_index(conn, "Doc", "embedding")
     # re-create so setup_all teardown state is unaffected for any following test
     assert :ok = Vector.create_dense_index(conn, "Doc", "embedding", 3, similarity: :cosine)
+  end
+
+  test "sparse_neighbors ranks by descending score with create-before-load", %{conn: conn} do
+    t = "Sp" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    Arcadic.command!(conn, "CREATE VERTEX TYPE #{t}", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY #{t}.tokens ARRAY_OF_INTEGERS", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY #{t}.weights ARRAY_OF_FLOATS", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY #{t}.title STRING", %{}, language: "sql")
+    # index BEFORE load
+    :ok = Vector.create_sparse_index(conn, t, "tokens", "weights")
+
+    for {title, tk, w} <- [{"a", "[1,2,3]", "[0.9,0.5,0.2]"}, {"b", "[1,2,4]", "[0.4,0.5,0.6]"}] do
+      Arcadic.command!(
+        conn,
+        "INSERT INTO #{t} SET title='#{title}', tokens=#{tk}, weights=#{w}",
+        %{},
+        language: "sql"
+      )
+    end
+
+    assert {:ok, rows} =
+             Vector.sparse_neighbors(conn, t, "tokens", "weights", [1, 2, 3], [0.9, 0.5, 0.2], 10)
+
+    assert rows != []
+    scores = Enum.map(rows, & &1["score"])
+    assert scores == Enum.sort(scores, :desc)
+    refute Enum.any?(rows, &Map.has_key?(&1, "distance"))
+  end
+
+  test "retro-index quirk: an index created AFTER load does not cover pre-existing rows", %{
+    conn: conn
+  } do
+    t = "Sp" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    Arcadic.command!(conn, "CREATE VERTEX TYPE #{t}", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY #{t}.tokens ARRAY_OF_INTEGERS", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY #{t}.weights ARRAY_OF_FLOATS", %{}, language: "sql")
+    # rows FIRST, index AFTER
+    Arcadic.command!(conn, "INSERT INTO #{t} SET tokens=[1,2,3], weights=[0.5,0.5,0.5]", %{},
+      language: "sql"
+    )
+
+    :ok = Vector.create_sparse_index(conn, t, "tokens", "weights")
+
+    # documented behavior: pre-existing rows are NOT searchable
+    assert {:ok, []} =
+             Vector.sparse_neighbors(conn, t, "tokens", "weights", [1, 2, 3], [0.5, 0.5, 0.5], 10)
+  end
+
+  test "filter restricts neighbors to a candidate RID set; group_by collapses to top-N per group",
+       %{conn: conn} do
+    {:ok, all} = Arcadic.query(conn, "SELECT @rid AS rid, title FROM Doc", %{}, language: "sql")
+    rids = Enum.map(all, & &1["rid"])
+
+    assert {:ok, filtered} =
+             Vector.neighbors(conn, "Doc", "embedding", [1.0, 0.0, 0.0], 10,
+               filter: Enum.take(rids, 1)
+             )
+
+    assert length(filtered) == 1
+
+    # set categories, then group
+    Arcadic.command!(conn, "UPDATE Doc SET category='animal' WHERE title IN ['cat','dog']", %{},
+      language: "sql"
+    )
+
+    Arcadic.command!(conn, "UPDATE Doc SET category='vehicle' WHERE title='car'", %{},
+      language: "sql"
+    )
+
+    assert {:ok, grouped} =
+             Vector.neighbors(conn, "Doc", "embedding", [1.0, 0.0, 0.0], 10,
+               group_by: "category",
+               group_size: 1
+             )
+
+    cats = grouped |> Enum.map(& &1["category"]) |> Enum.uniq()
+    assert length(grouped) == length(cats)
+  end
+
+  test "fuse with a shared filter restricts the fused result", %{conn: conn} do
+    {:ok, all} = Arcadic.query(conn, "SELECT @rid AS rid FROM Doc", %{}, language: "sql")
+    subset = all |> Enum.map(& &1["rid"]) |> Enum.take(2)
+
+    assert {:ok, rows} =
+             Vector.fuse(
+               conn,
+               [
+                 {"Doc", "embedding", [1.0, 0.0, 0.0], 3},
+                 {"Doc", "embedding", [0.0, 0.0, 1.0], 3}
+               ],
+               filter: subset
+             )
+
+    assert length(rows) == 2
   end
 end
