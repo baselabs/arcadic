@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-05
+
+### Fixed
+
+- Install instructions in the README and getting-started notebook pointed at a pre-publish
+  path dependency and `~> 0.1`; corrected to `{:arcadic, "~> 0.2"}` from Hex.
+
+### Added
+
+- README: Hex.pm + hexdocs badges, a Benchmarks section (linking the `bench/` harness and the
+  100k result set), and a Bulk-loading note; `usage-rules.md` bulk-loading entry
+  (`IMPORT DATABASE` / `transaction/3`).
+
+_No library code changed in this release — docs/packaging only._
+
 ## [0.2.0] - 2026-07-05
 
 ### Added

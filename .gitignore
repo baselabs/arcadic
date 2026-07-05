@@ -4,6 +4,9 @@ erl_crash.dump
 *.beam
 *.ez
 
+# Hex package build tarball (mix hex.build)
+/*.tar
+
 # Dependencies
 deps/
 
