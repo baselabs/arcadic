@@ -99,19 +99,32 @@ defmodule Arcadic.Integration.VectorTest do
     refute Enum.any?(rows, &Map.has_key?(&1, "distance"))
   end
 
-  test "retro-index quirk: an index created AFTER load does not cover pre-existing rows", %{
-    conn: conn
-  } do
+  test "retro-index quirk: pre-existing rows are uncovered AND the telemetry signal fires live",
+       %{
+         conn: conn
+       } do
     t = "Sp" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
     Arcadic.command!(conn, "CREATE VERTEX TYPE #{t}", %{}, language: "sql")
     Arcadic.command!(conn, "CREATE PROPERTY #{t}.tokens ARRAY_OF_INTEGERS", %{}, language: "sql")
     Arcadic.command!(conn, "CREATE PROPERTY #{t}.weights ARRAY_OF_FLOATS", %{}, language: "sql")
-    # rows FIRST, index AFTER
+    # rows FIRST, index AFTER (exactly one pre-existing row → totalIndexed == 1)
     Arcadic.command!(conn, "INSERT INTO #{t} SET tokens=[1,2,3], weights=[0.5,0.5,0.5]", %{},
       language: "sql"
     )
 
+    ref =
+      :telemetry_test.attach_event_handlers(self(), [
+        [:arcadic, :vector, :sparse_index_preexisting]
+      ])
+
     :ok = Vector.create_sparse_index(conn, t, "tokens", "weights")
+
+    # The retro-index footgun signal fires against the LIVE DDL response's `totalIndexed`
+    # shape (not just the stub the unit suite drives), value-free (a count, empty meta).
+    # Red-capable: if the guard ever silently no-ops on a server-shape change, no message
+    # arrives and this assert_received fails.
+    assert_received {[:arcadic, :vector, :sparse_index_preexisting], ^ref, %{count: 1}, %{}}
+    :telemetry.detach(ref)
 
     # documented behavior: pre-existing rows are NOT searchable
     assert {:ok, []} =
