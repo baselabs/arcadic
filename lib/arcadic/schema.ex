@@ -57,6 +57,33 @@ defmodule Arcadic.Schema do
   @spec properties!(Conn.t(), String.t()) :: [map()]
   def properties!(%Conn{} = conn, type), do: bang(properties(conn, type))
 
+  @doc """
+  Lists indexes, `@props`-stripped. Returns BOTH logical indexes (e.g. `Person[name]`, no
+  `fileId`) AND physical per-bucket indexes (e.g. `Person_0_…`, carrying `fileId`/
+  `associatedBucketId`) — faithful to `schema:indexes`. A caller wanting only logical indexes
+  filters on the ABSENCE of the `fileId` key. `opts[:type]` restricts to one type by `typeName`
+  (`Arcadic.Identifier`-shape-guarded, bound as a `$param`).
+  """
+  @spec indexes(Conn.t(), keyword()) ::
+          {:ok, [map()]} | {:error, Exception.t() | :invalid_identifier}
+  def indexes(%Conn{} = conn, opts \\ []) do
+    validate_opt_keys!(opts, [:type])
+
+    case Keyword.fetch(opts, :type) do
+      :error ->
+        query(conn, "SELECT FROM schema:indexes")
+
+      {:ok, type} ->
+        with :ok <- Arcadic.Identifier.validate(type) do
+          query(conn, "SELECT FROM schema:indexes WHERE typeName = :t", %{"t" => type})
+        end
+    end
+  end
+
+  @doc "Lists indexes, returning them or raising."
+  @spec indexes!(Conn.t(), keyword()) :: [map()]
+  def indexes!(%Conn{} = conn, opts \\ []), do: bang(indexes(conn, opts))
+
   # Runs a fixed schema:* SELECT (SQL-only) and deep-strips @props from every returned row.
   defp query(%Conn{} = conn, statement, params \\ %{}) do
     case Arcadic.query(conn, statement, params, language: "sql") do
@@ -83,6 +110,23 @@ defmodule Arcadic.Schema do
     do: Enum.map(props, &strip_props_deep/1)
 
   defp unwrap_properties(_), do: []
+
+  # Guard opts BEFORE reading a key: Keyword.keyword?/1 first (Keyword.keys/1 on an improper
+  # list raises a message that ECHOES the offending entry — a Rule-3 leak); then reject unknown
+  # keys value-free (the bad KEYS are option names, never caller values).
+  defp validate_opt_keys!(opts, allowed) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError, "opts must be a keyword list"
+    end
+
+    case Keyword.keys(opts) -- allowed do
+      [] ->
+        :ok
+
+      bad ->
+        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
+    end
+  end
 
   defp bang({:ok, rows}), do: rows
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)

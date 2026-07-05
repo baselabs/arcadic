@@ -88,4 +88,38 @@ defmodule Arcadic.SchemaTest do
   test "properties!/2 raises the invalid_identifier value-free" do
     assert_raise ArgumentError, fn -> Schema.properties!(conn(), "bad name!") end
   end
+
+  test "indexes/2 with no opts sends schema:indexes and deep-strips @props" do
+    stub([%{"name" => "Person[name]", "typeName" => "Person", "@props" => "properties:9"}])
+    assert {:ok, [row]} = Schema.indexes(conn())
+    assert_received {:body, body}
+    assert body["command"] == "SELECT FROM schema:indexes"
+    refute Map.has_key?(body, "params")
+    refute Map.has_key?(row, "@props")
+  end
+
+  test "indexes/2 with :type binds typeName as a param (never in the statement)" do
+    stub([%{"name" => "Person[name]", "typeName" => "Person"}])
+    assert {:ok, [_]} = Schema.indexes(conn(), type: @secret_type)
+    assert_received {:body, body}
+    assert body["command"] == "SELECT FROM schema:indexes WHERE typeName = :t"
+    refute body["command"] =~ @secret_type
+    assert body["params"] == %{"t" => @secret_type}
+  end
+
+  test "indexes/2 rejects a bad-shape :type value-free (no wire)" do
+    Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+    assert {:error, :invalid_identifier} = Schema.indexes(conn(), type: "bad name!")
+    refute_received {:body, _}
+  end
+
+  test "indexes/2 rejects an unknown opt key value-free (no wire)" do
+    Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+    assert_raise ArgumentError, fn -> Schema.indexes(conn(), typ: "Person") end
+    refute_received {:body, _}
+  end
+
+  test "indexes/2 rejects non-keyword opts value-free" do
+    assert_raise ArgumentError, fn -> Schema.indexes(conn(), %{type: "Person"}) end
+  end
 end
