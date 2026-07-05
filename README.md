@@ -28,8 +28,10 @@ ArcadeDB").
   on normal return, rolls back and reraises on exception (postgrex semantics).
 - **Pluggable transport** — HTTP (Req/Finch) by default, with an optional Bolt v4
   transport for the query hot path and lazy result streaming.
-- **Vector search** — dense `LSM_VECTOR` index DDL plus nearest-neighbour and
-  hybrid-fusion query builders (`Arcadic.Vector`), params-only and value-free.
+- **Vector search** — dense (`LSM_VECTOR`) and sparse (`LSM_SPARSE_VECTOR`) index
+  DDL plus nearest-neighbour, sparse, and hybrid-fusion query builders
+  (`Arcadic.Vector`) with a candidate-set `filter` and `group_by`/`group_size`
+  shaping, all params-only and value-free.
 - **Batteries included** — server admin, a migration runner, vector search,
   allowlist-validated identifiers, and value-free telemetry spans.
 
@@ -117,10 +119,11 @@ end
 
 ## Vector search
 
-`Arcadic.Vector` builds ArcadeDB dense-vector index DDL and nearest-neighbour /
-hybrid-fusion queries. Create an `LSM_VECTOR` index (idempotent — `IF NOT EXISTS`),
-then search. The query vector, `k`, and options bind as parameters; the index
-reference is identifier-validated before it reaches the statement.
+`Arcadic.Vector` builds ArcadeDB dense **and sparse** vector index DDL plus
+nearest-neighbour, sparse, and hybrid-fusion queries. Create an `LSM_VECTOR` index
+(idempotent — `IF NOT EXISTS`), then search. The query vector, `k`, and options bind
+as parameters; the index reference is identifier-validated before it reaches the
+statement.
 
 ```elixir
 :ok =
@@ -138,11 +141,29 @@ reference is identifier-validated before it reaches the statement.
   )
 ```
 
+Sparse retrieval (learned-sparse / BM25-style) runs over an `LSM_SPARSE_VECTOR` index
+on a `(tokens, weights)` property pair, ranked by a top-level `score`. **Create the
+index before loading rows** — a sparse index does not cover pre-existing rows (a
+`[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you create
+it over existing data).
+
+```elixir
+:ok = Arcadic.Vector.create_sparse_index(conn, "Doc", "tokens", "weights", modifier: :idf)
+
+{:ok, hits} =
+  Arcadic.Vector.sparse_neighbors(conn, "Doc", "tokens", "weights", tokens, weights, 10)
+```
+
+All three builders (`neighbors/6`, `sparse_neighbors/8`, `fuse/3`) also accept a
+candidate-set `filter` (a non-empty list of `#bucket:pos` RID strings) and
+`group_by` / `group_size` result shaping — all param-bound.
+
 `neighbors/6` rows carry a `distance` whose scale depends on the index `similarity`
 (COSINE `0..1` ascending, so smaller is nearer; DOT_PRODUCT is negative, so a small
 positive `max_distance` filters nothing — choose thresholds per similarity). `fuse/3`
-rows are ranked by `score` (higher is better). Sparse retrieval and the Ash-native
-data-layer surface are non-goals.
+rows are ranked by `score` (higher is better); `sparse_neighbors/8` rows carry `score`
+and no `distance`. The Ash-native data-layer surface remains a non-goal (owned by the
+sibling `ash_arcadic`).
 
 ## Bolt transport (optional)
 

@@ -25,12 +25,18 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `Arcadic.MigrationRegistry` (`use` + `migrations [...]`), `Arcadic.Migrator`
   (`migrate/2`, `status/2`, `rollback/3`, `reset/2`, `pending_migrations/2`),
   tracking applied versions in `_arcadic_migrations`.
-- **`Arcadic.Vector`** — dense vector search over ArcadeDB `LSM_VECTOR`:
-  `create_dense_index/5` (+ `!`), `drop_dense_index/3` (+ `!`), `neighbors/6` (+ `!`),
-  `fuse/3` (+ `!`), `index_ref/2`. Tenant-blind; query vector / `k` / `ef_search` /
-  `max_distance` bind as params, index refs are identifier-validated, and metadata /
-  query / fusion option inputs are allowlisted and validated value-free. `distance`
-  scale is similarity-dependent; `fuse/3` rows rank by `score`.
+- **`Arcadic.Vector`** — dense + sparse vector search over ArcadeDB `LSM_VECTOR` /
+  `LSM_SPARSE_VECTOR`: `create_dense_index/5`, `drop_dense_index/3`, `neighbors/6`,
+  `fuse/3`, `index_ref/2`, plus `create_sparse_index/5`, `drop_sparse_index/4`,
+  `sparse_neighbors/8` (all + `!`). Tenant-blind; query vector / tokens / weights / `k` /
+  `ef_search` / `max_distance` bind as params, index refs are identifier-validated, and
+  metadata / query / fusion option inputs are allowlisted and validated value-free.
+  Shared opts on `neighbors` / `sparse_neighbors` / `fuse`: `filter` (non-empty
+  `#bucket:pos` RID candidate set), `group_by` (`Identifier`-shape-guarded), `group_size`
+  — all param-bound. `distance` scale is similarity-dependent; `fuse/3` and
+  `sparse_neighbors/8` rank by `score` (sparse rows carry no `distance`). Create sparse
+  indexes **before** loading rows — they do not retro-index existing data (a
+  `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you do).
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
