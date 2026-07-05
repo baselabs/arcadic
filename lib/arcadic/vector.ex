@@ -67,7 +67,70 @@ defmodule Arcadic.Vector do
   def drop_dense_index!(%Conn{} = conn, type, property),
     do: bang(drop_dense_index(conn, type, property))
 
+  @query_opts [:ef_search, :max_distance]
+
+  @doc """
+  Runs a dense nearest-neighbour search, returning rows ranked closest-first (each
+  carries the vertex's top-level fields plus `distance`). `query_vector` and `k` bind
+  as params. `opts`: `ef_search` (pos_integer), `max_distance` (number) — both bind as
+  params inside the query-options object.
+  """
+  @spec neighbors(Conn.t(), String.t(), String.t(), [number()], pos_integer(), keyword()) ::
+          {:ok, [map()]} | {:error, atom() | Exception.t()}
+  def neighbors(%Conn{} = conn, type, property, query_vector, k, opts \\ []) do
+    with {:ok, ref} <- index_ref(type, property) do
+      k = require_pos_int!(k, "k")
+      query_vector = require_list!(query_vector, "query_vector")
+      {opt_obj, opt_params} = build_query_opts(opts)
+      sql = "SELECT expand(vector.neighbors('#{ref}', :vec, :k#{opt_obj}))"
+
+      Arcadic.query(conn, sql, Map.merge(%{"vec" => query_vector, "k" => k}, opt_params),
+        language: "sql"
+      )
+    end
+  end
+
+  @doc "Runs a dense nearest-neighbour search, returning rows or raising."
+  @spec neighbors!(Conn.t(), String.t(), String.t(), [number()], pos_integer(), keyword()) :: [
+          map()
+        ]
+  def neighbors!(%Conn{} = conn, type, property, query_vector, k, opts \\ []),
+    do: bang(neighbors(conn, type, property, query_vector, k, opts))
+
   # --- private ---
+
+  # Builds the ", {efSearch: :ef, maxDistance: :md}" opts object + its params (only
+  # provided keys). Values bind as params — never interpolated (probed).
+  defp build_query_opts(opts) do
+    validate_opt_keys!(opts, @query_opts)
+
+    {pairs, params} =
+      Enum.reduce(@query_opts, {[], %{}}, fn key, {pairs, params} ->
+        case Keyword.fetch(opts, key) do
+          :error -> {pairs, params}
+          {:ok, value} -> add_query_opt(key, value, pairs, params)
+        end
+      end)
+
+    case Enum.reverse(pairs) do
+      [] -> {"", %{}}
+      list -> {", {#{Enum.join(list, ", ")}}", params}
+    end
+  end
+
+  defp add_query_opt(:ef_search, value, pairs, params),
+    do: {["efSearch: :ef" | pairs], Map.put(params, "ef", require_pos_int!(value, "ef_search"))}
+
+  defp add_query_opt(:max_distance, value, pairs, params),
+    do:
+      {["maxDistance: :md" | pairs],
+       Map.put(params, "md", require_number!(value, "max_distance"))}
+
+  defp require_list!(v, _label) when is_list(v), do: v
+  defp require_list!(_v, label), do: raise(ArgumentError, "#{label} must be a list of numbers")
+
+  defp require_number!(v, _label) when is_number(v), do: v
+  defp require_number!(_v, label), do: raise(ArgumentError, "#{label} must be a number")
 
   defp build_metadata(dimensions, opts) do
     validate_opt_keys!(opts, @index_opts)
