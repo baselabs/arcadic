@@ -396,9 +396,9 @@ defmodule Arcadic.Vector do
 
   # Builds the ", {efSearch: :ef, …}" opts object + its params (only provided keys, in
   # `allowed` order). Values bind as params — never interpolated (probed). `allowed` is the
-  # per-function allowlist passed by each caller (dense vs sparse), so this helper is reusable:
-  # `neighbors/6` calls it today; `sparse_neighbors/8` (a later task) will reuse it with its own
-  # allowlist. (`fuse/3` builds its own opts via `fuse_opts/2` and does not route through here.)
+  # per-function allowlist passed by each caller (dense vs sparse), so this helper is shared:
+  # `neighbors/6` and `sparse_neighbors/8` both route through it with their own allowlists.
+  # (`fuse/3` builds its own opts via `fuse_opts/2` and does not route through here.)
   defp build_query_opts(opts, allowed) do
     validate_opt_keys!(opts, allowed)
 
