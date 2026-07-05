@@ -95,4 +95,25 @@ defmodule Arcadic.VectorTest do
       end
     end
   end
+
+  describe "drop_dense_index/3" do
+    test "emits DROP INDEX with the backtick-quoted derived name + IF EXISTS" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => [%{"operation" => "drop index"}]})
+      end)
+
+      assert :ok = Vector.drop_dense_index(conn(), "Doc", "embedding")
+
+      assert_received {:cmd,
+                       %{
+                         "language" => "sql",
+                         "command" => "DROP INDEX `Doc[embedding]` IF EXISTS"
+                       }}
+    end
+
+    test "validates identifiers BEFORE any request" do
+      assert {:error, :invalid_identifier} = Vector.drop_dense_index(conn(), "Doc`x", "embedding")
+    end
+  end
 end

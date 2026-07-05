@@ -53,6 +53,20 @@ defmodule Arcadic.Vector do
   def create_dense_index!(%Conn{} = conn, type, property, dimensions, opts \\ []),
     do: bang(create_dense_index(conn, type, property, dimensions, opts))
 
+  @doc "Drops a dense vector index (idempotent — `IF EXISTS`)."
+  @spec drop_dense_index(Conn.t(), String.t(), String.t()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def drop_dense_index(%Conn{} = conn, type, property) do
+    with {:ok, ref} <- index_ref(type, property) do
+      command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
+    end
+  end
+
+  @doc "Drops a dense vector index, raising on error."
+  @spec drop_dense_index!(Conn.t(), String.t(), String.t()) :: :ok
+  def drop_dense_index!(%Conn{} = conn, type, property),
+    do: bang(drop_dense_index(conn, type, property))
+
   # --- private ---
 
   defp build_metadata(dimensions, opts) do
