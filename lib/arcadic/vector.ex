@@ -107,13 +107,17 @@ defmodule Arcadic.Vector do
     do: bang(neighbors(conn, type, property, query_vector, k, opts))
 
   @fusions %{rrf: "RRF", dbsf: "DBSF", linear: "LINEAR"}
-  @fuse_opts [:fusion, :weights, :k]
+  @fuse_opts [:fusion, :weights, :k, :filter, :group_by, :group_size]
 
   @doc """
   Runs a hybrid fusion over dense neighbour subqueries. `neighbor_specs` is a non-empty
   list of `{type, property, query_vector, k}`, each built as a validated `vector.neighbors`
   subquery with distinct indexed params. `opts`: `fusion` (`:rrf` default | `:dbsf` |
-  `:linear`), `weights` (list of numbers), `k` (pos_integer).
+  `:linear`), `weights` (list of numbers), `k` (pos_integer), `filter` (non-empty list of
+  `#<bucket>:<pos>` candidate RID strings — a SHARED candidate set threaded into every
+  subquery), `group_by` (property name to group by; validated for identifier shape),
+  `group_size` (pos_integer — max results per group). `group_by`/`group_size` apply to the
+  FUSED output (the outer fuse object); all bind as params.
 
   Fused rows are ranked by ArcadeDB's fusion `score` (higher = better) rather than the
   `distance` that `neighbors/6` returns.
@@ -127,14 +131,48 @@ defmodule Arcadic.Vector do
   def fuse(%Conn{} = conn, neighbor_specs, opts \\ []) do
     validate_opt_keys!(opts, @fuse_opts)
     fusion = enum!(@fusions, Keyword.get(opts, :fusion, :rrf), "fusion")
+    filter = fuse_filter!(opts)
+    {group_frag, group_params} = fuse_group_opts(opts)
 
-    with {:ok, subqueries, params} <- build_subqueries(neighbor_specs) do
+    with {:ok, subqueries, params} <- build_subqueries(neighbor_specs, filter != nil) do
+      params =
+        params
+        |> maybe_put_filter(filter)
+        |> Map.merge(group_params)
+
       sql =
-        "SELECT expand(vector.fuse(#{Enum.join(subqueries, ", ")}, {#{fuse_opts(fusion, opts)}}))"
+        "SELECT expand(vector.fuse(#{Enum.join(subqueries, ", ")}, " <>
+          "{#{fuse_opts(fusion, opts)}#{group_frag}}))"
 
       Arcadic.query(conn, sql, params, language: "sql")
     end
   end
+
+  defp fuse_filter!(opts) do
+    case Keyword.fetch(opts, :filter) do
+      :error -> nil
+      {:ok, rids} -> validate_rids!(rids)
+    end
+  end
+
+  defp maybe_put_filter(params, nil), do: params
+  defp maybe_put_filter(params, rids), do: Map.put(params, "rids", rids)
+
+  # group_by/group_size ride the OUTER fuse object (grouping the fused output), param-bound.
+  defp fuse_group_opts(opts) do
+    Enum.reduce([:group_by, :group_size], {"", %{}}, fn key, {frag, params} ->
+      case Keyword.fetch(opts, key) do
+        :error -> {frag, params}
+        {:ok, value} -> add_fuse_group_opt(key, value, frag, params)
+      end
+    end)
+  end
+
+  defp add_fuse_group_opt(:group_by, value, frag, params),
+    do: {frag <> ", groupBy: :gb", Map.put(params, "gb", validate_group_by!(value))}
+
+  defp add_fuse_group_opt(:group_size, value, frag, params),
+    do: {frag <> ", groupSize: :gs", Map.put(params, "gs", require_pos_int!(value, "group_size"))}
 
   @doc "Runs a hybrid fusion, returning rows or raising."
   @spec fuse!(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) :: [
@@ -145,7 +183,9 @@ defmodule Arcadic.Vector do
 
   # --- private ---
 
-  defp build_subqueries(specs) when is_list(specs) and specs != [] do
+  defp build_subqueries(specs, with_filter) when is_list(specs) and specs != [] do
+    opt = if with_filter, do: ", {filter: :rids}", else: ""
+
     specs
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, [], %{}}, fn {spec, i}, {:ok, subs, params} ->
@@ -155,7 +195,7 @@ defmodule Arcadic.Vector do
         {:ok, ref} ->
           k = require_pos_int!(k, "k")
           vec = require_list!(vec, "query_vector")
-          sub = "(SELECT expand(vector.neighbors('#{ref}', :vec#{i}, :k#{i})))"
+          sub = "(SELECT expand(vector.neighbors('#{ref}', :vec#{i}, :k#{i}#{opt})))"
           {:cont, {:ok, [sub | subs], Map.merge(params, %{"vec#{i}" => vec, "k#{i}" => k})}}
 
         {:error, :invalid_identifier} = err ->
@@ -168,7 +208,7 @@ defmodule Arcadic.Vector do
     end
   end
 
-  defp build_subqueries(_specs) do
+  defp build_subqueries(_specs, _with_filter) do
     raise ArgumentError,
           "neighbor_specs must be a non-empty list of {type, property, query_vector, k} tuples"
   end

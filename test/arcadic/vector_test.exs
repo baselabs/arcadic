@@ -412,5 +412,90 @@ defmodule Arcadic.VectorTest do
 
       assert body["params"] == %{"vec0" => [1.0, 0.0], "k0" => 3}
     end
+
+    test "fuse threads a shared filter param into each subquery and param-binds group opts on the outer object" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(
+                 conn(),
+                 [
+                   {"Doc", "embedding", [1.0, 0.0, 0.0], 3},
+                   {"Doc", "embedding", [0.0, 0.0, 1.0], 3}
+                 ],
+                 filter: ["#1:0", "#1:1"],
+                 group_by: "category",
+                 group_size: 1
+               )
+
+      assert_received {:req, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.fuse(" <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0, {filter: :rids}))), " <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec1, :k1, {filter: :rids}))), " <>
+                 "{fusion:'RRF', groupBy: :gb, groupSize: :gs}))"
+
+      assert body["params"] == %{
+               "vec0" => [1.0, 0.0, 0.0],
+               "k0" => 3,
+               "vec1" => [0.0, 0.0, 1.0],
+               "k1" => 3,
+               "rids" => ["#1:0", "#1:1"],
+               "gb" => "category",
+               "gs" => 1
+             }
+
+      refute body["command"] =~ "#1:0"
+      refute body["command"] =~ "category"
+    end
+
+    test "fuse with group opts but no filter emits bare subqueries + an outer group object" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:req, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0, 0.0], 3}],
+                 group_by: "category",
+                 group_size: 2
+               )
+
+      assert_received {:req, body}
+
+      assert body["command"] ==
+               "SELECT expand(vector.fuse((SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "{fusion:'RRF', groupBy: :gb, groupSize: :gs}))"
+
+      assert body["params"] == %{
+               "vec0" => [1.0, 0.0, 0.0],
+               "k0" => 3,
+               "gb" => "category",
+               "gs" => 2
+             }
+
+      refute body["command"] =~ "filter"
+    end
+
+    test "fuse without filter emits bare subqueries (regression) and an empty filter raises" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} = Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0, 0.0], 3}])
+      assert_received {:cmd, cmd}
+
+      assert cmd ==
+               "SELECT expand(vector.fuse((SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), {fusion:'RRF'}))"
+
+      assert_raise ArgumentError, ~r/non-empty/, fn ->
+        Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 3}], filter: [])
+      end
+    end
   end
 end
