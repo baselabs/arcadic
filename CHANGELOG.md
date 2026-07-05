@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.Vector` sparse + hybrid completion:
+  - `create_sparse_index/5` (+ `!`), `drop_sparse_index/4` (+ `!`), `sparse_neighbors/8` (+ `!`)
+    over ArcadeDB `LSM_SPARSE_VECTOR` indexes (`(tokens, weights)` pair; rows ranked by top-level
+    `score`). `create_sparse_index` opts: `dimensions`, `modifier` (`:none` | `:idf`).
+  - `filter` (param-bound candidate RID set), `group_by`, and `group_size` opts on `neighbors/6`,
+    `sparse_neighbors/8`, and `fuse/3`.
+  - A `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event when a sparse index is
+    created over rows that already exist (which a sparse index does not retro-index).
+
 ## [0.2.1] - 2026-07-05
 
 ### Fixed
