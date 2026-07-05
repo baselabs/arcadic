@@ -193,6 +193,18 @@ defmodule Arcadic.QueryStreamTest do
       assert_raise ArgumentError, fn -> Arcadic.query_stream(conn, "RETURN 1", %{}, bogus: 1) end
     end
 
+    test "rejects non-keyword opts value-free — never echoes the offending entry (Rule 3)" do
+      conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Arcadic.query_stream(conn, "RETURN 1", %{}, [:SENTINEL_SECRET_9f3a])
+        end
+
+      assert err.message == "opts must be a keyword list"
+      refute err.message =~ "SENTINEL"
+    end
+
     test "passes the value as a bound param, never interpolated into the statement" do
       conn =
         Conn.new("http://h:2480", "db",

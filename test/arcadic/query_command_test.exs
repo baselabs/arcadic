@@ -59,6 +59,19 @@ defmodule Arcadic.QueryCommandTest do
     end
   end
 
+  test "rejects non-keyword opts value-free — never echoes the offending entry (Rule 3)" do
+    for bad <- [[:SENTINEL_SECRET_9f3a], [{"SENTINEL_9f3a", 1}], %{language: "cypher"}] do
+      for call <- [
+            fn -> Arcadic.query(conn(), "RETURN 1", %{}, bad) end,
+            fn -> Arcadic.command(conn(), "RETURN 1", %{}, bad) end
+          ] do
+        err = assert_raise ArgumentError, call
+        assert err.message == "opts must be a keyword list"
+        refute err.message =~ "SENTINEL"
+      end
+    end
+  end
+
   test "query!/command! return the list or raise" do
     Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => [%{"n" => 1}]}) end)
     assert [%{"n" => 1}] = Arcadic.query!(conn(), "RETURN 1")

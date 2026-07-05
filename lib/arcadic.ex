@@ -20,7 +20,7 @@ defmodule Arcadic do
   string interpolation.
   """
 
-  alias Arcadic.{Conn, Telemetry}
+  alias Arcadic.{Conn, Opts, Telemetry}
 
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
   @command_opts ~w(language limit serializer timeout retries)a
@@ -168,16 +168,15 @@ defmodule Arcadic do
   defp bang({:ok, rows}), do: rows
   defp bang({:error, error}), do: raise(error)
 
+  # Key-shape + allowlist guard is delegated to the shared value-free `Arcadic.Opts.validate_keys!/2`
+  # (which guards with `Keyword.keyword?/1` BEFORE `Keyword.keys/1` — an improper-list opts would
+  # otherwise leak the offending entry through the raised message, AGENTS.md Rule 3). This module
+  # layers its two extra concerns on top: validate the `:language` VALUE, and return `opts` for
+  # inline threading.
   defp validate_opts!(opts, allowed) do
+    Opts.validate_keys!(opts, allowed)
     if language = opts[:language], do: validate_language!(language)
-
-    case Keyword.keys(opts) -- allowed do
-      [] ->
-        opts
-
-      bad ->
-        raise ArgumentError, "unknown option(s) #{inspect(bad)}; allowed: #{inspect(allowed)}"
-    end
+    opts
   end
 
   defp validate_language!(language) when language in @language_allowlist, do: :ok
