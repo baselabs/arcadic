@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure's
   `ServerSecurityException` via `error.exception`).
 
+### Fixed
+
+- `Arcadic.query/4`, `command/4`, and `query_stream/4` now reject a non-keyword-list `opts`
+  with a value-free `ArgumentError` (`"opts must be a keyword list"`). Previously an improper-list
+  `opts` (e.g. `[:foo]`) raised a `Keyword` error whose message echoed the offending entry — a
+  Rule-3 value leak on the core query paths. The opt-key guard is now shared across the query,
+  `Schema`, `Import`, and `Vector` surfaces.
+
 ## [0.3.0] - 2026-07-05
 
 ### Added
