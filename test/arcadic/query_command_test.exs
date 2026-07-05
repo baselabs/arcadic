@@ -59,6 +59,14 @@ defmodule Arcadic.QueryCommandTest do
     end
   end
 
+  test "an unknown :language value still raises after the opt-key guard runs first" do
+    # validate_opts!/2 delegates the key-shape guard to Arcadic.Opts then validates the
+    # :language VALUE — this pins that reordering did not drop language validation.
+    assert_raise ArgumentError, ~r/unknown language/, fn ->
+      Arcadic.query(conn(), "RETURN 1", %{}, language: "boguslang")
+    end
+  end
+
   test "rejects non-keyword opts value-free — never echoes the offending entry (Rule 3)" do
     for bad <- [[:SENTINEL_SECRET_9f3a], [{"SENTINEL_9f3a", 1}], %{language: "cypher"}] do
       for call <- [
