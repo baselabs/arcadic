@@ -103,9 +103,14 @@ defmodule Arcadic.Import do
 
   # --- WITH settings: developer config; names identifier-validated, values number|boolean ---
 
-  defp build_with([]), do: ""
+  # Shared no-parens WITH-grammar seam: `Arcadic.Export` reuses this one builder so import + export
+  # emit an identical clause. Public `@doc false` (not part of the documented API); `Import.database/3`
+  # remains its internal caller. Mirrors `Arcadic.Bolt`'s `@doc false` `statement_of/1` precedent.
+  @doc false
+  @spec build_with(keyword()) :: String.t()
+  def build_with([]), do: ""
 
-  defp build_with(settings) when is_list(settings) do
+  def build_with(settings) when is_list(settings) do
     pairs =
       Enum.map_join(settings, ", ", fn {name, value} ->
         "#{setting_name!(name)} = #{setting_value!(value)}"
@@ -114,7 +119,7 @@ defmodule Arcadic.Import do
     " WITH #{pairs}"
   end
 
-  defp build_with(_), do: raise(ArgumentError, "with: must be a keyword list of settings")
+  def build_with(_), do: raise(ArgumentError, "with: must be a keyword list of settings")
 
   defp setting_name!(name) when is_atom(name) do
     case Arcadic.Identifier.validate(Atom.to_string(name)) do
