@@ -246,7 +246,7 @@ defmodule Arcadic.QueryStreamTest do
       assert_received {:page_body, b1}
 
       assert b1["command"] ==
-               "SELECT FROM V ORDER BY @rid SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+               "SELECT FROM V ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
       assert b1["language"] == "sql"
       assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 2}

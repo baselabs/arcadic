@@ -66,8 +66,10 @@ defmodule Arcadic.Transport.HTTP do
 
   # Offset paging: append arcadic's OWN fixed suffix; offsets ride params. @rid is a total
   # order (guaranteed stable paging). Each page is a stateless POST (no session — in-tx refused).
+  # ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is Cypher's syntax); a `$`-named
+  # SQL param binds to null → `Invalid value for LIMIT: null`. The param KEYS stay the bare name.
   defp build_page_stream(conn, statement, params, chunk, timeout) do
-    paged = statement <> " ORDER BY @rid SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+    paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
     Stream.resource(
       fn -> 0 end,
