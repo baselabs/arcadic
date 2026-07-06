@@ -185,13 +185,30 @@ defmodule Arcadic.Integration.SchemaImportTest do
   test "a string with: setting carrying a loopback URL opens no new SSRF door (B9 boundary)", %{
     conn: conn
   } do
-    # Probed 2026-07-06: a string `mapping` setting URL is NOT independently fetched by the server (a
-    # loopback `mapping` produced the same source-not-found error as no mapping) — the MAIN source URL
-    # is the only fetch/SSRF vector, server-blocked by importBlockLocalNetworks. So a string setting is
-    # not a fetch vector; the import fails on the (nonexistent) source, never reaching a loopback.
-    assert {:error, %Arcadic.Error{}} =
-             Arcadic.Import.database(conn, "file:///tmp/arcadic_none.jsonl",
-               with: [mapping: "http://127.0.0.1:9/x"]
-             )
+    # A string `mapping` setting URL must NOT be an independent server-side fetch vector. The gate is
+    # a DISCRIMINATOR, not a bare `{:error, _}`: a loopback `mapping` must produce the IDENTICAL
+    # source-error signature as the same nonexistent source with NO mapping — proving the mapping URL
+    # was never fetched. If ArcadeDB ever DID fetch it, `importBlockLocalNetworks` would block the
+    # loopback and surface the SSRF-block signature (`reason: :unauthorized` /
+    # `exception: "java.lang.SecurityException"` — the signature a loopback *source* produces),
+    # flipping BOTH assertions below RED. Probed live 2026-07-06:
+    #   loopback mapping AND no-mapping -> reason :server_error / com.arcadedb…CommandExecutionException
+    #   loopback SOURCE (real SSRF block) -> reason :unauthorized / java.lang.SecurityException
+    baseline = Arcadic.Import.database(conn, "file:///tmp/arcadic_none.jsonl", with: [])
+
+    with_mapping =
+      Arcadic.Import.database(conn, "file:///tmp/arcadic_none.jsonl",
+        with: [mapping: "http://127.0.0.1:9/x"]
+      )
+
+    assert {:error, %Arcadic.Error{reason: base_reason, exception: base_exc}} = baseline
+    assert {:error, %Arcadic.Error{reason: map_reason, exception: map_exc}} = with_mapping
+
+    # The mapping changes NOTHING about the error — it was not fetched.
+    assert {map_reason, map_exc} == {base_reason, base_exc}
+
+    # And explicitly: it is NOT the SSRF-block signature a fetched-and-blocked loopback would raise.
+    refute map_reason == :unauthorized
+    refute map_exc == "java.lang.SecurityException"
   end
 end
