@@ -260,8 +260,8 @@ defmodule Arcadic.QueryStreamTest do
       end)
     end
 
-    test "pages via ORDER BY @rid SKIP/LIMIT (offsets param-bound) and drains on a short page" do
-      # chunk 2: page1 [2 rows] → page2 [1 row, short → last]
+    test "SQL WHERE-less pages by @rid KEYSET (literal cursor), not offset, and drains on a short page" do
+      # chunk 2: page1 [2 rows @rid #1:0,#1:1] → page2 [1 row #1:2, short → last]
       stub_pages([
         [%{"@rid" => "#1:0", "n" => 1}, %{"@rid" => "#1:1", "n" => 2}],
         [%{"@rid" => "#1:2", "n" => 3}]
@@ -275,19 +275,126 @@ defmodule Arcadic.QueryStreamTest do
 
       assert Enum.map(Enum.to_list(stream), & &1["n"]) == [1, 2, 3]
 
+      # page 1: NO WHERE, just ORDER BY @rid LIMIT (param-bound); no SKIP.
+      assert_received {:page_body, b1}
+      assert b1["command"] == "SELECT FROM V ORDER BY @rid LIMIT :__arcadic_limit"
+      assert b1["params"] == %{"__arcadic_limit" => 2}
+      refute Map.has_key?(b1["params"], "__arcadic_skip")
+      assert b1["limit"] == 2
+
+      # page 2: WHERE @rid > <literal cursor from page-1's MAX @rid #1:1>, still ORDER BY @rid LIMIT.
+      assert_received {:page_body, b2}
+
+      assert b2["command"] ==
+               "SELECT FROM V WHERE @rid > #1:1 ORDER BY @rid LIMIT :__arcadic_limit"
+
+      assert b2["params"] == %{"__arcadic_limit" => 2}
+      # drained on the short page — no third POST
+      refute_received {:page_body, _}
+    end
+
+    test "SQL keyset reads the cursor from the ORDER BY alias column on a projection (and strips it)" do
+      # A projection (SELECT n ...) yields the @rid in _$$$ORDER_BY_ALIAS$$$_0, not an @rid key.
+      # With chunk_size 1, a 1-row page EQUALS the chunk (not short), so the stream keeps paging — a
+      # trailing EMPTY page is required to drain it (a 1-row page never trips `length < chunk`).
+      stub_pages([
+        [%{"n" => 1, "_$$$ORDER_BY_ALIAS$$$_0" => "#3:0"}],
+        [%{"n" => 2, "_$$$ORDER_BY_ALIAS$$$_0" => "#3:1"}],
+        []
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT n FROM V", %{},
+                 language: "sql",
+                 chunk_size: 1
+               )
+
+      # pages 1 and 2 each equal chunk (1 row), page 3 is empty → drains; the alias is stripped.
+      assert Enum.to_list(stream) == [%{"n" => 1}, %{"n" => 2}]
+      assert_received {:page_body, b1}
+      assert b1["command"] == "SELECT n FROM V ORDER BY @rid LIMIT :__arcadic_limit"
+      assert_received {:page_body, b2}
+      # cursor came from the alias column of page-1's last row (#3:0)
+      assert b2["command"] ==
+               "SELECT n FROM V WHERE @rid > #3:0 ORDER BY @rid LIMIT :__arcadic_limit"
+    end
+
+    test "SQL WHERE-present falls back to OFFSET paging (arcadic cannot inject a keyset predicate)" do
+      stub_pages([
+        [%{"@rid" => "#1:0", "n" => 5}],
+        []
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V WHERE n > 4", %{},
+                 language: "sql",
+                 chunk_size: 1
+               )
+
+      assert Enum.map(Enum.to_list(stream), & &1["n"]) == [5]
+      assert_received {:page_body, b1}
+
+      # offset suffix (SKIP + LIMIT), NOT a keyset WHERE @rid > … (the statement already has a WHERE).
+      assert b1["command"] ==
+               "SELECT FROM V WHERE n > 4 ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
+
+      assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 1}
+    end
+
+    test "SQL WHERE-sniff is case-insensitive and word-bounded (a 'where' substring in a name is not a WHERE)" do
+      stub_pages([[]])
+      # 'somewhere' contains 'where' but not as a WHERE clause → still keyset.
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT somewhere FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert Enum.to_list(stream) == []
+      assert_received {:page_body, b1}
+      assert b1["command"] == "SELECT somewhere FROM V ORDER BY @rid LIMIT :__arcadic_limit"
+    end
+
+    test "SQL keyset raises a value-free error if a page row carries no parseable @rid cursor" do
+      # A row with neither @rid nor the alias column (protocol drift) must fail LOUD, never
+      # silently switch to offset (which could skip/dup rows). No caller value is echoed.
+      stub_pages([[%{"n" => 1}]])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},
+                 language: "sql",
+                 chunk_size: 1
+               )
+
+      err = assert_raise Arcadic.Error, fn -> Enum.to_list(stream) end
+      assert err.message =~ "keyset"
+      refute err.message =~ "SELECT FROM V"
+    end
+
+    test "SQL WHERE-present offset paging (offsets param-bound) drains on a short page" do
+      # chunk 2: page1 [2 rows] → page2 [1 row, short → last]
+      stub_pages([
+        [%{"@rid" => "#1:0", "n" => 1}, %{"@rid" => "#1:1", "n" => 2}],
+        [%{"@rid" => "#1:2", "n" => 3}]
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V WHERE n > 0", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert Enum.map(Enum.to_list(stream), & &1["n"]) == [1, 2, 3]
       assert_received {:page_body, b1}
 
       assert b1["command"] ==
-               "SELECT FROM V ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
+               "SELECT FROM V WHERE n > 0 ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
       assert b1["language"] == "sql"
       assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 2}
-      # The page body ALSO carries `limit: chunk` so ArcadeDB's default body-limit (20000) cannot
-      # cap a page below the statement LIMIT and truncate the stream (a page < chunk = terminate).
       assert b1["limit"] == 2
       assert_received {:page_body, b2}
       assert b2["params"] == %{"__arcadic_skip" => 2, "__arcadic_limit" => 2}
-      # exactly 2 pages (drained on the short page — no third POST)
       refute_received {:page_body, _}
     end
 
@@ -405,8 +512,8 @@ defmodule Arcadic.QueryStreamTest do
         ])
 
       stub_pages([
-        [%{"n" => 1}, %{"n" => 2}],
-        [%{"n" => 3}]
+        [%{"@rid" => "#1:0", "n" => 1}, %{"@rid" => "#1:1", "n" => 2}],
+        [%{"@rid" => "#1:2", "n" => 3}]
       ])
 
       assert {:ok, stream} =
@@ -432,8 +539,8 @@ defmodule Arcadic.QueryStreamTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :query_stream, :stop]])
 
       stub_pages([
-        [%{"n" => 1}, %{"n" => 2}],
-        [%{"n" => 3}, %{"n" => 4}]
+        [%{"@rid" => "#1:0", "n" => 1}, %{"@rid" => "#1:1", "n" => 2}],
+        [%{"@rid" => "#1:2", "n" => 3}, %{"@rid" => "#1:3", "n" => 4}]
       ])
 
       assert {:ok, stream} =
@@ -442,7 +549,7 @@ defmodule Arcadic.QueryStreamTest do
                  chunk_size: 2
                )
 
-      assert Enum.take(stream, 1) == [%{"n" => 1}]
+      assert Enum.take(stream, 1) == [%{"@rid" => "#1:0", "n" => 1}]
 
       assert_received {[:arcadic, :query_stream, :stop], ^ref, %{row_count: _},
                        %{mode: :read, reason: :halted}}

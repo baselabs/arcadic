@@ -38,6 +38,12 @@ defmodule Arcadic.Transport.HTTP do
   # string-only guard and then collide as a DUPLICATE JSON key that ArcadeDB binds last.
   @reserved_params ["__arcadic_skip", "__arcadic_limit", :__arcadic_skip, :__arcadic_limit]
 
+  # The keyset cursor is an arcadic-owned, server-returned @rid LITERAL interpolated into the next
+  # page's `WHERE @rid > <cursor>` (param-bound @rid is dead — probed). It is injection-inert ONLY
+  # by this positive allowlist: exactly `#<cluster>:<position>`, digits only, anchored \A…\z (never
+  # ^…$ — PCRE $ matches before a trailing newline). Any other shape fails the stream LOUD.
+  @rid_cursor_re ~r/\A#\d+:\d+\z/
+
   @impl true
   @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -86,18 +92,23 @@ defmodule Arcadic.Transport.HTTP do
       true ->
         chunk = Keyword.get(opts, :chunk_size, 1000)
         timeout = Keyword.get(opts, :timeout, :infinity)
-        {:ok, build_page_stream(conn, statement, params, chunk, timeout)}
+
+        stream =
+          if has_where?(statement),
+            do: build_offset_stream(conn, statement, params, chunk, timeout),
+            else: build_keyset_stream(conn, statement, params, chunk, timeout)
+
+        {:ok, stream}
     end
   end
 
-  # Offset paging: append arcadic's OWN fixed suffix; offsets ride params. `@rid` is a total
-  # ORDER, so a page is stably positioned WITHIN a single snapshot — but each page is an
-  # independent stateless POST (no session — in-tx refused), so a concurrent DELETE of an
-  # already-emitted row shifts later rows down and the next `SKIP` can step over one (a row
-  # silently missing). It is stable ordering, not a consistent snapshot; use a Bolt in-tx cursor
-  # for snapshot consistency. ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is
-  # Cypher's syntax); a `$`-named SQL param binds to null → `Invalid value for LIMIT: null`.
-  defp build_page_stream(conn, statement, params, chunk, timeout) do
+  # Offset paging (WHERE-present SQL, and the base machinery Cypher offset reuses in Task 2): append
+  # arcadic's OWN fixed suffix; offsets ride params. Stable ordering within a snapshot, but each page
+  # is an independent stateless POST — a concurrent DELETE of an already-emitted row shifts later rows
+  # down and the next SKIP can step over one. Use a Bolt in-tx cursor for snapshot consistency.
+  # ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is Cypher's syntax); a `$`-named SQL
+  # param binds to null → `Invalid value for LIMIT: null`.
+  defp build_offset_stream(conn, statement, params, chunk, timeout) do
     paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
     # Reuse the existing `[:arcadic, :query_stream, :start|:stop]` events (spec §6): start on the
@@ -117,7 +128,7 @@ defmodule Arcadic.Transport.HTTP do
           page_params =
             Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
 
-          emit_page(page(conn, paged, page_params, timeout), chunk, acc)
+          emit_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
       end,
       fn acc ->
         reason = if acc.done, do: :ok, else: :halted
@@ -129,6 +140,43 @@ defmodule Arcadic.Transport.HTTP do
       end
     )
   end
+
+  # Keyset paging (O(n)) for WHERE-less SQL: page 1 has no WHERE; each later page adds a trailing
+  # `WHERE @rid > <cursor-literal>` where <cursor> is the MAX @rid of the previous page (rows come
+  # back @rid-ascending). More correct than offset under concurrent inserts (no offset-shift skip),
+  # and O(n) instead of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated.
+  defp build_keyset_stream(conn, statement, params, chunk, timeout) do
+    Stream.resource(
+      fn ->
+        Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
+        %{cursor: nil, rows: 0, done: false}
+      end,
+      fn
+        %{done: true} = acc ->
+          {:halt, acc}
+
+        %{cursor: cursor} = acc ->
+          paged = keyset_page_statement(statement, cursor)
+          page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
+          emit_keyset_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+      end,
+      fn acc ->
+        reason = if acc.done, do: :ok, else: :halted
+
+        Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: acc.rows}, %{
+          mode: :read,
+          reason: reason
+        })
+      end
+    )
+  end
+
+  # Page 1 (cursor nil): the bare statement + ORDER BY @rid LIMIT. Page N: a trailing keyset predicate.
+  defp keyset_page_statement(statement, nil),
+    do: statement <> " ORDER BY @rid LIMIT :__arcadic_limit"
+
+  defp keyset_page_statement(statement, cursor),
+    do: statement <> " WHERE @rid > #{cursor} ORDER BY @rid LIMIT :__arcadic_limit"
 
   # A full page (== chunk) advances the offset; a short/empty page is the last (drain).
   defp emit_page({:ok, []}, _chunk, acc), do: {:halt, %{acc | done: true}}
@@ -142,13 +190,48 @@ defmodule Arcadic.Transport.HTTP do
 
   defp emit_page({:error, e}, _chunk, _acc), do: raise(e)
 
+  # A full page (== chunk) advances the cursor to the page's MAX @rid; a short/empty page drains.
+  defp emit_keyset_page({:ok, []}, _chunk, acc), do: {:halt, %{acc | done: true}}
+
+  defp emit_keyset_page({:ok, rows}, chunk, acc) do
+    cursor = extract_rid_cursor!(List.last(rows))
+    shaped = Enum.map(rows, &strip_order_alias/1)
+    acc = %{acc | rows: acc.rows + length(rows), cursor: cursor}
+    next = if length(rows) < chunk, do: %{acc | done: true}, else: acc
+    {shaped, next}
+  end
+
+  defp emit_keyset_page({:error, e}, _chunk, _acc), do: raise(e)
+
+  # The cursor is read from the row's `@rid` key (bare SELECT) or the `_$$$ORDER_BY_ALIAS$$$_0`
+  # column (projection) — both probed. Validate against the allowlist BEFORE it is interpolated; a
+  # missing/malformed cursor is protocol drift → raise a value-free error (never silently continue,
+  # which could skip or duplicate rows). No caller statement/value is echoed (Rule 3).
+  defp extract_rid_cursor!(row) do
+    raw = row["@rid"] || row["_$$$ORDER_BY_ALIAS$$$_0"]
+
+    if is_binary(raw) and Regex.match?(@rid_cursor_re, raw) do
+      raw
+    else
+      raise %Error{
+        reason: :server_error,
+        message: "HTTP keyset stream: page row carried no parseable @rid cursor"
+      }
+    end
+  end
+
+  # `\bwhere\b` (case-insensitive, word-bounded) — a false positive routes to the correct O(n²)
+  # offset path (never wrong data); a real SQL WHERE is always tokenized so there is no false
+  # negative (which would append a SECOND WHERE and parse-error, a LOUD failure, not silent-wrong).
+  defp has_where?(statement), do: Regex.match?(~r/\bwhere\b/i, statement)
+
   # The body-level `limit` mirrors the statement's `LIMIT :__arcadic_limit` (== chunk). Without it,
   # ArcadeDB's DEFAULT body limit (20000) caps a page BELOW the statement LIMIT, and since a page
   # shorter than `chunk` is treated as the last, a `chunk_size` above the server default would
   # SILENTLY truncate the stream. Setting it to the chunk makes the statement LIMIT the only cap.
-  defp page(conn, statement, params, timeout) do
+  defp page(conn, statement, params, timeout, language) do
     body = %{
-      language: "sql",
+      language: language,
       command: statement,
       params: params,
       limit: params["__arcadic_limit"]
