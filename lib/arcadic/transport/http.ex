@@ -11,7 +11,7 @@ defmodule Arcadic.Transport.HTTP do
 
   @behaviour Arcadic.Transport
 
-  alias Arcadic.{Conn, Error, Result, TransportError}
+  alias Arcadic.{Conn, Error, Result, Telemetry, TransportError}
 
   @impl true
   def execute(%Conn{} = conn, mode, request, opts) when mode in [:read, :write] do
@@ -98,32 +98,47 @@ defmodule Arcadic.Transport.HTTP do
   defp build_page_stream(conn, statement, params, chunk, timeout) do
     paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
+    # Reuse the existing `[:arcadic, :query_stream, :start|:stop]` events (spec §6): start on the
+    # first page, stop on drain/halt/error, value-free (mode/reason/row_count). Mirrors the Bolt
+    # stream path (bolt.ex stream_start/stream_stop); the after-fun runs on drain, early halt, AND
+    # a mid-stream raise, so :stop always fires. `reason`: `:ok` drained, `:halted` stopped early.
     Stream.resource(
-      fn -> 0 end,
+      fn ->
+        Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
+        %{offset: 0, rows: 0, done: false}
+      end,
       fn
-        :done ->
-          {:halt, :done}
+        %{done: true} = acc ->
+          {:halt, acc}
 
-        offset ->
+        %{offset: offset} = acc ->
           page_params =
             Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
 
-          emit_page(page(conn, paged, page_params, timeout), chunk, offset)
+          emit_page(page(conn, paged, page_params, timeout), chunk, acc)
       end,
-      fn _ -> :ok end
+      fn acc ->
+        reason = if acc.done, do: :ok, else: :halted
+
+        Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: acc.rows}, %{
+          mode: :read,
+          reason: reason
+        })
+      end
     )
   end
 
   # A full page (== chunk) advances the offset; a short/empty page is the last (drain).
-  defp emit_page({:ok, []}, _chunk, _offset), do: {:halt, :done}
+  defp emit_page({:ok, []}, _chunk, acc), do: {:halt, %{acc | done: true}}
 
-  defp emit_page({:ok, rows}, chunk, offset) do
+  defp emit_page({:ok, rows}, chunk, acc) do
     shaped = Enum.map(rows, &strip_order_alias/1)
-    next = if length(rows) < chunk, do: :done, else: offset + chunk
+    acc = %{acc | rows: acc.rows + length(rows), offset: acc.offset + chunk}
+    next = if length(rows) < chunk, do: %{acc | done: true}, else: acc
     {shaped, next}
   end
 
-  defp emit_page({:error, e}, _chunk, _offset), do: raise(e)
+  defp emit_page({:error, e}, _chunk, _acc), do: raise(e)
 
   # The body-level `limit` mirrors the statement's `LIMIT :__arcadic_limit` (== chunk). Without it,
   # ArcadeDB's DEFAULT body limit (20000) caps a page BELOW the statement LIMIT, and since a page

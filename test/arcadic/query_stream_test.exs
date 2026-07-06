@@ -364,6 +364,59 @@ defmodule Arcadic.QueryStreamTest do
       refute_received {:page_body, _}
     end
 
+    test "emits query_stream :start and :stop telemetry (value-free) around the HTTP stream" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:arcadic, :query_stream, :start],
+          [:arcadic, :query_stream, :stop]
+        ])
+
+      stub_pages([
+        [%{"n" => 1}, %{"n" => 2}],
+        [%{"n" => 3}]
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      # lazy — no event until enumeration begins (start fires in the Stream.resource start-fun)
+      refute_received {[:arcadic, :query_stream, :start], ^ref, _, _}
+
+      assert length(Enum.to_list(stream)) == 3
+
+      assert_received {[:arcadic, :query_stream, :start], ^ref, _measurements, %{mode: :read}}
+
+      assert_received {[:arcadic, :query_stream, :stop], ^ref, %{row_count: 3},
+                       %{mode: :read, reason: :ok}}
+
+      :telemetry.detach(ref)
+    end
+
+    test "an early-halted HTTP stream stops with reason: :halted" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :query_stream, :stop]])
+
+      stub_pages([
+        [%{"n" => 1}, %{"n" => 2}],
+        [%{"n" => 3}, %{"n" => 4}]
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert Enum.take(stream, 1) == [%{"n" => 1}]
+
+      assert_received {[:arcadic, :query_stream, :stop], ^ref, %{row_count: _},
+                       %{mode: :read, reason: :halted}}
+
+      :telemetry.detach(ref)
+    end
+
     test "a mid-stream error page RAISES a typed error and redacts the server value" do
       secret = "row-value-and-email@example.com-SEKRET"
 
