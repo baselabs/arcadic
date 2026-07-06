@@ -27,11 +27,21 @@ defmodule Arcadic.Transport.HTTP do
   defp endpoint(:write), do: "command"
 
   @paging_clause_re ~r/\b(order\s+by|skip|limit)\b/i
-  # A SQL comment token in the caller statement is fail-closed too: a trailing `--` (line comment)
-  # would comment OUT arcadic's appended ` ORDER BY @rid SKIP … LIMIT …` suffix, so the page runs
-  # unpaged (full result set, HTTP 200) and `length(rows) < chunk` never trips — a silent-wrong,
-  # non-terminating stream. `/*` (block comment) is rejected on the same principle.
-  @comment_token_re ~r/(--|\/\*)/
+  # SQL comment tokens; a trailing `--` or `/*` would comment OUT arcadic's appended paging suffix so
+  # the page runs unpaged (full result, HTTP 200) and `length(rows) < chunk` never trips — a silent,
+  # non-terminating stream. Cypher additionally has `//` (line comment) with the same hazard (probed).
+  @sql_comment_re ~r/(--|\/\*)/
+  @cypher_comment_re ~r/(--|\/\*|\/\/)/
+
+  defp comment_re("cypher"), do: @cypher_comment_re
+  defp comment_re(_), do: @sql_comment_re
+
+  # A Cypher :order_key is a caller-supplied ORDER expression interpolated into the paging suffix.
+  # It is restricted to EXACTLY `id(<identifier>)` — the only probed TOTAL order over HTTP (a
+  # non-unique key like `n.age` would silently dup/lose rows across stateless offset pages, so the
+  # allowlist is correctness-tight, not merely injection-tight). Anchored \A…\z (never ^…$ — PCRE $
+  # matches before a trailing newline, which would admit `id(n)\n<payload>`).
+  @order_key_re ~r/\Aid\([A-Za-z_][A-Za-z0-9_]*\)\z/
   # arcadic OWNS these param names (it binds the offsets); a caller param of the same name would be
   # silently clobbered by Map.merge, mis-binding the caller's own predicate. Reserve BOTH the string
   # and atom forms — Jason stringifies an atom key, so an atom `:__arcadic_skip` would slip a
@@ -61,24 +71,27 @@ defmodule Arcadic.Transport.HTTP do
         opts
       ) do
     cond do
-      language != "sql" ->
+      language not in ["sql", "cypher"] ->
         {:error,
-         %Error{reason: :not_supported, message: "HTTP streaming requires language: \"sql\""}}
+         %Error{
+           reason: :not_supported,
+           message: "HTTP streaming requires language: \"sql\" or \"cypher\""
+         }}
 
       Regex.match?(@paging_clause_re, statement) ->
         {:error,
          %Error{
            reason: :not_supported,
            message:
-             "HTTP streaming statement must not contain ORDER BY / SKIP / LIMIT (arcadic pages by @rid)"
+             "HTTP streaming statement must not contain ORDER BY / SKIP / LIMIT (arcadic pages it)"
          }}
 
-      Regex.match?(@comment_token_re, statement) ->
+      Regex.match?(comment_re(language), statement) ->
         {:error,
          %Error{
            reason: :not_supported,
            message:
-             "HTTP streaming statement must not contain a SQL comment (-- or /*) — it would neutralize arcadic's paging suffix"
+             "HTTP streaming statement must not contain a comment (--, /*, or // for cypher) — it would neutralize arcadic's paging suffix"
          }}
 
       Enum.any?(@reserved_params, &Map.has_key?(params, &1)) ->
@@ -86,8 +99,11 @@ defmodule Arcadic.Transport.HTTP do
          %Error{
            reason: :not_supported,
            message:
-             "HTTP streaming reserves the params __arcadic_skip / __arcadic_limit (arcadic pages by @rid)"
+             "HTTP streaming reserves the params __arcadic_skip / __arcadic_limit (arcadic pages the statement)"
          }}
+
+      language == "cypher" ->
+        stream_cypher(conn, statement, params, opts)
 
       true ->
         chunk = Keyword.get(opts, :chunk_size, 1000)
@@ -99,6 +115,34 @@ defmodule Arcadic.Transport.HTTP do
             else: build_keyset_stream(conn, statement, params, chunk, timeout)
 
         {:ok, stream}
+    end
+  end
+
+  # Cypher streaming: validate the required :order_key, then OFFSET-page over it with Cypher $name
+  # placeholders (Cypher has no variable-free order pseudo-column to append, and a keyset predicate
+  # would need a mid-statement WHERE = no-parse-blocked → offset only). Documents are
+  # Cypher-unmatchable (ClassCastException, probed) → they stay on the SQL path.
+  defp stream_cypher(conn, statement, params, opts) do
+    case Keyword.get(opts, :order_key) do
+      key when is_binary(key) ->
+        if Regex.match?(@order_key_re, key) do
+          chunk = Keyword.get(opts, :chunk_size, 1000)
+          timeout = Keyword.get(opts, :timeout, :infinity)
+          {:ok, build_cypher_offset_stream(conn, statement, key, params, chunk, timeout)}
+        else
+          {:error,
+           %Error{
+             reason: :not_supported,
+             message: "cypher :order_key must be exactly id(<identifier>) (a total, unique order)"
+           }}
+        end
+
+      _ ->
+        {:error,
+         %Error{
+           reason: :not_supported,
+           message: "cypher HTTP streaming requires :order_key (e.g. order_key: \"id(v)\")"
+         }}
     end
   end
 
@@ -129,6 +173,38 @@ defmodule Arcadic.Transport.HTTP do
             Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
 
           emit_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+      end,
+      fn acc ->
+        reason = if acc.done, do: :ok, else: :halted
+
+        Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: acc.rows}, %{
+          mode: :read,
+          reason: reason
+        })
+      end
+    )
+  end
+
+  # Cypher offset paging: same machinery as build_offset_stream but with a Cypher suffix ($name
+  # placeholders + the validated order_key) and language "cypher" on the page body.
+  defp build_cypher_offset_stream(conn, statement, order_key, params, chunk, timeout) do
+    paged =
+      statement <> " ORDER BY #{order_key} SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+
+    Stream.resource(
+      fn ->
+        Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
+        %{offset: 0, rows: 0, done: false}
+      end,
+      fn
+        %{done: true} = acc ->
+          {:halt, acc}
+
+        %{offset: offset} = acc ->
+          page_params =
+            Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
+
+          emit_page(page(conn, paged, page_params, timeout, "cypher"), chunk, acc)
       end,
       fn acc ->
         reason = if acc.done, do: :ok, else: :halted

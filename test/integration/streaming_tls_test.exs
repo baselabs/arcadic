@@ -37,14 +37,17 @@ defmodule Arcadic.Integration.StreamingTLSTest do
       refute Enum.any?(rows, &Map.has_key?(&1, "@props"))
     end
 
-    test "refuses a self-ordered statement and a non-sql language client-side" do
+    test "refuses a self-ordered SQL statement and cypher-without-order_key, client-side" do
       conn = http_conn()
 
       assert {:error, %Arcadic.Error{reason: :not_supported}} =
                Arcadic.query_stream(conn, "SELECT FROM V ORDER BY n", %{}, language: "sql")
 
-      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+      # cypher IS supported now, but only with :order_key; absent → rejected naming the requirement.
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
                Arcadic.query_stream(conn, "MATCH (n) RETURN n", %{}, language: "cypher")
+
+      assert e.message =~ "order_key"
     end
   end
 

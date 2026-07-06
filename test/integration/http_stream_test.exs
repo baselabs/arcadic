@@ -55,10 +55,6 @@ defmodule Arcadic.Integration.HTTPStreamTest do
     assert Enum.map(Enum.to_list(stream), & &1["i"]) |> Enum.sort() == [21, 22, 23, 24, 25]
   end
 
-  # Cypher streaming (:order_key) lands in Task 2; skip until then (un-skip in Task 2 Step 5).
-  # `:skip` (built-in) holds under EVERY filter, including `--only integration` — an unregistered
-  # tag like `:s5_cypher_pending` would NOT, since `--only`'s include wins over a tag exclude.
-  @tag :skip
   test "Cypher drains a vertex graph in id(v) order via :order_key (chunk < total)", %{conn: conn} do
     {:ok, stream} =
       Arcadic.query_stream(conn, "MATCH (v:Vtx) RETURN v", %{},

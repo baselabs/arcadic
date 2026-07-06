@@ -25,7 +25,7 @@ defmodule Arcadic do
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
   @command_opts ~w(language limit serializer timeout retries)a
   @query_opts ~w(language limit serializer timeout)a
-  @query_stream_opts ~w(chunk_size timeout language)a
+  @query_stream_opts ~w(chunk_size timeout language order_key)a
 
   @doc "Build a connection handle. See `Arcadic.Conn.new/3`."
   @spec connect(String.t(), String.t(), keyword()) :: Conn.t()

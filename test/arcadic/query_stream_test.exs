@@ -171,13 +171,14 @@ defmodule Arcadic.QueryStreamTest do
   end
 
   describe "Arcadic.query_stream/4 facade guards" do
-    test "the default HTTP transport streams, but requires language: sql" do
+    test "the default HTTP transport streams Cypher but requires :order_key" do
       conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
 
+      # default language is cypher; without :order_key it is rejected naming the requirement.
       assert {:error, %Arcadic.Error{reason: :not_supported, message: msg}} =
                Arcadic.query_stream(conn, "MATCH (n) RETURN n")
 
-      assert msg =~ "requires language"
+      assert msg =~ "order_key"
     end
 
     test "rejects unknown options" do
@@ -413,13 +414,13 @@ defmodule Arcadic.QueryStreamTest do
       assert row == %{"n" => 1}
     end
 
-    test "refuses a non-sql language value-free without touching the wire" do
+    test "refuses an unsupported language value-free without touching the wire" do
       Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
 
       assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
-               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{}, language: "cypher")
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{}, language: "gremlin")
 
-      assert e.message =~ "requires language"
+      assert e.message =~ "sql"
       refute_received {:page_body, _}
     end
 
@@ -578,6 +579,126 @@ defmodule Arcadic.QueryStreamTest do
       # The value-bearing server `error`/`detail` must not survive into the raised exception.
       refute Exception.message(err) =~ secret
       refute inspect(err) =~ secret
+    end
+
+    test "Cypher requires :order_key — absent → value-free :not_supported naming the requirement" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+      secret = "MATCH (s:SECRET_9f3a) RETURN s"
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(http_conn(), secret, %{}, language: "cypher")
+
+      assert e.message =~ "order_key"
+      # value-free: the statement is never echoed
+      refute e.message =~ "SECRET_9f3a"
+      refute_received {:page_body, _}
+    end
+
+    test "Cypher order_key allowlist: accepts id(<identifier>), rejects everything else value-free" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      # rejected: non-unique key, second clause, comment smuggle, embedded newline, a function payload,
+      # @rid (SQL cursor on cypher), unbalanced/empty, uppercase-ID with a dot.
+      for bad <- [
+            "n.age",
+            "id(n) OR 1=1",
+            "id(n)//",
+            "id(n)\n",
+            "id(n); DROP",
+            "count(n)",
+            "@rid",
+            "id()",
+            "id(n).x"
+          ] do
+        assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+                 Arcadic.query_stream(http_conn(), "MATCH (n:V) RETURN n", %{},
+                   language: "cypher",
+                   order_key: bad
+                 )
+
+        assert e.message =~ "order_key"
+        refute e.message =~ bad
+      end
+
+      refute_received {:page_body, _}
+    end
+
+    test "Cypher order_key accepts id(<identifier>) forms" do
+      # accepted shapes drive the paging path (stubbed empty → drains immediately).
+      {:ok, agent} = Agent.start_link(fn -> [[]] end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:page_body, Jason.decode!(Req.Test.raw_body(c))})
+        rows = Agent.get_and_update(agent, fn [h | t] -> {h, t ++ [[]]} end)
+        Req.Test.json(c, %{"result" => rows})
+      end)
+
+      for good <- ["id(n)", "id(v)", "id(_x)", "id(Node1)"] do
+        assert {:ok, stream} =
+                 Arcadic.query_stream(http_conn(), "MATCH (n:V) RETURN n", %{},
+                   language: "cypher",
+                   order_key: good,
+                   chunk_size: 5
+                 )
+
+        assert Enum.to_list(stream) == []
+      end
+    end
+
+    test "Cypher pages by OFFSET with $name placeholders and the given order_key" do
+      {:ok, agent} = Agent.start_link(fn -> [[%{"i" => 1}], []] end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:page_body, Jason.decode!(Req.Test.raw_body(c))})
+        rows = Agent.get_and_update(agent, fn [h | t] -> {h, t} end)
+        Req.Test.json(c, %{"result" => rows})
+      end)
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "MATCH (v:V) RETURN v", %{},
+                 language: "cypher",
+                 order_key: "id(v)",
+                 chunk_size: 1
+               )
+
+      assert Enum.to_list(stream) == [%{"i" => 1}]
+      assert_received {:page_body, b1}
+      # Cypher $name placeholders (NOT SQL :name) and the caller order_key.
+      assert b1["command"] ==
+               "MATCH (v:V) RETURN v ORDER BY id(v) SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+
+      assert b1["language"] == "cypher"
+      assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 1}
+      assert b1["limit"] == 1
+      assert_received {:page_body, b2}
+      assert b2["params"] == %{"__arcadic_skip" => 1, "__arcadic_limit" => 1}
+    end
+
+    test "Cypher rejects a // line comment (would neutralize the appended paging suffix)" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(http_conn(), "MATCH (v:V) RETURN v //", %{},
+                 language: "cypher",
+                 order_key: "id(v)"
+               )
+
+      assert e.message =~ "comment"
+      refute_received {:page_body, _}
+    end
+
+    test "SQL still rejects -- and /* but a bare // does NOT block a SQL statement (SQL has no // comment)" do
+      # The // token is Cypher-only; a SQL statement containing // (e.g. a path literal) is not
+      # comment-guarded by //. Confirm the SQL guard is unchanged (-- / /* still rejected).
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V -- x", %{}, language: "sql")
+
+      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V /* x */", %{}, language: "sql")
+
+      refute_received {:page_body, _}
     end
   end
 end
