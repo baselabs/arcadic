@@ -76,6 +76,12 @@ defmodule Arcadic.Integration.StreamingTLSTest do
     test "a tx-scoped stream sees the tx's uncommitted write, then the tx commits cleanly", %{
       conn: conn
     } do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:arcadic, :query_stream, :start],
+          [:arcadic, :query_stream, :stop]
+        ])
+
       {:ok, seen} =
         Arcadic.transaction(conn, fn tx ->
           # Cypher write on the Bolt tx client (Bolt speaks Cypher).
@@ -89,6 +95,11 @@ defmodule Arcadic.Integration.StreamingTLSTest do
         end)
 
       assert 999 in seen
+      # the tx-scoped stream emits the same value-free telemetry pair as the other stream paths
+      assert_received {[:arcadic, :query_stream, :start], ^ref, _, %{mode: :read}}
+      assert_received {[:arcadic, :query_stream, :stop], ^ref, %{row_count: rc}, %{mode: :read}}
+      assert rc == length(seen)
+      :telemetry.detach(ref)
       # committed cleanly after the stream fully drained (the cursor-desync guard held: COMMIT ran
       # on a socket with no un-pulled result). The count matches what the tx stream saw.
       assert {:ok, [%{"c" => c}]} = Arcadic.query(conn, "MATCH (v:V) RETURN count(v) AS c")

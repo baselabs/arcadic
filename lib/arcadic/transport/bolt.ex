@@ -216,6 +216,7 @@ if Code.ensure_loaded?(Boltx) do
           run_extra: run_extra(conn)
         )
         |> Stream.flat_map(& &1)
+        |> with_stream_telemetry()
 
       {:ok, stream}
     end
@@ -234,6 +235,28 @@ if Code.ensure_loaded?(Boltx) do
           timeout = Keyword.get(opts, :timeout, :infinity)
           {:ok, build_stream(conn, bolt_opts, statement, format_params(params), chunk, timeout)}
       end
+    end
+
+    # Emit the same value-free `[:arcadic, :query_stream, :start|:stop]` pair the HTTP and non-tx
+    # Bolt stream paths emit (spec §6 / decision 15), so the tx-scoped stream is observable too.
+    # `DBConnection.stream` owns the enumeration, so bracket it with `Stream.transform` (start on
+    # first demand, stop on end/halt) counting rows. Unlike the `Stream.resource` paths, the
+    # transform's last-fun cannot distinguish drained-vs-halted, so `reason` is `:ok` on any end.
+    defp with_stream_telemetry(stream) do
+      Stream.transform(
+        stream,
+        fn ->
+          Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
+          0
+        end,
+        fn row, count -> {[row], count + 1} end,
+        fn count ->
+          Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: count}, %{
+            mode: :read,
+            reason: :ok
+          })
+        end
+      )
     end
 
     # A dedicated raw connection per stream (the pool's DBConnection cursor callbacks
