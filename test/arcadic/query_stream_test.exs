@@ -129,19 +129,18 @@ defmodule Arcadic.QueryStreamTest do
   end
 
   describe "Bolt.query_stream/3 guards (server-free)" do
-    test "refuses a session/tx conn (defense in depth)" do
+    # replaces the old blanket in-tx refusal — an in-tx Bolt conn with no tx_ref is a
+    # malformed conn, raised value-free (in-tx streaming policy now lives in the transport).
+    test "in a tx conn missing the :bolt tx_ref raises value-free" do
       conn = %{bolt_conn() | session_id: "bolt", transport_options: [bolt_opts: []]}
 
-      assert {:error,
-              %Arcadic.Error{
-                reason: :not_supported,
-                message: "streaming is not available inside a transaction"
-              }} =
-               Bolt.query_stream(
-                 conn,
-                 %{statement: "RETURN 1", params: %{}, language: "cypher"},
-                 []
-               )
+      assert_raise ArgumentError, ~r/transaction conn/, fn ->
+        Bolt.query_stream(
+          conn,
+          %{statement: "MATCH (n) RETURN n", params: %{}, language: "cypher"},
+          []
+        )
+      end
     end
 
     test "refuses when transport_options[:bolt_opts] is absent" do
@@ -173,17 +172,6 @@ defmodule Arcadic.QueryStreamTest do
                Arcadic.query_stream(conn, "MATCH (n) RETURN n")
 
       assert msg =~ "requires language"
-    end
-
-    test "returns :not_supported inside a transaction (session_id set)" do
-      conn = %{bolt_conn() | session_id: "bolt"}
-
-      assert {:error,
-              %Arcadic.Error{
-                reason: :not_supported,
-                message: "streaming is not available inside a transaction"
-              }} =
-               Arcadic.query_stream(conn, "MATCH (n) RETURN n")
     end
 
     test "rejects unknown options" do

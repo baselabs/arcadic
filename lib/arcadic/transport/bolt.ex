@@ -111,6 +111,14 @@ if Code.ensure_loaded?(Boltx) do
     @spec run_extra(Conn.t()) :: %{db: String.t()}
     def run_extra(%Conn{database: database}), do: %{db: database}
 
+    # The cursor callbacks (Bolt.Connection.handle_declare) receive the DBConnection
+    # query term, which is either a %Boltx.Query{} (built by the in-tx query_stream/3
+    # clause) or a bare statement string; extract the statement uniformly.
+    @doc false
+    @spec statement_of(term()) :: String.t()
+    def statement_of(%Boltx.Query{statement: s}), do: s
+    def statement_of(s) when is_binary(s), do: s
+
     # Mirror Boltx.query/4's param formatting so a Duration/Point param binds
     # identically whether it goes through execute or the low-level stream path.
     @doc false
@@ -131,9 +139,23 @@ if Code.ensure_loaded?(Boltx) do
     defp format_param({name, value}), do: {name, {:ok, value}}
 
     @impl true
-    def query_stream(%Conn{session_id: sid}, _request, _opts) when is_binary(sid) do
-      {:error,
-       %Error{reason: :not_supported, message: "streaming is not available inside a transaction"}}
+    def query_stream(%Conn{session_id: sid} = conn, %{statement: statement, params: params}, opts)
+        when is_binary(sid) do
+      tx_ref =
+        conn.transport_options[:bolt] ||
+          raise ArgumentError, "in-transaction Bolt streaming requires the transaction conn"
+
+      query = %Boltx.Query{statement: statement}
+
+      stream =
+        DBConnection.stream(tx_ref, query, format_params(params),
+          chunk_size: Keyword.get(opts, :chunk_size, 1000),
+          timeout: Keyword.get(opts, :timeout, :infinity),
+          run_extra: run_extra(conn)
+        )
+        |> Stream.flat_map(& &1)
+
+      {:ok, stream}
     end
 
     def query_stream(%Conn{} = conn, %{statement: statement, params: params}, opts) do
