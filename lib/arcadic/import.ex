@@ -101,7 +101,8 @@ defmodule Arcadic.Import do
     end
   end
 
-  # --- WITH settings: developer config; names identifier-validated, values number|boolean ---
+  # --- WITH settings: developer config; names identifier-validated, values number|boolean|string
+  # (string values single-quoted behind a positive ASCII charset allowlist, injection-inert) ---
 
   # Shared no-parens WITH-grammar seam: `Arcadic.Export` reuses this one builder so import + export
   # emit an identical clause. Public `@doc false` (not part of the documented API); `Import.database/3`
