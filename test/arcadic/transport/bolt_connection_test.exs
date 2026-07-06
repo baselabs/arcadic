@@ -19,6 +19,40 @@ if Code.ensure_loaded?(Boltx) do
       assert {:error, %TransportError{reason: :cursor_already_open}, ^state} =
                Connection.handle_declare(:q, %{}, [], state)
     end
+
+    # A %Boltx.Client{} whose TCP socket is already closed, so Client.send_packet/recv_packets
+    # return {:error, :closed} — the cheapest server-free way to drive the cursor callbacks'
+    # wire-fault path. A wire fault desyncs the shared tx socket, so the callbacks must
+    # {:disconnect, …} (drop the poisoned conn), NOT {:error, …} (which DBConnection keeps checked in).
+    defp dead_client do
+      {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false])
+      {:ok, port} = :inet.port(listener)
+      {:ok, sock} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+      :gen_tcp.close(sock)
+      :gen_tcp.close(listener)
+      %Boltx.Client{sock: {:gen_tcp, sock}, bolt_version: 4.4}
+    end
+
+    test "handle_declare DISCONNECTS on a wire fault (drops the poisoned conn, not {:error})" do
+      state = %{client: dead_client(), cursor_open?: false}
+
+      assert {:disconnect, %TransportError{}, _state} =
+               Connection.handle_declare("RETURN 1", %{}, [], state)
+    end
+
+    test "handle_fetch DISCONNECTS on a wire fault AND clears cursor_open? (so cleanup won't DISCARD a broken socket)" do
+      state = %{client: dead_client(), first_chunk?: true, cursor_open?: true}
+
+      assert {:disconnect, %TransportError{}, %{cursor_open?: false}} =
+               Connection.handle_fetch(:q, %{run: :r}, [], state)
+    end
+
+    test "handle_deallocate DISCONNECTS when the DISCARD-drain itself fails (never returns the conn dirty as {:ok})" do
+      state = %{client: dead_client(), cursor_open?: true}
+
+      assert {:disconnect, %TransportError{}, %{cursor_open?: false}} =
+               Connection.handle_deallocate(:q, :cursor, [], state)
+    end
   end
 
   defmodule Arcadic.Transport.Bolt.ResolveOptsTest do
