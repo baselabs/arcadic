@@ -95,6 +95,27 @@ defmodule Arcadic.Integration.StreamingTLSTest do
       assert c == length(seen)
     end
 
+    test "an early-halted tx-scoped stream DISCARD-drains so the tx still commits cleanly", %{
+      conn: conn
+    } do
+      # chunk_size 1 over the 3 seeded rows + Enum.take(1) leaves the cursor OPEN when the Stream
+      # halts → handle_deallocate's cursor_open?: true branch must DISCARD the remaining server-side
+      # result so the tx's COMMIT does not desync the shared Bolt socket (spec §10; the exercised
+      # branch that unit tests can't reach — the guard flag is only true across a real fetch).
+      {:ok, taken} =
+        Arcadic.transaction(conn, fn tx ->
+          {:ok, stream} =
+            Arcadic.query_stream(tx, "MATCH (v:V) RETURN v.n AS n", %{}, chunk_size: 1)
+
+          Enum.take(stream, 1)
+        end)
+
+      assert length(taken) == 1
+      # the tx committed cleanly despite the un-drained cursor (deallocate drained it)
+      assert {:ok, [%{"c" => c}]} = Arcadic.query(conn, "MATCH (v:V) RETURN count(v) AS c")
+      assert c == 3
+    end
+
     # NOTE: the execute-mid-cursor desync guard (`handle_execute` → :cursor_open) is tested
     # server-free in Task 2 — `DBConnection.stream` deallocates the cursor when the enumeration
     # halts, so it cannot be reliably left open across an execute at the integration level. The

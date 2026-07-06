@@ -97,7 +97,10 @@ if Code.ensure_loaded?(Boltx) do
         state = state |> Map.put(:first_chunk?, true) |> Map.put(:cursor_open?, true)
         {:ok, query, %{run: run}, state}
       else
-        {:error, reason} -> {:error, Bolt.stream_error(reason), state}
+        # A send/recv failure is a WIRE fault (a recv timeout leaves the reply in flight): the
+        # tx socket is now desynced. Return {:disconnect, …} — {:error, …} keeps the poisoned
+        # connection checked in, and boltx's later COMMIT/ROLLBACK would read the stale reply.
+        {:error, reason} -> {:disconnect, Bolt.stream_error(reason), state}
       end
     end
 
@@ -121,19 +124,31 @@ if Code.ensure_loaded?(Boltx) do
           do: {:cont, rows, %{state | first_chunk?: false}},
           else: {:halt, rows, %{state | cursor_open?: false}}
       else
-        {:error, reason} -> {:error, Bolt.stream_error(reason), state}
+        # WIRE fault mid-PULL (or a server FAILURE reply): the socket is off-by-one. DISCONNECT so
+        # the poisoned connection is dropped, and clear `cursor_open?` so the deallocate that still
+        # runs during cleanup does NOT fire a DISCARD against the desynced/failed socket (which
+        # would read a stale reply, or hit boltx's IGNORED parse gap → CaseClauseError).
+        {:error, reason} ->
+          {:disconnect, Bolt.stream_error(reason), %{state | cursor_open?: false}}
       end
     end
 
     @impl true
     def handle_deallocate(_query, _cursor, opts, %{cursor_open?: true} = state) do
-      # Caller halted the Stream early (or the tx body raised): DISCARD the remaining
-      # server-side result so the tx's later COMMIT/ROLLBACK does not desync.
+      # Caller halted the Stream early (or the tx body raised): DISCARD the remaining server-side
+      # result so the tx's later COMMIT/ROLLBACK does not desync. If the DISCARD itself fails, the
+      # socket is desynced — DISCONNECT (drop the pooled conn) rather than return it dirty as {:ok}.
       %{client: client} = state
       payload = DiscardMessage.encode(client.bolt_version, %{n: -1})
-      _ = Client.send_packet(client, payload)
-      _ = Client.recv_packets(client, &DiscardMessage.prepare_messages/2, timeout(opts))
-      {:ok, :discarded, %{state | cursor_open?: false}}
+
+      with :ok <- Client.send_packet(client, payload),
+           {:ok, _} <-
+             Client.recv_packets(client, &DiscardMessage.prepare_messages/2, timeout(opts)) do
+        {:ok, :discarded, %{state | cursor_open?: false}}
+      else
+        {:error, reason} ->
+          {:disconnect, Bolt.stream_error(reason), %{state | cursor_open?: false}}
+      end
     end
 
     def handle_deallocate(_query, _cursor, _opts, state), do: {:ok, :ok, state}
