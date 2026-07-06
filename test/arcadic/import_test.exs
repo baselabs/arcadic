@@ -100,15 +100,45 @@ defmodule Arcadic.ImportTest do
     refute_received {:body, _}
   end
 
-  test "with: rejects a string value and a bad-shape name value-free" do
+  test "with: rejects a bad-shape name value-free" do
     no_wire()
 
     assert_raise ArgumentError, fn ->
-      Import.database(conn(), "http://h/x", with: [mapping: "file.json"])
+      Import.database(conn(), "http://h/x", with: [{:"bad name", 1}])
+    end
+  end
+
+  test "database/3 accepts a string with: value, single-quoted, charset-allowlisted" do
+    stub_ok()
+
+    assert {:ok, _} =
+             Import.database(conn(), "file:///home/arcadedb/exports/x",
+               with: [mapping: "map.json"]
+             )
+
+    assert_received {:body, body}
+
+    assert body["command"] ==
+             "IMPORT DATABASE 'file:///home/arcadedb/exports/x' WITH mapping = 'map.json'"
+  end
+
+  test "database/3 rejects a string with: value carrying a quote/backslash/control byte, value-free" do
+    no_wire()
+
+    for bad <- ["a'b", "a\\b", "a\nb", "a\tb"] do
+      err =
+        assert_raise ArgumentError, fn ->
+          Import.database(conn(), "file:///x", with: [mapping: bad])
+        end
+
+      assert err.message =~ "import setting value"
+      refute err.message =~ bad
     end
 
+    # an invalid-UTF-8 byte (>= 0x80) is rejected too — the positive ASCII allowlist excludes it, so a
+    # value with such a byte never reaches Jason.encode! (which would raise, echoing the bytes — Rule 3).
     assert_raise ArgumentError, fn ->
-      Import.database(conn(), "http://h/x", with: [{:"bad name", 1}])
+      Import.database(conn(), "file:///x", with: [mapping: <<0xFF>>])
     end
   end
 

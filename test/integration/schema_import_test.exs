@@ -148,4 +148,17 @@ defmodule Arcadic.Integration.SchemaImportTest do
 
     assert Enum.any?(rows, &(&1["result"] == "OK"))
   end
+
+  test "a string with: setting carrying a loopback URL opens no new SSRF door (B9 boundary)", %{
+    conn: conn
+  } do
+    # Probed 2026-07-06: a string `mapping` setting URL is NOT independently fetched by the server (a
+    # loopback `mapping` produced the same source-not-found error as no mapping) — the MAIN source URL
+    # is the only fetch/SSRF vector, server-blocked by importBlockLocalNetworks. So a string setting is
+    # not a fetch vector; the import fails on the (nonexistent) source, never reaching a loopback.
+    assert {:error, %Arcadic.Error{}} =
+             Arcadic.Import.database(conn, "file:///tmp/arcadic_none.jsonl",
+               with: [mapping: "http://127.0.0.1:9/x"]
+             )
+  end
 end

@@ -8,9 +8,10 @@ defmodule Arcadic.Import do
   (RFC 3986 URL characters minus the single quote and backslash) plus a scheme allowlist, which
   closes the SQL-string-literal injection surface by construction (ArcadeDB honors backslash-
   escapes inside single-quoted literals, so a mere quote-denylist would be unsound). `with:`
-  import settings are developer config: names are `Arcadic.Identifier`-validated and values are
-  restricted to number/boolean (interpolated bare — injection-inert). Every rejection is
-  value-free (never echoes the offending URL / name / value — AGENTS.md Rule 3).
+  import settings are developer config: names are `Arcadic.Identifier`-validated; number/boolean
+  values are interpolated bare, and string values are single-quoted behind a positive ASCII charset
+  allowlist (`'` / `\` / control / non-ASCII excluded) — injection-inert either way. Every rejection
+  is value-free (never echoes the offending URL / name / value — AGENTS.md Rule 3).
 
   ## Security & operational notes
 
@@ -36,13 +37,22 @@ defmodule Arcadic.Import do
   @url_pattern ~r/\A[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+\z/
   @max_url_length 2048
 
+  # A string with:-value is interpolated into a single-quoted SQL literal, so it uses a POSITIVE
+  # ASCII allowlist (the URL-validator's lane, import.ex:36): the safe printable set MINUS `'` and
+  # `\` (ArcadeDB honors backslash-escapes inside a quoted literal, so both must be excluded). Being
+  # ASCII-only it also excludes control bytes AND invalid UTF-8 (a >=0x80 byte would make Jason.encode!
+  # raise with the value bytes — a Rule-3 leak). arcadic stays tenant-blind about the value's MEANING;
+  # a string setting is NOT a server-fetch vector (probed: a loopback `mapping` is not fetched — the
+  # main source URL is the only SSRF vector, server-blocked by importBlockLocalNetworks).
+  @setting_string_pattern ~r/\A[A-Za-z0-9 \-._~:\/?#\[\]@!$&()*+,;=%]+\z/
+
   @doc """
   Imports `url` into `conn.database` via `IMPORT DATABASE '<url>'[ WITH …]`. Returns
   `{:ok, rows}` (rows carry `operation`/`fromUrl`/`parsedRecords`/`result`) or
   `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
 
-  `opts`: `with` — a keyword list of import settings whose values are numbers or booleans
-  (e.g. `with: [commitEvery: 100, wal: false]`).
+  `opts`: `with` — a keyword list of import settings whose values are numbers, booleans, or
+  allowlisted strings (e.g. `with: [commitEvery: 100, wal: false, mapping: "map.json"]`).
 
   Raises `ArgumentError` (value-free, before any request) on an invalid URL or `with:` entry.
   """
@@ -120,8 +130,14 @@ defmodule Arcadic.Import do
   defp setting_value!(v) when is_integer(v), do: Integer.to_string(v)
   defp setting_value!(v) when is_float(v), do: Float.to_string(v)
 
+  defp setting_value!(v) when is_binary(v) do
+    if Regex.match?(@setting_string_pattern, v),
+      do: "'#{v}'",
+      else: raise(ArgumentError, "import setting value has characters outside the allowed set")
+  end
+
   defp setting_value!(_),
-    do: raise(ArgumentError, "import setting value must be a number or boolean")
+    do: raise(ArgumentError, "import setting value must be a number, boolean, or string")
 
   defp bang({:ok, rows}), do: rows
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)
