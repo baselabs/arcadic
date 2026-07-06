@@ -9,8 +9,9 @@ if Code.ensure_loaded?(Boltx) do
     @moduledoc """
     Bolt transport for ArcadeDB via the `boltx` driver (Bolt v4). Verified interop
     (spec §15 P19/P20). The consumer starts a Bolt connection with `start_link/1`
-    (which encodes the ArcadeDB-correct defaults — Bolt v4 pin, non-TLS scheme) and
-    passes it as `transport_options: [bolt: conn_ref]`.
+    (which encodes the ArcadeDB-correct defaults — Bolt v4 pin, and the plaintext
+    `bolt` scheme by default; pass `scheme: "bolt+s"` for TLS, see below) and passes
+    it as `transport_options: [bolt: conn_ref]`.
 
     Supports the query hot path (`execute/4`), native fun-based transactions
     (`transaction/3`), and a `RETURN 1` health check (`ready?/1`). Server admin
@@ -56,9 +57,24 @@ if Code.ensure_loaded?(Boltx) do
 
     @doc """
     Start a boltx connection with ArcadeDB-correct defaults. Opts: `:hostname`,
-    `:port` (default 7687), `:username`, `:password`, plus any boltx option. Pins
-    Bolt to v4 (ArcadeDB speaks v4; boltx defaults to v5 → version_negotiation_error)
-    and uses the non-TLS `bolt` scheme (ArcadeDB Bolt is TLS-disabled by default).
+    `:port` (default 7687), `:username`, `:password`, `:scheme`, `:ssl_opts`, plus most
+    boltx options (`:uri` is rejected — arcadic must own the scheme, see `:scheme` below).
+    Pins Bolt to v4 (ArcadeDB speaks v4; boltx defaults to v5 → version_negotiation_error).
+
+    ## Transport security (`:scheme`)
+
+    - `"bolt"` (default) — plaintext. ArcadeDB's Bolt is plaintext unless the server is
+      configured with `arcadedb.bolt.ssl` + a keystore.
+    - `"bolt+s"` — TLS, **secure by default**: the server certificate is verified against the
+      OS trust store (`verify_peer`). Pass `ssl_opts: [cacertfile: "/path/ca.pem"]` to trust a
+      private CA. To opt out of verification, pass `ssl_opts: [verify: :verify_none]` explicitly
+      — this encrypts but does NOT authenticate the peer (MITM-able: an attacker on the Bolt
+      path can present any certificate and every param/row flows to it), so it is a deliberate
+      caller opt-in, never a silent default.
+
+    > boltx's own scheme→verify mapping is INVERTED (its `bolt+s` forces `verify_none`), so
+    > arcadic translates `"bolt+s"` to boltx's `"bolt+ssc"` to get `verify_peer`. Callers use
+    > only `"bolt"` / `"bolt+s"`; `"bolt+ssc"` is not a caller scheme.
     """
     @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
     def start_link(opts),
@@ -67,10 +83,14 @@ if Code.ensure_loaded?(Boltx) do
     @doc """
     Start a Bolt pool AND return the `transport_options` for a Conn in one call, so
     the pool (`:bolt`, for execute/transaction/ready?) and the per-stream connect opts
-    (`:bolt_opts`, for query_stream) cannot drift to different hosts/credentials.
+    (`:bolt_opts`, for query_stream) cannot drift to different hosts/credentials. Accepts
+    the same opts as `start_link/1`, including `:scheme` / `:ssl_opts` for TLS (see there).
 
         {:ok, topts} = Arcadic.Transport.Bolt.setup(hostname: h, port: p, username: "root", password: pw)
         conn = Arcadic.connect(url, db, auth: {"root", pw}, transport: Arcadic.Transport.Bolt, transport_options: topts)
+
+        # TLS, verify_peer against a private CA:
+        {:ok, topts} = Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ssl_opts: [cacertfile: "/ca.pem"], hostname: h, port: p, username: "root", password: pw)
     """
     @spec setup(keyword()) :: {:ok, keyword()} | {:error, term()}
     def setup(opts) do

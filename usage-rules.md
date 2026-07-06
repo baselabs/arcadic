@@ -52,12 +52,18 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   lazily streams a large read as raw row maps over the default HTTP transport: arcadic pages the
   statement itself via a param-bound `ORDER BY @rid SKIP/LIMIT` suffix (`@rid` is a total order, so
   paging is stable), so the statement must NOT carry its own `ORDER BY`/`SKIP`/`LIMIT` (rejected
-  value-free, `reason: :not_supported`) and must be `language: "sql"`. Each page is a fresh
-  offset re-scan, so a very deep stream costs O(n²) server-side — prefer a Bolt cursor
-  (`Arcadic.Transport.Bolt`) for very large exports. HTTP streaming refuses inside a transaction
-  (`session_id` set) — in-tx streaming is Bolt-only, over the transaction's own connection (so it
-  sees the transaction's own uncommitted writes), and is guarded so a `command`/`query` on that
-  same conn cannot interleave an open cursor on the shared socket.
+  value-free, `reason: :not_supported`) and must be `language: "sql"`. `chunk_size` must be a
+  positive integer. The statement must also not carry a SQL comment (`--`/`/*`, which would
+  neutralize the appended suffix) or a param named `__arcadic_skip`/`__arcadic_limit` (reserved) —
+  both rejected value-free. `@rid` is a stable ORDER, not a snapshot: each page is an independent
+  stateless request, so a concurrent delete can skip a row — use a Bolt in-tx cursor for snapshot
+  consistency. Each page is a fresh offset re-scan, so a very deep stream costs O(n²) server-side —
+  prefer a Bolt cursor (`Arcadic.Transport.Bolt`) for very large exports. HTTP streaming refuses
+  inside a transaction (`session_id` set) — in-tx streaming is Bolt-only, over the transaction's own
+  connection (so it sees the transaction's own uncommitted writes), guarded so a `command`/`query`
+  on that same conn cannot interleave an open cursor on the shared socket. **Consume an in-tx stream
+  INSIDE the `transaction/3` body** — it is bound to the transaction's connection and cannot be
+  enumerated after the transaction returns.
 - **Bolt TLS** — `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ssl_opts: [...])` runs Bolt over
   TLS. `bolt+s` is **secure by default**: it verifies the server certificate against the OS trust
   store (`verify_peer`) unless the caller passes `ssl_opts: [verify: :verify_none]` — an explicit

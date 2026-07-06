@@ -12,6 +12,12 @@ defmodule Arcadic.QueryStreamTest do
     end
   end
 
+  defmodule NoStreamTransport do
+    # Deliberately exports NO query_stream/3 — the facade's function_exported?/3 guard must
+    # fall to the "transport does not support streaming" branch (a third-party transport case;
+    # both in-tree transports export it, so nothing else exercises that branch).
+  end
+
   defp bolt_conn(db \\ "mydb"),
     do:
       Conn.new("http://h:2480", db,
@@ -177,6 +183,32 @@ defmodule Arcadic.QueryStreamTest do
     test "rejects unknown options" do
       conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
       assert_raise ArgumentError, fn -> Arcadic.query_stream(conn, "RETURN 1", %{}, bogus: 1) end
+    end
+
+    test "returns :not_supported when the transport does not export query_stream/3" do
+      conn =
+        Conn.new("http://h:2480", "db",
+          auth: {"u", "p"},
+          transport: NoStreamTransport,
+          transport_options: []
+        )
+
+      assert {:error,
+              %Arcadic.Error{
+                reason: :not_supported,
+                message: "transport does not support streaming"
+              }} = Arcadic.query_stream(conn, "RETURN 1", %{}, language: "cypher")
+    end
+
+    test "rejects a non-positive chunk_size at the facade (value-free, before routing)" do
+      conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Arcadic.query_stream(conn, "RETURN 1", %{}, chunk_size: 0)
+        end
+
+      assert err.message =~ "chunk_size"
     end
 
     test "rejects non-keyword opts value-free — never echoes the offending entry (Rule 3)" do

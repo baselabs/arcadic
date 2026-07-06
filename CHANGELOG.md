@@ -22,15 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ServerSecurityException` via `error.exception`).
 - HTTP result streaming — `Arcadic.query_stream/4` now works on the default HTTP transport
   (previously Bolt-only), offset-paging a `language: "sql"` read by an arcadic-owned
-  `ORDER BY @rid` (statements carrying their own `ORDER BY`/`SKIP`/`LIMIT` are rejected
-  value-free; the `@rid` ordering alias is stripped). Deep streams pay an O(n²) offset re-scan —
-  prefer a Bolt cursor for very large exports.
+  `ORDER BY @rid` (statements carrying their own `ORDER BY`/`SKIP`/`LIMIT`, a SQL comment, or a
+  reserved `__arcadic_skip`/`__arcadic_limit` param are rejected value-free; the `@rid` ordering
+  alias is stripped; `chunk_size` must be positive). Emits the `[:arcadic, :query_stream,
+  :start|:stop]` telemetry pair. Offset paging is a stable order, not a snapshot; deep streams pay
+  an O(n²) offset re-scan — prefer a Bolt cursor for very large exports.
 - Transaction-scoped Bolt streaming — `query_stream/4` inside `transaction/3` streams over the
   transaction's own connection (sees uncommitted writes), guarded so an `execute` cannot interleave
-  an open cursor on the shared socket.
+  an open cursor on the shared socket; the cursor callbacks disconnect on a wire fault (desync-safe).
+  Consume the stream inside the `transaction/3` body (it is bound to the tx connection).
 - Bolt over TLS — `scheme: "bolt+s"` with `ssl_opts`. `bolt+s` is **secure by default**
   (`verify_peer` against the OS trust store, via boltx's inverted `bolt+ssc` scheme under the
   hood); `ssl_opts: [verify: :verify_none]` is an explicit caller opt-in to skip verification.
+  A `:uri` opt is rejected (it would bypass the scheme translation and silently skip verification).
 
 ### Fixed
 

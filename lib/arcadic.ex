@@ -86,21 +86,34 @@ defmodule Arcadic do
   `{:error, Arcadic.Error.t()}` if the statement/opts don't fit the active
   transport's streaming contract.
 
+  `:chunk_size` (rows per round-trip, default 1000) must be a positive integer, else a
+  value-free `ArgumentError`.
+
   **HTTP** (the default transport): requires `language: "sql"` and offset-pages the
   statement itself behind the scenes via an arcadic-owned, param-bound
-  `ORDER BY @rid SKIP/LIMIT` suffix (`@rid` is a total order, so paging is stable).
-  A statement carrying its own `ORDER BY`/`SKIP`/`LIMIT` is rejected value-free
-  (`reason: :not_supported`), as is a non-`"sql"` language. Each page is a fresh
-  stateless request — a very deep stream costs O(n²) server-side (re-scanning the
-  offset each page); prefer a Bolt cursor for very large exports. Refuses inside a
-  transaction (`reason: :not_supported`) — HTTP has no cursor to scope to a session.
+  `ORDER BY @rid SKIP/LIMIT` suffix. `@rid` is a total ORDER (a page is stably ordered
+  within one snapshot), but each page is an independent stateless request — it is NOT a
+  consistent snapshot, so a concurrent delete of an already-emitted row can cause a later
+  row to be skipped; use a Bolt in-tx cursor when you need snapshot consistency. A
+  statement carrying its own `ORDER BY`/`SKIP`/`LIMIT`, a SQL comment (`--`/`/*`, which
+  would neutralize the appended suffix), or a param named `__arcadic_skip`/`__arcadic_limit`
+  (reserved), and a non-`"sql"` language, are each rejected value-free (`reason:
+  :not_supported`). Each page is a fresh stateless request — a very deep stream costs O(n²)
+  server-side (re-scanning the offset each page); prefer a Bolt cursor for very large
+  exports. `:timeout` bounds each page POST (default `:infinity` — a stream is long-running,
+  so it does NOT inherit the conn's per-call timeout; set `:timeout` to bound a stalled
+  server). Refuses inside a transaction (`reason: :not_supported`) — HTTP has no cursor to
+  scope to a session.
 
   **Bolt**: opens a dedicated connection for the stream's lifetime and pulls
   `:chunk_size` rows per round-trip (default 1000). Inside `transaction/3`, streams
   over the transaction's own connection instead (so it sees the transaction's own
   uncommitted writes), guarded so an `execute` on that conn cannot interleave an
-  open cursor on the shared socket. `:timeout` bounds each RUN and PULL receive
-  (default `:infinity`; set it to bound a stalled server) — a breach raises
+  open cursor on the shared socket. **The in-transaction stream is lazy and bound to the
+  transaction's connection — you MUST consume it (e.g. `Enum.to_list/1`) INSIDE the
+  `transaction/3` body; enumerating the returned stream after `transaction/3` has returned
+  fails (the connection is no longer checked out).** `:timeout` bounds each RUN and PULL
+  receive (default `:infinity`; set it to bound a stalled server) — a breach raises
   `%Arcadic.TransportError{reason: :timeout}`. Any protocol error mid-stream RAISES
   a typed error; the connection is always torn down on completion, early halt, or
   error.
