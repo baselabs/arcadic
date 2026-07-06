@@ -122,4 +122,32 @@ defmodule Arcadic.SchemaTest do
   test "indexes/2 rejects non-keyword opts value-free" do
     assert_raise ArgumentError, fn -> Schema.indexes(conn(), %{type: "Person"}) end
   end
+
+  test "database/1 sends SELECT FROM schema:database and deep-strips @props" do
+    stub([
+      %{
+        "name" => "db",
+        "encoding" => "UTF-8",
+        "@props" => "x:1",
+        "settings" => [%{"key" => "k", "value" => 1, "@props" => "y:1"}]
+      }
+    ])
+
+    assert {:ok, row} = Arcadic.Schema.database(conn())
+
+    assert row == %{
+             "name" => "db",
+             "encoding" => "UTF-8",
+             "settings" => [%{"key" => "k", "value" => 1}]
+           }
+
+    assert_received {:body, body}
+    assert body["command"] == "SELECT FROM schema:database"
+    assert body["language"] == "sql"
+  end
+
+  test "database!/1 unwraps to the config map" do
+    stub([%{"name" => "db"}])
+    assert %{"name" => "db"} = Arcadic.Schema.database!(conn())
+  end
 end

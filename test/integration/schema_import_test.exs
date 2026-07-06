@@ -80,6 +80,14 @@ defmodule Arcadic.Integration.SchemaImportTest do
     assert_no_props(buckets)
   end
 
+  test "Schema.database/1 returns the live engine config, @props-free", %{conn: conn} do
+    assert {:ok, cfg} = Arcadic.Schema.database(conn)
+    assert is_binary(cfg["name"])
+    assert is_list(cfg["settings"])
+    refute Map.has_key?(cfg, "@props")
+    refute Enum.any?(cfg["settings"], &Map.has_key?(&1, "@props"))
+  end
+
   test "import happy path: EXPORT then IMPORT file:// round-trips to result OK", %{
     conn: conn,
     url: url,

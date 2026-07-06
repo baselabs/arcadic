@@ -32,6 +32,25 @@ defmodule Arcadic.Schema do
   def buckets!(%Conn{} = conn), do: bang(buckets(conn))
 
   @doc """
+  Returns the database engine config as a single map — `name`, `path`, `mode`, `dateFormat`,
+  `dateTimeFormat`, `timezone`, `encoding`, and a `settings` list of `%{"key","value","description",
+  "overridden","default"}`, `@props`-stripped at every depth. Returns the SINGLE config map.
+  `SELECT FROM schema:database` is arcadic's own fixed literal (SQL-only) — no caller value interpolated.
+  """
+  @spec database(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
+  def database(%Conn{} = conn) do
+    case query(conn, "SELECT FROM schema:database") do
+      {:ok, [cfg | _]} -> {:ok, cfg}
+      {:ok, []} -> {:ok, %{}}
+      {:error, _} = e -> e
+    end
+  end
+
+  @doc "Returns the database config map, or raises."
+  @spec database!(Conn.t()) :: map()
+  def database!(%Conn{} = conn), do: bang(database(conn))
+
+  @doc """
   Lists the properties of `type` (each with `name`, `type`, `default`, …), `@props`-stripped.
   `type` is `Arcadic.Identifier`-shape-guarded (a value-free `{:error, :invalid_identifier}` on a
   bad shape — the offending name is never echoed) AND bound as a `$param` — never interpolated.
