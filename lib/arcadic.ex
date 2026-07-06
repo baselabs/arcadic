@@ -82,16 +82,28 @@ defmodule Arcadic do
   end
 
   @doc """
-  Lazily stream a large read result as raw row maps (**Bolt-only**). Returns
-  `{:ok, Stream.t()}` or `{:error, %Arcadic.Error{reason: :not_supported}}` when the
-  transport has no cursor contract (HTTP) or the conn is inside a transaction.
+  Lazily stream a large read result as raw row maps. Returns `{:ok, Stream.t()}` or
+  `{:error, Arcadic.Error.t()}` if the statement/opts don't fit the active
+  transport's streaming contract.
 
-  Enumerating the stream opens a dedicated connection for its lifetime and pulls
-  `:chunk_size` rows per round-trip (default 1000). `:timeout` bounds each RUN and
-  PULL receive (default `:infinity`; set it to bound a stalled server) — a breach
-  raises `%Arcadic.TransportError{reason: :timeout}`. Any protocol error mid-stream
-  RAISES a typed error; the connection is always torn down on completion, early
-  halt, or error.
+  **HTTP** (the default transport): requires `language: "sql"` and offset-pages the
+  statement itself behind the scenes via an arcadic-owned, param-bound
+  `ORDER BY @rid SKIP/LIMIT` suffix (`@rid` is a total order, so paging is stable).
+  A statement carrying its own `ORDER BY`/`SKIP`/`LIMIT` is rejected value-free
+  (`reason: :not_supported`), as is a non-`"sql"` language. Each page is a fresh
+  stateless request — a very deep stream costs O(n²) server-side (re-scanning the
+  offset each page); prefer a Bolt cursor for very large exports. Refuses inside a
+  transaction (`reason: :not_supported`) — HTTP has no cursor to scope to a session.
+
+  **Bolt**: opens a dedicated connection for the stream's lifetime and pulls
+  `:chunk_size` rows per round-trip (default 1000). Inside `transaction/3`, streams
+  over the transaction's own connection instead (so it sees the transaction's own
+  uncommitted writes), guarded so an `execute` on that conn cannot interleave an
+  open cursor on the shared socket. `:timeout` bounds each RUN and PULL receive
+  (default `:infinity`; set it to bound a stalled server) — a breach raises
+  `%Arcadic.TransportError{reason: :timeout}`. Any protocol error mid-stream RAISES
+  a typed error; the connection is always torn down on completion, early halt, or
+  error.
   """
   @spec query_stream(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Arcadic.Error.t()}

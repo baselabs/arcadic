@@ -48,6 +48,21 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   rejection; `with:` takes number/boolean settings. A private/loopback host trips ArcadeDB's SSRF
   guard (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure via
   `error.exception`); `file://` is server-local.
+- **Streaming** — `Arcadic.query_stream(conn, sql, params, language: "sql", chunk_size: 500)`
+  lazily streams a large read as raw row maps over the default HTTP transport: arcadic pages the
+  statement itself via a param-bound `ORDER BY @rid SKIP/LIMIT` suffix (`@rid` is a total order, so
+  paging is stable), so the statement must NOT carry its own `ORDER BY`/`SKIP`/`LIMIT` (rejected
+  value-free, `reason: :not_supported`) and must be `language: "sql"`. Each page is a fresh
+  offset re-scan, so a very deep stream costs O(n²) server-side — prefer a Bolt cursor
+  (`Arcadic.Transport.Bolt`) for very large exports. HTTP streaming refuses inside a transaction
+  (`session_id` set) — in-tx streaming is Bolt-only, over the transaction's own connection (so it
+  sees the transaction's own uncommitted writes), and is guarded so a `command`/`query` on that
+  same conn cannot interleave an open cursor on the shared socket.
+- **Bolt TLS** — `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ssl_opts: [...])` runs Bolt over
+  TLS. `bolt+s` is **secure by default**: it verifies the server certificate against the OS trust
+  store (`verify_peer`) unless the caller passes `ssl_opts: [verify: :verify_none]` — an explicit
+  opt-in that accepts any certificate (documents the MITM exposure; only use it against a trusted
+  network path, e.g. local dev). Omitting `:scheme` stays on the plaintext `bolt` scheme.
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.

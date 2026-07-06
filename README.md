@@ -201,6 +201,32 @@ The server must be able to reach the URL — ArcadeDB blocks private/loopback ho
 default (surfaced as `%Arcadic.Error{reason: :unauthorized, exception: "java.lang.SecurityException"}`,
 distinct from an auth failure), so use a public URL or a server-local `file://` path.
 
+## Streaming & secure transport
+
+`Arcadic.query_stream/4` lazily streams a large read as raw row maps — over the default HTTP
+transport or over Bolt.
+
+```elixir
+{:ok, stream} =
+  Arcadic.query_stream(conn, "SELECT FROM User", %{}, language: "sql", chunk_size: 500)
+
+stream |> Stream.each(&IO.inspect/1) |> Stream.run()
+```
+
+Over HTTP, arcadic pages the statement itself with a param-bound `ORDER BY @rid SKIP/LIMIT`
+suffix (`@rid` is a total order, so paging is stable) — the statement must be `language: "sql"`
+and must NOT carry its own `ORDER BY`/`SKIP`/`LIMIT` (rejected value-free). Each page is a fresh
+offset re-scan, so a very deep stream costs O(n²) server-side — prefer a Bolt cursor for very
+large exports. HTTP streaming refuses inside a transaction; **in-transaction streaming is
+Bolt-only**, running over the transaction's own connection (so it sees the transaction's own
+uncommitted writes) and guarded against interleaving a `command`/`query` on the same socket
+while a cursor is open.
+
+Bolt can also run over TLS: `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ...)` is **secure by
+default** (verifies the server certificate against the OS trust store); pass
+`ssl_opts: [verify: :verify_none]` to opt out (documents the MITM exposure — only for a trusted
+network path, e.g. local dev).
+
 ## Bolt transport (optional)
 
 The query hot path can run over Bolt via the optional
