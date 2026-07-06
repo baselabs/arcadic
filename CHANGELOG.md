@@ -25,13 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Arcadic.Export` — `database/3` (+ `!`) wrapping `EXPORT DATABASE file://<name>`, symmetric to
   `Arcadic.Import`: the bare export name is path-traversal-guarded (value-free), and `with:` reuses
   the same number/boolean/string settings grammar.
-- HTTP result streaming — `Arcadic.query_stream/4` now works on the default HTTP transport
-  (previously Bolt-only), offset-paging a `language: "sql"` read by an arcadic-owned
-  `ORDER BY @rid` (statements carrying their own `ORDER BY`/`SKIP`/`LIMIT`, a SQL comment, or a
-  reserved `__arcadic_skip`/`__arcadic_limit` param are rejected value-free; the `@rid` ordering
-  alias is stripped; `chunk_size` must be positive). Emits the `[:arcadic, :query_stream,
-  :start|:stop]` telemetry pair. Offset paging is a stable order, not a snapshot; deep streams pay
-  an O(n²) offset re-scan — prefer a Bolt cursor for very large exports.
+- HTTP `query_stream` pages WHERE-less SQL by an O(n) `@rid` keyset cursor (offset fallback for
+  WHERE'd statements) and supports Cypher streaming via a caller `order_key: "id(v)"` (offset,
+  `$name` placeholders). The comment guard is language-aware (`//` rejected for Cypher). Inside
+  `transaction/3` over Bolt, streaming uses the O(n) in-transaction cursor.
 - Transaction-scoped Bolt streaming — `query_stream/4` inside `transaction/3` streams over the
   transaction's own connection (sees uncommitted writes), guarded so an `execute` cannot interleave
   an open cursor on the shared socket; the cursor callbacks disconnect on a wire fault (desync-safe).

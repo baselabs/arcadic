@@ -226,16 +226,25 @@ transport or over Bolt.
 stream |> Stream.each(&IO.inspect/1) |> Stream.run()
 ```
 
-Over HTTP, arcadic pages the statement itself with a param-bound `ORDER BY @rid SKIP/LIMIT`
-suffix (`@rid` is a total order, so paging is stable) — the statement must be `language: "sql"`
-and must NOT carry its own `ORDER BY`/`SKIP`/`LIMIT` (rejected value-free). Each page is a fresh
-offset re-scan, so a very deep stream costs O(n²) server-side — prefer a Bolt cursor for very
-large exports. `@rid` gives a stable order, not a snapshot — a concurrent delete can skip a row
-across pages. HTTP streaming refuses inside a transaction; **in-transaction streaming is
-Bolt-only**, running over the transaction's own connection (so it sees the transaction's own
-uncommitted writes) and guarded against interleaving a `command`/`query` on the same socket
-while a cursor is open. Consume an in-transaction stream **inside** the `transaction/3` body — it
-is bound to the transaction's connection.
+Over HTTP, arcadic pages the statement itself behind the scenes — the statement must NOT carry
+its own `ORDER BY`/`SKIP`/`LIMIT`, or a comment (`--`/`/*` for SQL, `//` for Cypher, which would
+neutralize the appended suffix), each rejected value-free. A WHERE-less **SQL** statement pages
+by an O(n) arcadic-owned `@rid` keyset cursor; a statement with its own `WHERE` falls back to
+`ORDER BY @rid SKIP/LIMIT` offset (O(n²) server-side — prefer a Bolt cursor for very large
+exports in that case). **Cypher** streams via a caller-supplied `order_key: "id(v)"` (restricted
+to `id(<identifier>)`, the only total, unique order), offset-paged with Cypher `$name`
+placeholders:
+
+```elixir
+Arcadic.query_stream(conn, "MATCH (v:Person) RETURN v", %{}, language: "cypher", order_key: "id(v)")
+```
+
+Either way, paging is a stable order, not a snapshot — a concurrent delete can skip a row across
+pages. HTTP streaming refuses inside a transaction; **in-transaction streaming is Bolt-only**,
+running over the transaction's own connection (so it sees the transaction's own uncommitted
+writes) and guarded against interleaving a `command`/`query` on the same socket while a cursor is
+open. Consume an in-transaction stream **inside** the `transaction/3` body — it is bound to the
+transaction's connection.
 
 Bolt can also run over TLS: `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ...)` is **secure by
 default** (verifies the server certificate against the OS trust store); pass

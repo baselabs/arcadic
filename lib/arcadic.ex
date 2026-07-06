@@ -89,21 +89,34 @@ defmodule Arcadic do
   `:chunk_size` (rows per round-trip, default 1000) must be a positive integer, else a
   value-free `ArgumentError`.
 
-  **HTTP** (the default transport): requires `language: "sql"` and offset-pages the
-  statement itself behind the scenes via an arcadic-owned, param-bound
-  `ORDER BY @rid SKIP/LIMIT` suffix. `@rid` is a total ORDER (a page is stably ordered
-  within one snapshot), but each page is an independent stateless request — it is NOT a
-  consistent snapshot, so a concurrent delete of an already-emitted row can cause a later
-  row to be skipped; use a Bolt in-tx cursor when you need snapshot consistency. A
-  statement carrying its own `ORDER BY`/`SKIP`/`LIMIT`, a SQL comment (`--`/`/*`, which
-  would neutralize the appended suffix), or a param named `__arcadic_skip`/`__arcadic_limit`
-  (reserved), and a non-`"sql"` language, are each rejected value-free (`reason:
-  :not_supported`). Each page is a fresh stateless request — a very deep stream costs O(n²)
-  server-side (re-scanning the offset each page); prefer a Bolt cursor for very large
-  exports. `:timeout` bounds each page POST (default `:infinity` — a stream is long-running,
-  so it does NOT inherit the conn's per-call timeout; set `:timeout` to bound a stalled
-  server). Refuses inside a transaction (`reason: :not_supported`) — HTTP has no cursor to
-  scope to a session.
+  **HTTP** (the default transport): offset-pages the statement itself behind the scenes
+  via an arcadic-owned, param-bound paging suffix. `@rid`/`id(<identifier>)` is a total
+  ORDER (a page is stably ordered within one snapshot), but each page is an independent
+  stateless request — it is NOT a consistent snapshot, so a concurrent delete of an
+  already-emitted row can cause a later row to be skipped; use a Bolt in-tx cursor when
+  you need snapshot consistency. A statement carrying its own `ORDER BY`/`SKIP`/`LIMIT`,
+  a comment (`--`/`/*` for SQL, `//` for Cypher, which would neutralize the appended
+  suffix), or a param named `__arcadic_skip`/`__arcadic_limit` (reserved), is rejected
+  value-free (`reason: :not_supported`). `:timeout` bounds each page POST (default
+  `:infinity` — a stream is long-running, so it does NOT inherit the conn's per-call
+  timeout; set `:timeout` to bound a stalled server). Refuses inside a transaction
+  (`reason: :not_supported`) — HTTP has no cursor to scope to a session.
+
+  ## The streamable statement class (HTTP)
+
+  A streamable HTTP statement carries NO `ORDER BY` / `SKIP` / `LIMIT` / comment anywhere (arcadic
+  appends its own paging suffix; a caller clause or a `--`/`/*`/`//` comment would collide with or
+  neutralize it, so each is rejected value-free). Roughly a bare `SELECT … FROM …` (SQL) or
+  `MATCH … RETURN …` (Cypher).
+
+  **SQL** pages by an arcadic-owned `@rid` keyset for a WHERE-less statement — `WHERE @rid > <cursor>
+  ORDER BY @rid LIMIT` — which is O(n) and skips no row under concurrent inserts; a statement with its
+  own `WHERE` falls back to `ORDER BY @rid SKIP/LIMIT` offset (O(n²), arcadic cannot inject a keyset
+  predicate without parsing). **Cypher** requires `:order_key` (e.g. `order_key: "id(v)"`), restricted
+  to `id(<identifier>)` — the only total, unique order — and pages by offset with Cypher `$name`
+  placeholders; documents are Cypher-unmatchable, so stream them as SQL. HTTP streaming is stateless
+  offset/keyset, not a consistent snapshot: for O(n) snapshot-consistent in-transaction Cypher
+  streaming use the **Bolt** cursor (`transport: Arcadic.Transport.Bolt` inside `transaction/3`).
 
   **Bolt**: opens a dedicated connection for the stream's lifetime and pulls
   `:chunk_size` rows per round-trip (default 1000). Inside `transaction/3`, streams
