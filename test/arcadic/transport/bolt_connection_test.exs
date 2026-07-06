@@ -20,4 +20,75 @@ if Code.ensure_loaded?(Boltx) do
                Connection.handle_declare(:q, %{}, [], state)
     end
   end
+
+  defmodule Arcadic.Transport.Bolt.ResolveOptsTest do
+    use ExUnit.Case, async: true
+    alias Arcadic.Transport.Bolt
+
+    test "defaults to plaintext bolt (never boltx's own bolt+s/verify_none default)" do
+      opts = Bolt.resolve_opts(hostname: "h", username: "u", password: "p")
+      assert opts[:scheme] == "bolt"
+      refute Keyword.has_key?(opts, :ssl_opts)
+    end
+
+    test "arcadic bolt+s is SECURE → boltx bolt+ssc (which FORCES verify_peer) + OS cacerts" do
+      opts = Bolt.resolve_opts(scheme: "bolt+s", hostname: "h", username: "u", password: "p")
+      # boltx maps bolt+ssc → verify_peer and bolt+s → verify_none; bolt+ssc is the EFFECTIVE
+      # secure scheme (asserting ssl_opts[:verify] here would be vacuous — boltx re-derives it).
+      assert opts[:scheme] == "bolt+ssc"
+      assert is_list(opts[:ssl_opts][:cacerts])
+    end
+
+    test "a caller CA source (cacertfile) is preserved on the secure path" do
+      opts =
+        Bolt.resolve_opts(
+          scheme: "bolt+s",
+          ssl_opts: [cacertfile: "/ca.pem"],
+          hostname: "h",
+          username: "u",
+          password: "p"
+        )
+
+      assert opts[:scheme] == "bolt+ssc"
+      assert opts[:ssl_opts][:cacertfile] == "/ca.pem"
+      refute Keyword.has_key?(opts[:ssl_opts], :cacerts)
+    end
+
+    test "a caller-pinned cacerts is preserved (not diluted by the OS trust store)" do
+      der = "fake-der-bytes"
+
+      opts =
+        Bolt.resolve_opts(
+          scheme: "bolt+s",
+          ssl_opts: [cacerts: [der]],
+          hostname: "h",
+          username: "u",
+          password: "p"
+        )
+
+      assert opts[:scheme] == "bolt+ssc"
+      assert opts[:ssl_opts][:cacerts] == [der]
+      refute Keyword.has_key?(opts[:ssl_opts], :cacertfile)
+    end
+
+    test "explicit verify_none opts INTO the insecure boltx bolt+s scheme" do
+      opts =
+        Bolt.resolve_opts(
+          scheme: "bolt+s",
+          ssl_opts: [verify: :verify_none],
+          hostname: "h",
+          username: "u",
+          password: "p"
+        )
+
+      assert opts[:scheme] == "bolt+s"
+      assert opts[:ssl_opts] == [verify: :verify_none]
+    end
+
+    test "rejects an unknown scheme value-free" do
+      assert_raise ArgumentError, ~r/scheme/, fn ->
+        Bolt.resolve_opts(scheme: "http", hostname: "h", username: "u", password: "p")
+      end
+    end
+  end
 end

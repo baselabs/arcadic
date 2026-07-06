@@ -81,16 +81,48 @@ if Code.ensure_loaded?(Boltx) do
       end
     end
 
+    # arcadic exposes "bolt" (plaintext) | "bolt+s" (TLS, secure by default).
+    @schemes ~w(bolt bolt+s)
+
     @doc false
     @spec resolve_opts(keyword()) :: keyword()
     def resolve_opts(opts) do
-      defaults = [scheme: "bolt", versions: [4.4, 4.3, 4.2, 4.1], pool_size: 1]
       {username, opts} = Keyword.pop(opts, :username)
       {password, opts} = Keyword.pop(opts, :password)
+      scheme = Keyword.get(opts, :scheme, "bolt")
 
-      defaults
+      unless scheme in @schemes do
+        raise ArgumentError, "bolt scheme must be one of #{inspect(@schemes)} (\"bolt+s\" = TLS)"
+      end
+
+      [versions: [4.4, 4.3, 4.2, 4.1], pool_size: 1]
       |> Keyword.merge(opts)
+      |> put_transport_scheme(scheme)
       |> Keyword.put(:auth, username: username, password: password)
+    end
+
+    # boltx's scheme→verify mapping is INVERTED from the Neo4j convention: its "bolt+s" FORCES
+    # verify_none and its "bolt+ssc" FORCES verify_peer (client.ex:80-81 — `Keyword.merge(ssl_opts,
+    # verify: …)` puts the forced value LAST, so it overrides any caller verify). So arcadic
+    # TRANSLATES its own "bolt+s" to the boltx scheme that yields the requested verification:
+    #   secure (verify_peer, the default)  → boltx "bolt+ssc"  (+ OS cacerts unless caller gave a CA)
+    #   explicit verify_none (caller opt-in) → boltx "bolt+s"
+    # An omitted scheme is EXPLICIT "bolt" — never delegated to boltx's own "bolt+s"/verify_none default.
+    defp put_transport_scheme(opts, "bolt"), do: Keyword.put(opts, :scheme, "bolt")
+
+    defp put_transport_scheme(opts, "bolt+s") do
+      ssl_opts = Keyword.get(opts, :ssl_opts, [])
+
+      if Keyword.get(ssl_opts, :verify) == :verify_none do
+        Keyword.put(opts, :scheme, "bolt+s")
+      else
+        cacert_opts =
+          if Keyword.has_key?(ssl_opts, :cacerts) or Keyword.has_key?(ssl_opts, :cacertfile),
+            do: ssl_opts,
+            else: Keyword.put(ssl_opts, :cacerts, :public_key.cacerts_get())
+
+        opts |> Keyword.put(:scheme, "bolt+ssc") |> Keyword.put(:ssl_opts, cacert_opts)
+      end
     end
 
     @impl true
