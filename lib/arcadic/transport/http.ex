@@ -26,6 +26,93 @@ defmodule Arcadic.Transport.HTTP do
   defp endpoint(:read), do: "query"
   defp endpoint(:write), do: "command"
 
+  @paging_clause_re ~r/\b(order\s+by|skip|limit)\b/i
+
+  @impl true
+  @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t()}
+  def query_stream(%Conn{session_id: sid}, _request, _opts) when is_binary(sid) do
+    {:error,
+     %Error{
+       reason: :not_supported,
+       message: "HTTP streaming is not available inside a transaction"
+     }}
+  end
+
+  def query_stream(
+        %Conn{} = conn,
+        %{statement: statement, params: params, language: language},
+        opts
+      ) do
+    cond do
+      language != "sql" ->
+        {:error,
+         %Error{reason: :not_supported, message: "HTTP streaming requires language: \"sql\""}}
+
+      Regex.match?(@paging_clause_re, statement) ->
+        {:error,
+         %Error{
+           reason: :not_supported,
+           message:
+             "HTTP streaming statement must not contain ORDER BY / SKIP / LIMIT (arcadic pages by @rid)"
+         }}
+
+      true ->
+        chunk = Keyword.get(opts, :chunk_size, 1000)
+        timeout = Keyword.get(opts, :timeout, :infinity)
+        {:ok, build_page_stream(conn, statement, params, chunk, timeout)}
+    end
+  end
+
+  # Offset paging: append arcadic's OWN fixed suffix; offsets ride params. @rid is a total
+  # order (guaranteed stable paging). Each page is a stateless POST (no session — in-tx refused).
+  defp build_page_stream(conn, statement, params, chunk, timeout) do
+    paged = statement <> " ORDER BY @rid SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+
+    Stream.resource(
+      fn -> 0 end,
+      fn
+        :done ->
+          {:halt, :done}
+
+        offset ->
+          page_params =
+            Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
+
+          emit_page(page(conn, paged, page_params, timeout), chunk, offset)
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  # A full page (== chunk) advances the offset; a short/empty page is the last (drain).
+  defp emit_page({:ok, []}, _chunk, _offset), do: {:halt, :done}
+
+  defp emit_page({:ok, rows}, chunk, offset) do
+    shaped = Enum.map(rows, &strip_order_alias/1)
+    next = if length(rows) < chunk, do: :done, else: offset + chunk
+    {shaped, next}
+  end
+
+  defp emit_page({:error, e}, _chunk, _offset), do: raise(e)
+
+  defp page(conn, statement, params, timeout) do
+    body = %{language: "sql", command: statement, params: params}
+
+    conn
+    |> post("/api/v1/query/#{conn.database}", body, timeout: timeout)
+    |> handle_result()
+  end
+
+  # Appending `ORDER BY @rid` to a PROJECTION makes ArcadeDB inject a synthetic
+  # `_$$$ORDER_BY_ALIAS$$$_N` ordering column (probed live) — drop it. `@props` is already
+  # dropped by Result.normalize inside handle_result.
+  defp strip_order_alias(row) when is_map(row) do
+    :maps.filter(fn k, _ -> not String.starts_with?(k, "_$$$ORDER_BY_ALIAS$$$_") end, row)
+  end
+
+  defp strip_order_alias(row), do: row
+
   @impl true
   def begin(%Conn{} = conn, opts) do
     body = isolation_body(opts[:isolation])

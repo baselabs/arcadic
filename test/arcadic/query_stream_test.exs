@@ -166,15 +166,13 @@ defmodule Arcadic.QueryStreamTest do
   end
 
   describe "Arcadic.query_stream/4 facade guards" do
-    test "returns :not_supported on the HTTP transport" do
+    test "the default HTTP transport streams, but requires language: sql" do
       conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
 
-      assert {:error,
-              %Arcadic.Error{
-                reason: :not_supported,
-                message: "transport does not support streaming"
-              }} =
+      assert {:error, %Arcadic.Error{reason: :not_supported, message: msg}} =
                Arcadic.query_stream(conn, "MATCH (n) RETURN n")
+
+      assert msg =~ "requires language"
     end
 
     test "returns :not_supported inside a transaction (session_id set)" do
@@ -220,6 +218,130 @@ defmodule Arcadic.QueryStreamTest do
                        %{statement: ^stmt, params: %{"e" => "secret@example.com"}}}
 
       refute stmt =~ "secret@example.com"
+    end
+  end
+
+  describe "HTTP query_stream/3 (offset paging)" do
+    defp http_conn,
+      do:
+        Conn.new("http://arcade.invalid", "mydb",
+          auth: {"root", "x"},
+          transport_options: [plug: {Req.Test, __MODULE__}]
+        )
+
+    # Stub N sequential pages; capture each page's request body.
+    defp stub_pages(pages) do
+      {:ok, agent} = Agent.start_link(fn -> pages end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:page_body, Jason.decode!(Req.Test.raw_body(c))})
+        rows = Agent.get_and_update(agent, fn [h | t] -> {h, t} end)
+        Req.Test.json(c, %{"result" => rows})
+      end)
+    end
+
+    test "pages via ORDER BY @rid SKIP/LIMIT (offsets param-bound) and drains on a short page" do
+      # chunk 2: page1 [2 rows] → page2 [1 row, short → last]
+      stub_pages([
+        [%{"@rid" => "#1:0", "n" => 1}, %{"@rid" => "#1:1", "n" => 2}],
+        [%{"@rid" => "#1:2", "n" => 3}]
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert Enum.map(Enum.to_list(stream), & &1["n"]) == [1, 2, 3]
+
+      assert_received {:page_body, b1}
+
+      assert b1["command"] ==
+               "SELECT FROM V ORDER BY @rid SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+
+      assert b1["language"] == "sql"
+      assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 2}
+      assert_received {:page_body, b2}
+      assert b2["params"] == %{"__arcadic_skip" => 2, "__arcadic_limit" => 2}
+      # exactly 2 pages (drained on the short page — no third POST)
+      refute_received {:page_body, _}
+    end
+
+    test "strips the ORDER BY alias leak and @props from streamed rows" do
+      stub_pages([
+        [%{"n" => 1, "_$$$ORDER_BY_ALIAS$$$_0" => "#1:0", "@props" => "x:1"}]
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT n FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert [row] = Enum.to_list(stream)
+      assert row == %{"n" => 1}
+    end
+
+    test "refuses a non-sql language value-free without touching the wire" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{}, language: "cypher")
+
+      assert e.message =~ "requires language"
+      refute_received {:page_body, _}
+    end
+
+    test "refuses a statement carrying its own ORDER BY/SKIP/LIMIT value-free, no wire, no echo" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+      secret = "SECRET_col_9f3a"
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V ORDER BY #{secret}", %{},
+                 language: "sql"
+               )
+
+      refute e.message =~ secret
+
+      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V LIMIT 5", %{}, language: "sql")
+
+      refute_received {:page_body, _}
+    end
+
+    test "refuses HTTP streaming inside a transaction value-free" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+      conn = %{http_conn() | session_id: "sess-1"}
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(conn, "SELECT FROM V", %{}, language: "sql")
+
+      assert e.message =~ "inside a transaction"
+      refute_received {:page_body, _}
+    end
+
+    test "a mid-stream error page RAISES a typed error and redacts the server value" do
+      secret = "row-value-and-email@example.com-SEKRET"
+
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{
+          "exception" => "com.arcadedb.exception.ParsingException",
+          "error" => secret,
+          "detail" => secret
+        })
+      end)
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V", %{}, language: "sql")
+
+      err = assert_raise Arcadic.Error, fn -> Enum.to_list(stream) end
+      assert err.reason == :parse_error
+      # The value-bearing server `error`/`detail` must not survive into the raised exception.
+      refute Exception.message(err) =~ secret
+      refute inspect(err) =~ secret
     end
   end
 end

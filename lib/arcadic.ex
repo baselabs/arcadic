@@ -25,7 +25,7 @@ defmodule Arcadic do
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
   @command_opts ~w(language limit serializer timeout retries)a
   @query_opts ~w(language limit serializer timeout)a
-  @query_stream_opts ~w(chunk_size timeout)a
+  @query_stream_opts ~w(chunk_size timeout language)a
 
   @doc "Build a connection handle. See `Arcadic.Conn.new/3`."
   @spec connect(String.t(), String.t(), keyword()) :: Conn.t()
@@ -98,22 +98,13 @@ defmodule Arcadic do
   def query_stream(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
     opts = validate_opts!(opts, @query_stream_opts)
 
-    cond do
-      not is_nil(conn.session_id) ->
-        {:error,
-         %Arcadic.Error{
-           reason: :not_supported,
-           message: "streaming is not available inside a transaction"
-         }}
-
-      not (Code.ensure_loaded?(conn.transport) and
-               function_exported?(conn.transport, :query_stream, 3)) ->
-        {:error,
-         %Arcadic.Error{reason: :not_supported, message: "transport does not support streaming"}}
-
-      true ->
-        request = %{statement: statement, params: params, language: "cypher"}
-        conn.transport.query_stream(conn, request, opts)
+    if Code.ensure_loaded?(conn.transport) and
+         function_exported?(conn.transport, :query_stream, 3) do
+      request = %{statement: statement, params: params, language: opts[:language] || "cypher"}
+      conn.transport.query_stream(conn, request, opts)
+    else
+      {:error,
+       %Arcadic.Error{reason: :not_supported, message: "transport does not support streaming"}}
     end
   end
 

@@ -61,7 +61,7 @@ defmodule Arcadic.Transport do
             when result: var
   @optional_callbacks transaction: 3
 
-  @doc "Lazily stream a large read result as raw row maps (Bolt-only). Optional — HTTP has no cursor contract."
+  @doc "Lazily stream a large read result as raw row maps (Bolt cursor, or HTTP `@rid` offset paging). Optional."
   @callback query_stream(Conn.t(), request(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, Error.t() | TransportError.t()}
   @optional_callbacks query_stream: 3
