@@ -33,8 +33,10 @@ defmodule Arcadic.Transport.HTTP do
   # non-terminating stream. `/*` (block comment) is rejected on the same principle.
   @comment_token_re ~r/(--|\/\*)/
   # arcadic OWNS these param names (it binds the offsets); a caller param of the same name would be
-  # silently clobbered by Map.merge, mis-binding the caller's own predicate. Reserve them.
-  @reserved_params ~w(__arcadic_skip __arcadic_limit)
+  # silently clobbered by Map.merge, mis-binding the caller's own predicate. Reserve BOTH the string
+  # and atom forms — Jason stringifies an atom key, so an atom `:__arcadic_skip` would slip a
+  # string-only guard and then collide as a DUPLICATE JSON key that ArcadeDB binds last.
+  @reserved_params ["__arcadic_skip", "__arcadic_limit", :__arcadic_skip, :__arcadic_limit]
 
   @impl true
   @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::

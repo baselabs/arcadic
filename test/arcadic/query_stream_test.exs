@@ -381,14 +381,15 @@ defmodule Arcadic.QueryStreamTest do
       refute_received {:page_body, _}
     end
 
-    test "refuses a caller param colliding with the reserved paging namespace value-free" do
+    test "refuses a caller param colliding with the reserved paging namespace value-free (string AND atom keys)" do
       Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
 
-      for key <- ["__arcadic_skip", "__arcadic_limit"] do
+      # Both key forms must be caught: an ATOM key would slip a string-only guard, then Jason
+      # stringifies it into a DUPLICATE JSON key that ArcadeDB binds last → the caller's own
+      # predicate silently mis-binds to the page offset.
+      for key <- ["__arcadic_skip", "__arcadic_limit", :__arcadic_skip, :__arcadic_limit] do
         assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
-                 Arcadic.query_stream(http_conn(), "SELECT FROM V WHERE n = :#{key}", %{key => 7},
-                   language: "sql"
-                 )
+                 Arcadic.query_stream(http_conn(), "SELECT FROM V", %{key => 7}, language: "sql")
 
         assert e.message =~ "reserve"
       end
