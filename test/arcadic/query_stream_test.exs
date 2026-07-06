@@ -250,6 +250,9 @@ defmodule Arcadic.QueryStreamTest do
 
       assert b1["language"] == "sql"
       assert b1["params"] == %{"__arcadic_skip" => 0, "__arcadic_limit" => 2}
+      # The page body ALSO carries `limit: chunk` so ArcadeDB's default body-limit (20000) cannot
+      # cap a page below the statement LIMIT and truncate the stream (a page < chunk = terminate).
+      assert b1["limit"] == 2
       assert_received {:page_body, b2}
       assert b2["params"] == %{"__arcadic_skip" => 2, "__arcadic_limit" => 2}
       # exactly 2 pages (drained on the short page — no third POST)
@@ -306,6 +309,58 @@ defmodule Arcadic.QueryStreamTest do
                Arcadic.query_stream(conn, "SELECT FROM V", %{}, language: "sql")
 
       assert e.message =~ "inside a transaction"
+      refute_received {:page_body, _}
+    end
+
+    test "rejects a non-positive chunk_size value-free without touching the wire" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      for bad <- [0, -1] do
+        err =
+          assert_raise ArgumentError, fn ->
+            Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},
+              language: "sql",
+              chunk_size: bad
+            )
+          end
+
+        assert err.message =~ "chunk_size"
+        # value-free: the offending value is never echoed (Rule 3 posture, also just hygiene)
+        refute err.message =~ to_string(bad)
+      end
+
+      refute_received {:page_body, _}
+    end
+
+    test "refuses a statement carrying a SQL comment token value-free (a trailing -- neutralizes the paging suffix)" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+      secret = "SECRET_tail_9f3a"
+
+      assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V -- #{secret}", %{},
+                 language: "sql"
+               )
+
+      refute e.message =~ secret
+
+      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+               Arcadic.query_stream(http_conn(), "SELECT FROM V /* x */", %{}, language: "sql")
+
+      refute_received {:page_body, _}
+    end
+
+    test "refuses a caller param colliding with the reserved paging namespace value-free" do
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+
+      for key <- ["__arcadic_skip", "__arcadic_limit"] do
+        assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+                 Arcadic.query_stream(http_conn(), "SELECT FROM V WHERE n = :#{key}", %{key => 7},
+                   language: "sql"
+                 )
+
+        assert e.message =~ "reserve"
+      end
+
       refute_received {:page_body, _}
     end
 

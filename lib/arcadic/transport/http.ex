@@ -27,6 +27,14 @@ defmodule Arcadic.Transport.HTTP do
   defp endpoint(:write), do: "command"
 
   @paging_clause_re ~r/\b(order\s+by|skip|limit)\b/i
+  # A SQL comment token in the caller statement is fail-closed too: a trailing `--` (line comment)
+  # would comment OUT arcadic's appended ` ORDER BY @rid SKIP … LIMIT …` suffix, so the page runs
+  # unpaged (full result set, HTTP 200) and `length(rows) < chunk` never trips — a silent-wrong,
+  # non-terminating stream. `/*` (block comment) is rejected on the same principle.
+  @comment_token_re ~r/(--|\/\*)/
+  # arcadic OWNS these param names (it binds the offsets); a caller param of the same name would be
+  # silently clobbered by Map.merge, mis-binding the caller's own predicate. Reserve them.
+  @reserved_params ~w(__arcadic_skip __arcadic_limit)
 
   @impl true
   @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::
@@ -57,6 +65,22 @@ defmodule Arcadic.Transport.HTTP do
              "HTTP streaming statement must not contain ORDER BY / SKIP / LIMIT (arcadic pages by @rid)"
          }}
 
+      Regex.match?(@comment_token_re, statement) ->
+        {:error,
+         %Error{
+           reason: :not_supported,
+           message:
+             "HTTP streaming statement must not contain a SQL comment (-- or /*) — it would neutralize arcadic's paging suffix"
+         }}
+
+      Enum.any?(@reserved_params, &Map.has_key?(params, &1)) ->
+        {:error,
+         %Error{
+           reason: :not_supported,
+           message:
+             "HTTP streaming reserves the params __arcadic_skip / __arcadic_limit (arcadic pages by @rid)"
+         }}
+
       true ->
         chunk = Keyword.get(opts, :chunk_size, 1000)
         timeout = Keyword.get(opts, :timeout, :infinity)
@@ -64,10 +88,13 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
-  # Offset paging: append arcadic's OWN fixed suffix; offsets ride params. @rid is a total
-  # order (guaranteed stable paging). Each page is a stateless POST (no session — in-tx refused).
-  # ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is Cypher's syntax); a `$`-named
-  # SQL param binds to null → `Invalid value for LIMIT: null`. The param KEYS stay the bare name.
+  # Offset paging: append arcadic's OWN fixed suffix; offsets ride params. `@rid` is a total
+  # ORDER, so a page is stably positioned WITHIN a single snapshot — but each page is an
+  # independent stateless POST (no session — in-tx refused), so a concurrent DELETE of an
+  # already-emitted row shifts later rows down and the next `SKIP` can step over one (a row
+  # silently missing). It is stable ordering, not a consistent snapshot; use a Bolt in-tx cursor
+  # for snapshot consistency. ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is
+  # Cypher's syntax); a `$`-named SQL param binds to null → `Invalid value for LIMIT: null`.
   defp build_page_stream(conn, statement, params, chunk, timeout) do
     paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
@@ -98,8 +125,17 @@ defmodule Arcadic.Transport.HTTP do
 
   defp emit_page({:error, e}, _chunk, _offset), do: raise(e)
 
+  # The body-level `limit` mirrors the statement's `LIMIT :__arcadic_limit` (== chunk). Without it,
+  # ArcadeDB's DEFAULT body limit (20000) caps a page BELOW the statement LIMIT, and since a page
+  # shorter than `chunk` is treated as the last, a `chunk_size` above the server default would
+  # SILENTLY truncate the stream. Setting it to the chunk makes the statement LIMIT the only cap.
   defp page(conn, statement, params, timeout) do
-    body = %{language: "sql", command: statement, params: params}
+    body = %{
+      language: "sql",
+      command: statement,
+      params: params,
+      limit: params["__arcadic_limit"]
+    }
 
     conn
     |> post("/api/v1/query/#{conn.database}", body, timeout: timeout)

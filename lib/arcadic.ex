@@ -109,6 +109,7 @@ defmodule Arcadic do
           {:ok, Enumerable.t()} | {:error, Arcadic.Error.t()}
   def query_stream(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
     opts = validate_opts!(opts, @query_stream_opts)
+    validate_chunk_size!(opts[:chunk_size])
 
     if Code.ensure_loaded?(conn.transport) and
          function_exported?(conn.transport, :query_stream, 3) do
@@ -181,6 +182,17 @@ defmodule Arcadic do
     if language = opts[:language], do: validate_language!(language)
     opts
   end
+
+  # A non-positive chunk_size is a caller error, not a valid stream: on HTTP a `LIMIT 0` yields a
+  # silently empty stream and a `LIMIT -1` (returns ALL rows, so `length < chunk` is never true)
+  # walks the offset backwards forever re-emitting the whole result set; on Bolt a bad `PULL {n}`
+  # is equally wrong. Reject value-free at the facade so both transports are normalized. `nil`
+  # defers to each transport's default (1000).
+  defp validate_chunk_size!(nil), do: :ok
+  defp validate_chunk_size!(n) when is_integer(n) and n > 0, do: :ok
+
+  defp validate_chunk_size!(_),
+    do: raise(ArgumentError, "chunk_size must be a positive integer")
 
   defp validate_language!(language) when language in @language_allowlist, do: :ok
 
