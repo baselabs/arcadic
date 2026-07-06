@@ -37,7 +37,7 @@ defmodule Arcadic.Import do
   @max_url_length 2048
 
   @doc """
-  Imports `url` into `conn.database` via `IMPORT DATABASE '<url>'[ WITH (…)]`. Returns
+  Imports `url` into `conn.database` via `IMPORT DATABASE '<url>'[ WITH …]`. Returns
   `{:ok, rows}` (rows carry `operation`/`fromUrl`/`parsedRecords`/`result`) or
   `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
 
@@ -101,7 +101,7 @@ defmodule Arcadic.Import do
         "#{setting_name!(name)} = #{setting_value!(value)}"
       end)
 
-    " WITH (#{pairs})"
+    " WITH #{pairs}"
   end
 
   defp build_with(_), do: raise(ArgumentError, "with: must be a keyword list of settings")

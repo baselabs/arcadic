@@ -38,6 +38,17 @@ defmodule Arcadic.Integration.SchemaImportTest do
   defp assert_no_props(list) when is_list(list), do: Enum.each(list, &assert_no_props/1)
   defp assert_no_props(_), do: :ok
 
+  # A fresh throwaway destination db (mirrors the inline pattern at :83-87; DRY across the new
+  # round-trip tests). `on_exit` runs in the test process — valid from a helper.
+  defp new_db(url, pass) do
+    name = "s4_dst_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    conn = Conn.new(url, name, auth: {"root", pass})
+    _ = Server.drop_database(conn, name)
+    :ok = Server.create_database!(conn, name)
+    on_exit(fn -> Server.drop_database(conn, name) end)
+    conn
+  end
+
   test "types/1 reflects the type with nested properties + indexes, @props-free", %{conn: conn} do
     assert {:ok, rows} = Schema.types(conn)
     person = Enum.find(rows, &(&1["name"] == "Person"))
@@ -106,5 +117,35 @@ defmodule Arcadic.Integration.SchemaImportTest do
     # never reached the wire → schema still intact
     assert {:ok, rows} = Schema.types(conn)
     assert Enum.any?(rows, &(&1["name"] == "Person"))
+  end
+
+  test "import with: settings PARSES + RUNS against live ArcadeDB (the parens grammar bug regression)",
+       %{conn: conn, url: url, pass: pass} do
+    # Round-trip a throwaway db through EXPORT → IMPORT WITH a real setting. The OLD `WITH (parens)`
+    # grammar parse-errors on ArcadeDB 26.8.1, so this test is RED on the pre-fix code — it is the
+    # live peer-conformance gate the unit stub could never be (arcadic is tenant-blind about a
+    # setting's SEMANTICS; this proves the clause GRAMMAR the server actually accepts).
+    name = "s4_with_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE W", %{}, language: "sql")
+    for i <- 1..3, do: Arcadic.command!(conn, "INSERT INTO W SET n = #{i}", %{}, language: "sql")
+
+    Arcadic.command!(conn, "EXPORT DATABASE file://#{name} WITH overwrite = true", %{},
+      language: "sql"
+    )
+
+    dst = new_db(url, pass)
+
+    # The load-bearing peer-conformance signal: the no-parens `WITH commitEvery = 1, wal = false`
+    # clause PARSES and the import RUNS to `result == "OK"`. On the pre-fix `WITH (parens)` form the
+    # server rejects this with `reason: :parse_error`
+    # (`com.arcadedb.exception.CommandSQLParsingException`) — probed live 2026-07-06 — so this
+    # assertion is RED on the shipped bug and GREEN on the fix. The unit stub can never catch this
+    # (it echoes whatever bytes it is sent); only a live bind proves the GRAMMAR the server accepts.
+    assert {:ok, rows} =
+             Arcadic.Import.database(dst, "file://#{@export_dir}/#{name}",
+               with: [commitEvery: 1, wal: false]
+             )
+
+    assert Enum.any?(rows, &(&1["result"] == "OK"))
   end
 end

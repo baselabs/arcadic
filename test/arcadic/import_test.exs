@@ -38,7 +38,7 @@ defmodule Arcadic.ImportTest do
     assert_received {:body, body}
 
     assert body["command"] ==
-             "IMPORT DATABASE 'file:///home/arcadedb/exports/x' WITH (commitEvery = 100, wal = false)"
+             "IMPORT DATABASE 'file:///home/arcadedb/exports/x' WITH commitEvery = 100, wal = false"
   end
 
   test "database/3 with an empty with: emits no WITH clause" do
