@@ -90,5 +90,14 @@ if Code.ensure_loaded?(Boltx) do
         Bolt.resolve_opts(scheme: "http", hostname: "h", username: "u", password: "p")
       end
     end
+
+    test "rejects a :uri opt — it bypasses arcadic's TLS scheme translation (boltx prefers the uri scheme, silently verify_none)" do
+      # boltx's Client.Config prefers parsed_uri.scheme over the :scheme opt, and boltx maps its
+      # own "bolt+s" to verify_none — so a "bolt+s://" :uri would sail past @schemes + the
+      # secure-default translation and open TLS unauthenticated. arcadic must OWN the scheme.
+      assert_raise ArgumentError, ~r/uri/, fn ->
+        Bolt.resolve_opts(uri: "bolt+s://h:7687", username: "u", password: "p")
+      end
+    end
   end
 end

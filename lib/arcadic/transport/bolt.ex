@@ -95,6 +95,16 @@ if Code.ensure_loaded?(Boltx) do
         raise ArgumentError, "bolt scheme must be one of #{inspect(@schemes)} (\"bolt+s\" = TLS)"
       end
 
+      # A caller `:uri` carries its own scheme, and boltx's Client.Config PREFERS the parsed-uri
+      # scheme over the `:scheme` opt — so a `"bolt+s://"` uri would sail past the @schemes check
+      # AND put_transport_scheme/2, letting boltx open TLS with its own verify_none default. arcadic
+      # OWNS the scheme translation (the whole point of B8's secure default), so reject :uri outright.
+      if Keyword.has_key?(opts, :uri) do
+        raise ArgumentError,
+              "bolt :uri is not supported (it bypasses arcadic's TLS scheme translation); " <>
+                "use :scheme + :hostname + :port"
+      end
+
       [versions: [4.4, 4.3, 4.2, 4.1], pool_size: 1]
       |> Keyword.merge(opts)
       |> put_transport_scheme(scheme)
