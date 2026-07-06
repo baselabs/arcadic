@@ -38,16 +38,22 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   indexes **before** loading rows — they do not retro-index existing data (a
   `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you do).
 - **`Arcadic.Schema`** — read-only schema introspection: `types/1`, `properties/2`,
-  `indexes/2` (with a `:type` filter), `buckets/1` (all + `!`). SQL-only `SELECT FROM
+  `indexes/2` (with a `:type` filter), `buckets/1`, and `database/1` (the engine config,
+  `schema:database`) (all + `!`). SQL-only `SELECT FROM
   schema:*`; a caller type name binds as a `$param` and is `Identifier`-shape-guarded;
   ArcadeDB's `@props` serializer noise is deep-stripped at every depth. `indexes/2` returns
   both logical and physical per-bucket rows (filter on `fileId` absence for logical-only).
 - **`Arcadic.Import`** — `database/3` (+ `!`): `IMPORT DATABASE` bulk load. The source URL is
   interpolated (ArcadeDB rejects a bound `:url`) behind a positive character + scheme
   (`http`/`https`/`file`) allowlist that closes the SQL-literal injection surface, value-free on
-  rejection; `with:` takes number/boolean settings. A private/loopback host trips ArcadeDB's SSRF
+  rejection; `with:` takes number, boolean, and charset-allowlisted string settings (injection-inert),
+  emitted as ArcadeDB's no-parens `WITH k = v` grammar. A private/loopback host trips ArcadeDB's SSRF
   guard (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure via
   `error.exception`); `file://` is server-local.
+- **`Arcadic.Export`** — `database/3` (+ `!`): `EXPORT DATABASE file://<name>` server-side, symmetric
+  to `Arcadic.Import`. The bare export name is guarded by a positive allowlist (no path / traversal /
+  quote, value-free); `with:` settings reuse the import grammar (e.g. `format: "jsonl"`,
+  `overwrite: true`).
 - **Streaming** — `Arcadic.query_stream(conn, sql, params, language: "sql", chunk_size: 500)`
   lazily streams a large read as raw row maps over the default HTTP transport: arcadic pages the
   statement itself via a param-bound `ORDER BY @rid SKIP/LIMIT` suffix (`@rid` is a total order, so
@@ -83,7 +89,7 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   scheme allowlist, value-free) rather than hand-interpolated — do NOT hand-build an
   `IMPORT DATABASE '<url>'` string, which reopens the injection surface. The URL must be reachable
   by the SERVER; ArcadeDB blocks private/loopback hosts by default, so use a public URL or a
-  server-local `file://`. Optional `with:` number/boolean settings tune the load (e.g.
+  server-local `file://`. Optional `with:` number/boolean/string settings tune the load (e.g.
   `with: [commitEvery: 10_000]`).
 - For an **index-deferred incremental** load, order it yourself: create the type, bulk-load the
   rows (a `command/4` loop or one `transaction/3`), then create the index — a `LSM_TREE`/dense

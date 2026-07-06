@@ -32,10 +32,12 @@ ArcadeDB").
   DDL plus nearest-neighbour, sparse, and hybrid-fusion query builders
   (`Arcadic.Vector`) with a candidate-set `filter` and `group_by`/`group_size`
   shaping, all params-only and value-free.
-- **Schema & import** — read-only schema introspection (`Arcadic.Schema` —
-  types / properties / indexes / buckets, `@props`-stripped) and server-side bulk
-  load (`Arcadic.Import.database/3`, `IMPORT DATABASE`) behind a positive-allowlist
-  URL validator that closes the interpolated-URL injection surface.
+- **Schema, import & export** — read-only schema introspection (`Arcadic.Schema` —
+  types / properties / indexes / buckets / database engine-config, `@props`-stripped),
+  server-side bulk load (`Arcadic.Import.database/3`, `IMPORT DATABASE`) behind a
+  positive-allowlist URL validator that closes the interpolated-URL injection surface, and
+  symmetric server-side export (`Arcadic.Export.database/3`, `EXPORT DATABASE`) with a
+  path-safe name.
 - **Batteries included** — server admin, a migration runner, vector search,
   schema introspection, bulk import, allowlist-validated identifiers, and
   value-free telemetry spans.
@@ -181,6 +183,7 @@ a `$param` (never interpolated) and is identifier-shape-guarded.
 {:ok, props}   = Arcadic.Schema.properties(conn, "User")
 {:ok, indexes} = Arcadic.Schema.indexes(conn, type: "User")
 {:ok, buckets} = Arcadic.Schema.buckets(conn)
+{:ok, cfg}     = Arcadic.Schema.database(conn)   # engine config (schema:database), @props-stripped
 ```
 
 `indexes/2` returns both logical and physical per-bucket rows (filter on the absence of
@@ -199,7 +202,17 @@ plus a scheme allowlist (`http` / `https` / `file`). Rejections are value-free.
 
 The server must be able to reach the URL — ArcadeDB blocks private/loopback hosts by
 default (surfaced as `%Arcadic.Error{reason: :unauthorized, exception: "java.lang.SecurityException"}`,
-distinct from an auth failure), so use a public URL or a server-local `file://` path.
+distinct from an auth failure), so use a public URL or a server-local `file://` path. `with:` settings
+accept number, boolean, and charset-allowlisted string values (e.g. `mapping: "map.json"`), emitted as
+ArcadeDB's no-parens `WITH k = v` grammar.
+
+`Arcadic.Export.database/3` is the symmetric server-side export — `EXPORT DATABASE file://<name>` to
+ArcadeDB's exports directory. The bare name is path-traversal-guarded (value-free); `with:` settings
+reuse `Arcadic.Import`'s grammar.
+
+```elixir
+{:ok, _} = Arcadic.Export.database(conn, "nightly_backup", with: [format: "jsonl", overwrite: true])
+```
 
 ## Streaming & secure transport
 
@@ -334,7 +347,7 @@ ArcadeDB's bulk facilities — far faster than any `INSERT`/`CREATE EDGE` loop:
   CSV / JSON / GraphML / Neo4j / OrientDB / ArcadeDB exports server-side. The URL is validated
   (positive character + scheme allowlist, value-free) rather than hand-interpolated, and must be
   reachable by the server (private/loopback hosts are blocked; use a public URL or a `file://` path).
-  Optional `with:` number/boolean settings tune the load (e.g. `with: [commitEvery: 10_000]`).
+  Optional `with:` number/boolean/string settings tune the load (e.g. `with: [commitEvery: 10_000]`).
 - for an **index-deferred incremental** load, order it yourself — create the type, bulk-load the
   rows (a `command/4` loop or one `Arcadic.transaction/3`), then create the index. A `LSM_TREE` or
   dense `LSM_VECTOR` index retro-indexes existing rows, but an `LSM_SPARSE_VECTOR` index must be

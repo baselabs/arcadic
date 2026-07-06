@@ -10,16 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `Arcadic.Schema` — tenant-blind schema introspection: `types/1`, `properties/2`, `indexes/2`
-  (with a `:type` filter), `buckets/1` (all + `!`). SQL-only `SELECT FROM schema:*`; a caller type
+  (with a `:type` filter), `buckets/1`, and `database/1` (the engine config, `schema:database`)
+  (all + `!`). SQL-only `SELECT FROM schema:*`; a caller type
   name binds as a `$param` and is `Identifier`-shape-guarded (value-free); ArcadeDB's `@props`
   serializer noise is deep-stripped at every nesting depth.
 - `Arcadic.Import` — `database/3` (+ `!`) wrapping `IMPORT DATABASE`. The source URL is validated
   against a positive character allowlist (closing the interpolated-URL injection surface, since the
   URL cannot be a bound parameter and ArcadeDB honours backslash-escapes inside string literals) and
-  a scheme allowlist (`http`/`https`/`file`); `with:` accepts number/boolean import settings. Import
+  a scheme allowlist (`http`/`https`/`file`); `with:` accepts number, boolean, and charset-allowlisted
+  string settings, emitted as ArcadeDB's no-parens `WITH k = v` grammar. Import
   errors are reflected faithfully — a private/loopback host trips ArcadeDB's SSRF guard
   (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure's
   `ServerSecurityException` via `error.exception`).
+- `Arcadic.Export` — `database/3` (+ `!`) wrapping `EXPORT DATABASE file://<name>`, symmetric to
+  `Arcadic.Import`: the bare export name is path-traversal-guarded (value-free), and `with:` reuses
+  the same number/boolean/string settings grammar.
 - HTTP result streaming — `Arcadic.query_stream/4` now works on the default HTTP transport
   (previously Bolt-only), offset-paging a `language: "sql"` read by an arcadic-owned
   `ORDER BY @rid` (statements carrying their own `ORDER BY`/`SKIP`/`LIMIT`, a SQL comment, or a
