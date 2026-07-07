@@ -132,9 +132,19 @@ if Code.ensure_loaded?(Boltx) do
 
     @impl true
     def handle_deallocate(_query, _cursor, opts, %{cursor_open?: true} = state) do
-      # Caller halted the Stream early (or the tx body raised): DISCARD the remaining server-side
-      # result so the tx's later COMMIT/ROLLBACK does not desync. If the DISCARD itself fails, the
-      # socket is desynced — DISCONNECT (drop the pooled conn) rather than return it dirty as {:ok}.
+      # Caller halted the Stream early (or the tx body raised) with the cursor still OPEN: DISCARD the
+      # remaining server-side result so the tx's later COMMIT/ROLLBACK does not desync. Root reason
+      # this is safe: this clause is reachable ONLY when the last server reply was a SUCCESS, so the
+      # server is never in a FAILURE state — the DISCARD recv gets a SUCCESS, never an IGNORED reply,
+      # and the IGNORED→CaseClauseError window boltx exhibits is unreachable at this call site.
+      # Accounting for every path that leaves cursor_open? true: handle_execute refuses before sending
+      # (cursor_open? guard); handle_declare sets cursor_open? only on RUN success (a RUN FAILURE takes
+      # {:disconnect}, leaving it false); handle_fetch keeps cursor_open? true only after a has_more
+      # PULL (server still streaming) and clears it on any WIRE fault (cee39af); the lone non-wire
+      # fault — a has_more-missing PULL that raises :bolt_protocol_error — still received a valid
+      # SUCCESS reply, so the socket is healthy and a DISCARD there would also read a SUCCESS. If the
+      # DISCARD itself fails (a socket death BETWEEN the last good PULL and here), the socket is
+      # desynced — DISCONNECT (drop the pooled conn) rather than return it dirty as {:ok}.
       %{client: client} = state
       payload = DiscardMessage.encode(client.bolt_version, %{n: -1})
 

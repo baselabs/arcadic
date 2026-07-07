@@ -204,4 +204,28 @@ defmodule Arcadic.Integration.BoltStreamTest do
     assert_raise Arcadic.TransportError, fn -> Enum.to_list(stream) end
     assert own_tcp_count() - before == 0
   end
+
+  test "an early-halted IN-TRANSACTION stream DISCARDs the remainder and the tx still commits cleanly",
+       %{conn: conn} do
+    # The in-tx cursor path (handle_declare/handle_fetch/handle_deallocate). Taking 3 of 7 rows at
+    # chunk_size 2 leaves the cursor open with rows still pending server-side, so handle_deallocate
+    # fires a DISCARD against the still-HEALTHY socket (the ONLY reachable DISCARD path — every desync
+    # path leaves the last reply a SUCCESS or clears cursor_open? first). If that DISCARD desynced the
+    # socket, the tx's COMMIT would fail and this transaction would not return {:ok, _}.
+    assert {:ok, taken} =
+             Arcadic.transaction(conn, fn tx ->
+               {:ok, stream} =
+                 Arcadic.query_stream(tx, "MATCH (n:Row) RETURN n.i AS i ORDER BY n.i", %{},
+                   chunk_size: 2
+                 )
+
+               Enum.take(stream, 3)
+             end)
+
+    assert Enum.map(taken, & &1["i"]) == [1, 2, 3]
+
+    # The connection is healthy AFTER the early-halt + DISCARD + COMMIT: a follow-on query on the same
+    # pool succeeds (a desynced/poisoned socket would fail or return stale data).
+    assert {:ok, [%{"c" => 7}]} = Arcadic.query(conn, "MATCH (n:Row) RETURN count(n) AS c")
+  end
 end
