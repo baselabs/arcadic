@@ -72,6 +72,7 @@ defmodule Arcadic do
   @spec command_async(Conn.t(), String.t(), map(), keyword()) :: :ok | {:error, Exception.t()}
   def command_async(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
     opts = validate_opts!(opts, @command_opts)
+    validate_params!(params)
     language = opts[:language] || "cypher"
     request = %{statement: statement, params: params, language: language}
 
@@ -165,6 +166,7 @@ defmodule Arcadic do
   # ── internals ──────────────────────────────────────────────────────────────
 
   defp run(conn, mode, statement, params, opts) do
+    validate_params!(params)
     language = opts[:language] || "cypher"
     request = %{statement: statement, params: params, language: language}
     op = if(mode == :read, do: :query, else: :command)

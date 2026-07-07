@@ -80,6 +80,21 @@ defmodule Arcadic.QueryCommandTest do
     end
   end
 
+  test "rejects non-map params value-free — never echoes the offending value (Rule 3)" do
+    # A caller passing a keyword list for params (a natural mistake — opts IS a keyword list) must
+    # NOT reach build_body's `map_size/1` and raise a BadMapError echoing the value into the message.
+    for call <- [
+          fn ->
+            Arcadic.query(conn(), "SELECT FROM V", [{"api_token", "SENTINEL_SECRET_9f3a"}])
+          end,
+          fn -> Arcadic.command(conn(), "CREATE (n)", [{"api_token", "SENTINEL_SECRET_9f3a"}]) end
+        ] do
+      err = assert_raise ArgumentError, call
+      assert err.message =~ "params"
+      refute err.message =~ "SENTINEL"
+    end
+  end
+
   test "query!/command! return the list or raise" do
     Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => [%{"n" => 1}]}) end)
     assert [%{"n" => 1}] = Arcadic.query!(conn(), "RETURN 1")

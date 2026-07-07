@@ -75,4 +75,16 @@ defmodule Arcadic.AsyncTest do
     assert {:error, %Arcadic.Error{reason: :not_supported}} =
              Arcadic.command_async(c, "CREATE (n)")
   end
+
+  test "rejects non-map params value-free — never echoes the offending value (Rule 3)" do
+    # command_async bypasses run/5 (builds its own request) → guard it at the facade too, else
+    # build_body's `map_size/1` raises a BadMapError echoing the caller value.
+    err =
+      assert_raise ArgumentError, fn ->
+        Arcadic.command_async(conn(), "CREATE (n)", [{"api_token", "SENTINEL_SECRET_9f3a"}])
+      end
+
+    assert err.message =~ "params"
+    refute err.message =~ "SENTINEL"
+  end
 end
