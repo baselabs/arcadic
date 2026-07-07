@@ -278,6 +278,16 @@ conn =
 For paging large result sets, `Arcadic.query_stream/4` returns a lazy `Stream.t()`
 of rows over Bolt, chunked via `PULL`.
 
+Bolt `start_link/1` **raises** if a `BOLT_USER`, `BOLT_PWD`, `BOLT_HOST`, or
+`BOLT_TCP_PORT` environment variable is set: boltx reads those with precedence over
+arcadic's explicit config and would silently override the connection or its
+credentials. Unset the variable and pass `:scheme`/`:hostname`/`:port`/`:username`/
+`:password` explicitly.
+
+Vector search is **HTTP-only** — `Arcadic.Vector` (`LSM_VECTOR` / `LSM_SPARSE_VECTOR`)
+runs SQL, and Bolt is Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt
+`RUN` carries no SQL-language selector), so run vector queries over the HTTP transport.
+
 ## Layering
 
 ```

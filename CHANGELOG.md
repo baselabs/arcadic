@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`verify_peer` against the OS trust store, via boltx's inverted `bolt+ssc` scheme under the
   hood); `ssl_opts: [verify: :verify_none]` is an explicit caller opt-in to skip verification.
   A `:uri` opt is rejected (it would bypass the scheme translation and silently skip verification).
+- Bolt now fails loud if a `BOLT_USER`/`BOLT_PWD`/`BOLT_HOST`/`BOLT_TCP_PORT` environment variable is
+  set (boltx reads them with precedence over arcadic's explicit config); unset the var.
+
+### Changed
+
+- Bolt RUN/PULL wire-framing is deduplicated to a single site (`stream_run`/`stream_pull`), shared by
+  the non-transaction stream and the in-transaction cursor callbacks.
 
 ### Fixed
 

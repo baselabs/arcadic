@@ -127,6 +127,15 @@ boltx defaults to v5), uses the non-TLS **`bolt` scheme** (ArcadeDB Bolt is
 TLS-disabled by default), and takes `username`/`password`. Pass the connection
 reference as `transport: Arcadic.Transport.Bolt, transport_options: [bolt: ref]`.
 **Server admin (create/drop/list database) is HTTP-only** — use an HTTP conn for
-admin even when queries run over Bolt.
+admin even when queries run over Bolt. **Vector search is HTTP-only too** —
+`Arcadic.Vector` (`LSM_VECTOR` / `LSM_SPARSE_VECTOR`) runs SQL, and Bolt is
+Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt `RUN` carries no
+SQL-language selector), so keep vector queries on the HTTP transport.
+
+**`BOLT_*` env vars are rejected.** `start_link/1` **raises** if `BOLT_USER`,
+`BOLT_PWD`, `BOLT_HOST`, or `BOLT_TCP_PORT` is set in the environment — boltx reads
+those with precedence over arcadic's explicit config and would silently override the
+connection or its credentials. Unset the var and pass
+`:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
 
 See `AGENTS.md` for the full working rules and the verified ArcadeDB HTTP contract.
