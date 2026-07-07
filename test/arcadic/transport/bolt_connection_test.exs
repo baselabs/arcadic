@@ -144,4 +144,36 @@ if Code.ensure_loaded?(Boltx) do
       end
     end
   end
+
+  defmodule Arcadic.Transport.Bolt.ResolveOptsEnvTest do
+    # async: false — these tests mutate GLOBAL OS env; they must not run concurrently with any
+    # test that reads env. Each restores by DELETE (the vars are unset by default, so put_env(nil)
+    # is wrong — it would leave a poisoned "" and boltx reads presence, not value).
+    use ExUnit.Case, async: false
+    alias Arcadic.Transport.Bolt
+
+    for var <- ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT) do
+      test "resolve_opts fails loud (value-free, names the var) when #{var} is set" do
+        var = unquote(var)
+        System.put_env(var, "operator-set-value")
+        on_exit(fn -> System.delete_env(var) end)
+
+        err =
+          assert_raise ArgumentError, fn ->
+            Bolt.resolve_opts(hostname: "h", port: 7687, username: "u", password: "p")
+          end
+
+        # names the offending VAR (a fixed identifier), never its value (Rule 3).
+        assert err.message =~ var
+        refute err.message =~ "operator-set-value"
+      end
+    end
+
+    test "resolve_opts succeeds normally when no BOLT_* env var is set" do
+      for v <- ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT), do: System.delete_env(v)
+      opts = Bolt.resolve_opts(hostname: "h", port: 7687, username: "u", password: "p")
+      assert opts[:scheme] == "bolt"
+      assert opts[:auth] == [username: "u", password: "p"]
+    end
+  end
 end

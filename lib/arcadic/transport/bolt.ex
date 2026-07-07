@@ -104,9 +104,19 @@ if Code.ensure_loaded?(Boltx) do
     # arcadic exposes "bolt" (plaintext) | "bolt+s" (TLS, secure by default).
     @schemes ~w(bolt bolt+s)
 
+    # boltx's Client.Config reads these from the OS env: BOLT_USER/BOLT_PWD OVERRIDE arcadic's
+    # explicit :auth (client.ex:93/96 — env is read FIRST), and BOLT_HOST (:112) / BOLT_TCP_PORT
+    # (:109) are fallback defaults. Either way a set value silently redirects the connection or its
+    # credentials and arcadic cannot prevent it by passing the opt — and a library must not
+    # System.delete_env. So fail LOUD, value-free (name the var, never its value). Parity with the
+    # :uri reject: a silent auth/host override is the same class of surprise. The real fix (a boltx
+    # env-fallback-disable option) rides the boltx PR (see docs task).
+    @bolt_env_vars ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT)
+
     @doc false
     @spec resolve_opts(keyword()) :: keyword()
     def resolve_opts(opts) do
+      reject_bolt_env!()
       {username, opts} = Keyword.pop(opts, :username)
       {password, opts} = Keyword.pop(opts, :password)
       scheme = Keyword.get(opts, :scheme, "bolt")
@@ -152,6 +162,20 @@ if Code.ensure_loaded?(Boltx) do
             else: Keyword.put(ssl_opts, :cacerts, :public_key.cacerts_get())
 
         opts |> Keyword.put(:scheme, "bolt+ssc") |> Keyword.put(:ssl_opts, cacert_opts)
+      end
+    end
+
+    defp reject_bolt_env! do
+      case Enum.find(@bolt_env_vars, fn var -> System.get_env(var) != nil end) do
+        nil ->
+          :ok
+
+        var ->
+          raise ArgumentError,
+                "the #{var} environment variable is set; boltx reads it with precedence over " <>
+                  "arcadic's explicit config, silently overriding the connection. Unset it " <>
+                  "(arcadic cannot: a library must not delete env) and use :scheme/:hostname/:port/" <>
+                  ":username/:password."
       end
     end
 
