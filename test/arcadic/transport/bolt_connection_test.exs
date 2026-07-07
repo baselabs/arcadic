@@ -63,6 +63,26 @@ if Code.ensure_loaded?(Boltx) do
       assert function_exported?(Arcadic.Transport.Bolt, :stream_run, 5)
       assert function_exported?(Arcadic.Transport.Bolt, :stream_pull, 3)
     end
+
+    test "connection.ex consumes the shared RUN/PULL framing — no re-inlined encoding (dedup invariant)" do
+      # The S6 dedup's contract is ONE framing site: the cursor callbacks must route through
+      # Bolt.stream_run/stream_pull, never re-encode RUN/PULL themselves. function_exported?/3
+      # above proves the helpers are PUBLIC; this guards the other half — that connection.ex
+      # actually CONSUMES them — so a future re-inline of RunMessage/PullMessage.encode (recreating
+      # the second framing site the dedup removed) fails RED. Structural, because the SUCCESS-path
+      # wire behavior needs a live server (covered by the integration suite); the wire-fault unit
+      # tests cover the fault path.
+      src = File.read!("lib/arcadic/transport/bolt/connection.ex")
+
+      refute src =~ "RunMessage.encode",
+             "handle_declare must consume Bolt.stream_run, not re-inline RUN framing"
+
+      refute src =~ "PullMessage.encode",
+             "handle_fetch must consume Bolt.stream_pull, not re-inline PULL framing"
+
+      assert src =~ "Bolt.stream_run"
+      assert src =~ "Bolt.stream_pull"
+    end
   end
 
   defmodule Arcadic.Transport.Bolt.ResolveOptsTest do
