@@ -181,33 +181,22 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
-  # Offset paging (WHERE-present SQL, and the base machinery Cypher offset reuses in Task 2): append
-  # arcadic's OWN fixed suffix; offsets ride params. Stable ordering within a snapshot, but each page
-  # is an independent stateless POST — a concurrent DELETE of an already-emitted row shifts later rows
-  # down and the next SKIP can step over one. Use a Bolt in-tx cursor for snapshot consistency.
-  # ArcadeDB SQL binds `:name` placeholders, NOT `$name` (that is Cypher's syntax); a `$`-named SQL
-  # param binds to null → `Invalid value for LIMIT: null`.
-  defp build_offset_stream(conn, statement, params, chunk, timeout) do
-    paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
-
-    # Reuse the existing `[:arcadic, :query_stream, :start|:stop]` events (spec §6): start on the
-    # first page, stop on drain/halt/error, value-free (mode/reason/row_count). Mirrors the Bolt
-    # stream path (bolt.ex stream_start/stream_stop); the after-fun runs on drain, early halt, AND
-    # a mid-stream raise, so :stop always fires. `reason`: `:ok` drained, `:halted` stopped early.
+  # The shared paging skeleton for all three HTTP stream modes (SQL keyset, SQL offset, Cypher
+  # offset): value-free `[:arcadic, :query_stream, :start|:stop]` telemetry (spec §6) around a
+  # per-page `step` fun. `start` fires on the first page; the after-fun runs on drain, early halt,
+  # AND a mid-stream raise, so `:stop` always fires (`reason`: `:ok` drained, `:halted` stopped
+  # early). Mirrors the Bolt stream path (bolt.ex stream_start/stream_stop). Every acc carries
+  # `rows` + `done` (the mode-specific `offset`/`cursor` rides alongside); `step` is only ever
+  # called with a NOT-done acc and returns a `Stream.resource` reduce result.
+  defp page_stream(init_acc, step) do
     Stream.resource(
       fn ->
         Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
-        %{offset: 0, rows: 0, done: false}
+        init_acc
       end,
       fn
-        %{done: true} = acc ->
-          {:halt, acc}
-
-        %{offset: offset} = acc ->
-          page_params =
-            Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
-
-          emit_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+        %{done: true} = acc -> {:halt, acc}
+        acc -> step.(acc)
       end,
       fn acc ->
         reason = if acc.done, do: :ok, else: :halted
@@ -218,68 +207,44 @@ defmodule Arcadic.Transport.HTTP do
         })
       end
     )
+  end
+
+  # Offset paging (WHERE-present SQL, and Cypher): append arcadic's OWN fixed suffix; offsets ride
+  # params. Stable ordering within a snapshot, but each page is an independent stateless POST — a
+  # concurrent DELETE of an already-emitted row shifts later rows down and the next SKIP can step
+  # over one. Use a Bolt in-tx cursor for snapshot consistency. ArcadeDB SQL binds `:name`
+  # placeholders, NOT `$name` (Cypher's syntax); a `$`-named SQL param binds to null → `Invalid
+  # value for LIMIT: null`.
+  defp build_offset_stream(conn, statement, params, chunk, timeout) do
+    paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
+
+    page_stream(%{offset: 0, rows: 0, done: false}, fn %{offset: offset} = acc ->
+      page_params = Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
+      emit_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+    end)
   end
 
   # Cypher offset paging: same machinery as build_offset_stream but with a Cypher suffix ($name
   # placeholders + the validated order_key) and language "cypher" on the page body.
   defp build_cypher_offset_stream(conn, statement, order_key, params, chunk, timeout) do
-    paged =
-      statement <> " ORDER BY #{order_key} SKIP $__arcadic_skip LIMIT $__arcadic_limit"
+    paged = statement <> " ORDER BY #{order_key} SKIP $__arcadic_skip LIMIT $__arcadic_limit"
 
-    Stream.resource(
-      fn ->
-        Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
-        %{offset: 0, rows: 0, done: false}
-      end,
-      fn
-        %{done: true} = acc ->
-          {:halt, acc}
-
-        %{offset: offset} = acc ->
-          page_params =
-            Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
-
-          emit_page(page(conn, paged, page_params, timeout, "cypher"), chunk, acc)
-      end,
-      fn acc ->
-        reason = if acc.done, do: :ok, else: :halted
-
-        Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: acc.rows}, %{
-          mode: :read,
-          reason: reason
-        })
-      end
-    )
+    page_stream(%{offset: 0, rows: 0, done: false}, fn %{offset: offset} = acc ->
+      page_params = Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
+      emit_page(page(conn, paged, page_params, timeout, "cypher"), chunk, acc)
+    end)
   end
 
   # Keyset paging (O(n)) for WHERE-less SQL: page 1 has no WHERE; each later page adds a trailing
   # `WHERE @rid > <cursor-literal>` where <cursor> is the MAX @rid of the previous page (rows come
-  # back @rid-ascending). More correct than offset under concurrent inserts (no offset-shift skip),
-  # and O(n) instead of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated.
+  # back @rid-ascending). Free of the offset-shift skip a concurrent delete causes, and O(n) instead
+  # of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated.
   defp build_keyset_stream(conn, statement, params, chunk, timeout) do
-    Stream.resource(
-      fn ->
-        Telemetry.event([:arcadic, :query_stream, :start], %{}, %{mode: :read})
-        %{cursor: nil, rows: 0, done: false}
-      end,
-      fn
-        %{done: true} = acc ->
-          {:halt, acc}
-
-        %{cursor: cursor} = acc ->
-          paged = keyset_page_statement(statement, cursor)
-          page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
-          emit_keyset_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
-      end,
-      fn acc ->
-        reason = if acc.done, do: :ok, else: :halted
-
-        Telemetry.event([:arcadic, :query_stream, :stop], %{row_count: acc.rows}, %{
-          mode: :read,
-          reason: reason
-        })
-      end
-    )
+    page_stream(%{cursor: nil, rows: 0, done: false}, fn %{cursor: cursor} = acc ->
+      paged = keyset_page_statement(statement, cursor)
+      page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
+      emit_keyset_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+    end)
   end
 
   # Page 1 (cursor nil): the bare statement + ORDER BY @rid LIMIT. Page N: a trailing keyset predicate.
