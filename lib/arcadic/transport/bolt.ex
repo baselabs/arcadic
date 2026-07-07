@@ -453,10 +453,16 @@ if Code.ensure_loaded?(Boltx) do
       :ok
     end
 
-    # boltx's send_run/send_pull hardcode an :infinity recv; reimplement the frame
-    # exchange so `opts[:timeout]` bounds each RUN and PULL (default :infinity, set to
-    # bound a stalled-but-alive server). Same return shapes as Client.send_run/send_pull.
-    defp stream_run(client, statement, params, extra, timeout) do
+    # boltx's send_run/send_pull hardcode an :infinity recv; reimplement the frame exchange so
+    # `timeout` bounds each RUN and PULL (default :infinity). Same return shapes as
+    # Client.send_run/send_pull. Public @doc false so BOTH stream sites — the non-tx Stream.resource
+    # (stream_start/stream_next) AND the in-tx cursor callbacks (Connection.handle_declare/handle_fetch)
+    # — share ONE frame-encoding site (the precedent set by statement_of/1, format_params/1,
+    # stream_error/1, assert_has_more_key!/2).
+    @doc false
+    @spec stream_run(boltx_client(), String.t(), map(), map(), timeout()) ::
+            {:ok, term()} | {:error, term()}
+    def stream_run(client, statement, params, extra, timeout) do
       payload = RunMessage.encode(client.bolt_version, statement, params, extra)
 
       with :ok <- Client.send_packet(client, payload) do
@@ -464,7 +470,9 @@ if Code.ensure_loaded?(Boltx) do
       end
     end
 
-    defp stream_pull(client, extra, timeout) do
+    @doc false
+    @spec stream_pull(boltx_client(), map(), timeout()) :: {:ok, term()} | {:error, term()}
+    def stream_pull(client, extra, timeout) do
       payload = PullMessage.encode(client.bolt_version, extra)
 
       with :ok <- Client.send_packet(client, payload) do

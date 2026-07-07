@@ -53,6 +53,16 @@ if Code.ensure_loaded?(Boltx) do
       assert {:disconnect, %TransportError{}, %{cursor_open?: false}} =
                Connection.handle_deallocate(:q, :cursor, [], state)
     end
+
+    test "stream_run/stream_pull are public @doc false frame helpers (the single RUN/PULL site)" do
+      # The dedup promotes these to public so connection.ex consumes ONE framing site. Their
+      # existence + arity is the contract; behavior is covered by the wire-fault + integration tests.
+      # Force the load first: this module aliases only Bolt.Connection, so in an isolated run
+      # `Arcadic.Transport.Bolt` is otherwise never loaded and function_exported?/3 is vacuously false.
+      assert Code.ensure_loaded?(Arcadic.Transport.Bolt)
+      assert function_exported?(Arcadic.Transport.Bolt, :stream_run, 5)
+      assert function_exported?(Arcadic.Transport.Bolt, :stream_pull, 3)
+    end
   end
 
   defmodule Arcadic.Transport.Bolt.ResolveOptsTest do

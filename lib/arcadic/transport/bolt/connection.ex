@@ -7,7 +7,7 @@ if Code.ensure_loaded?(Boltx) do
 
     alias Arcadic.Transport.Bolt
     alias Arcadic.TransportError
-    alias Boltx.BoltProtocol.Message.{DiscardMessage, PullMessage, RunMessage}
+    alias Boltx.BoltProtocol.Message.DiscardMessage
     alias Boltx.Client
 
     import Boltx.BoltProtocol.ServerResponse, only: [statement_result: 1, pull_result: 2]
@@ -80,27 +80,26 @@ if Code.ensure_loaded?(Boltx) do
       %{client: client} = state
       statement = Bolt.statement_of(query)
 
-      payload =
-        RunMessage.encode(
-          client.bolt_version,
-          statement,
-          Bolt.format_params(params),
-          run_extra(opts)
-        )
+      case Bolt.stream_run(
+             client,
+             statement,
+             Bolt.format_params(params),
+             run_extra(opts),
+             timeout(opts)
+           ) do
+        {:ok, run} ->
+          # `first_chunk?` is not a %Boltx.Connection{} field, so seed it with Map.put (the
+          # `%{state | ...}` update syntax raises KeyError on an absent key); `cursor_open?`
+          # already exists (seeded in connect/1) and updates via the struct-update below.
+          state = state |> Map.put(:first_chunk?, true) |> Map.put(:cursor_open?, true)
+          {:ok, query, %{run: run}, state}
 
-      with :ok <- Client.send_packet(client, payload),
-           {:ok, run} <-
-             Client.recv_packets(client, &RunMessage.prepare_messages/2, timeout(opts)) do
-        # `first_chunk?` is not a %Boltx.Connection{} field, so seed it with Map.put (the
-        # `%{state | ...}` update syntax raises KeyError on an absent key); `cursor_open?`
-        # already exists (seeded in connect/1) and updates via the struct-update below.
-        state = state |> Map.put(:first_chunk?, true) |> Map.put(:cursor_open?, true)
-        {:ok, query, %{run: run}, state}
-      else
         # A send/recv failure is a WIRE fault (a recv timeout leaves the reply in flight): the
-        # tx socket is now desynced. Return {:disconnect, …} — {:error, …} keeps the poisoned
-        # connection checked in, and boltx's later COMMIT/ROLLBACK would read the stale reply.
-        {:error, reason} -> {:disconnect, Bolt.stream_error(reason), state}
+        # tx socket is now desynced. Return {:disconnect, …} — {:error, …} keeps the poisoned connection
+        # checked in, and boltx's later COMMIT/ROLLBACK would read the stale reply. `cursor_open?`
+        # stays false (never set here), so the later deallocate takes the no-DISCARD clause.
+        {:error, reason} ->
+          {:disconnect, Bolt.stream_error(reason), state}
       end
     end
 
@@ -108,26 +107,24 @@ if Code.ensure_loaded?(Boltx) do
     def handle_fetch(_query, %{run: run}, opts, state) do
       %{client: client, first_chunk?: first} = state
       chunk = Keyword.get(opts, :chunk_size, 1000)
-      payload = PullMessage.encode(client.bolt_version, %{n: chunk})
 
-      with :ok <- Client.send_packet(client, payload),
-           {:ok, pull} <-
-             Client.recv_packets(client, &PullMessage.prepare_messages/2, timeout(opts)) do
-        rows = Boltx.Response.new(statement_result(result_run: run, result_pull: pull)).results
-        success = pull_result(pull, :success_data)
-        # Parity with the non-tx stream sibling (bolt.ex assert_has_more_key!/2): a missing
-        # `has_more` on the FIRST chunk is driver/server drift — fail LOUD (redacted
-        # :bolt_protocol_error), never silently truncate the stream to its first chunk.
-        Bolt.assert_has_more_key!(success, first)
+      case Bolt.stream_pull(client, %{n: chunk}, timeout(opts)) do
+        {:ok, pull} ->
+          rows = Boltx.Response.new(statement_result(result_run: run, result_pull: pull)).results
+          success = pull_result(pull, :success_data)
+          # Parity with the non-tx stream sibling (bolt.ex assert_has_more_key!/2): a missing
+          # `has_more` on the FIRST chunk is driver/server drift — fail LOUD (redacted
+          # :bolt_protocol_error), never silently truncate the stream to its first chunk.
+          Bolt.assert_has_more_key!(success, first)
 
-        if Map.get(success, "has_more", false),
-          do: {:cont, rows, %{state | first_chunk?: false}},
-          else: {:halt, rows, %{state | cursor_open?: false}}
-      else
-        # WIRE fault mid-PULL (or a server FAILURE reply): the socket is off-by-one. DISCONNECT so
-        # the poisoned connection is dropped, and clear `cursor_open?` so the deallocate that still
-        # runs during cleanup does NOT fire a DISCARD against the desynced/failed socket (which
-        # would read a stale reply, or hit boltx's IGNORED parse gap → CaseClauseError).
+          if Map.get(success, "has_more", false),
+            do: {:cont, rows, %{state | first_chunk?: false}},
+            else: {:halt, rows, %{state | cursor_open?: false}}
+
+        # WIRE fault mid-PULL (or a server FAILURE reply): the socket is off-by-one. DISCONNECT so the
+        # poisoned connection is dropped, and clear `cursor_open?` so the deallocate that still runs
+        # during cleanup does NOT fire a DISCARD against the desynced/failed socket (which would read a
+        # stale reply, or hit boltx's IGNORED parse gap → CaseClauseError).
         {:error, reason} ->
           {:disconnect, Bolt.stream_error(reason), %{state | cursor_open?: false}}
       end
