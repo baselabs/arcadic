@@ -328,6 +328,13 @@ if Code.ensure_loaded?(Boltx) do
     @spec leak_safe_connect(keyword()) ::
             {:ok, boltx_conn()} | {:error, boltx_error() | atom()}
     def leak_safe_connect(bolt_opts) do
+      # Re-reject BOLT_* at the connect chokepoint, not only at resolve time: boltx's
+      # Client.Config.new/1 (below) re-reads BOLT_USER/BOLT_PWD (precedence over :auth) and
+      # BOLT_TCP_PORT/BOLT_HOST (defaults) on EVERY connect — pool (re)connect via
+      # Connection.connect AND every dedicated stream connect — so a var set AFTER resolve_opts
+      # ran would silently hijack the connection here. resolve_opts guards resolution/boot time;
+      # this guards use time (the leak boltx exhibits regardless of the resolved opts).
+      reject_bolt_env!()
       config = Client.Config.new(bolt_opts)
 
       case Client.do_connect(config) do

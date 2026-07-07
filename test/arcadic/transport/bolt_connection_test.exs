@@ -176,4 +176,33 @@ if Code.ensure_loaded?(Boltx) do
       assert opts[:auth] == [username: "u", password: "p"]
     end
   end
+
+  defmodule Arcadic.Transport.Bolt.ConnectEnvRejectTest do
+    # The CONNECT-time half of the BOLT_* guard. boltx re-reads BOLT_* at Client.Config.new/1,
+    # which leak_safe_connect/1 calls on EVERY pool connect/reconnect (Connection.connect) AND
+    # every dedicated stream connect — so a var set AFTER resolve_opts already ran would otherwise
+    # silently hijack credentials/port at connect time (resolve_opts guards only resolution time).
+    # leak_safe_connect must re-reject at the connect chokepoint. async: false — mutates global OS
+    # env; restore by DELETE (unset by default, so put_env(nil) would poison with "").
+    use ExUnit.Case, async: false
+    alias Arcadic.Transport.Bolt
+
+    for var <- ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT) do
+      test "leak_safe_connect fails loud (value-free, names the var) when #{var} is set post-resolution" do
+        var = unquote(var)
+        # Resolve with env UNSET (resolve_opts' guard passes), THEN set the var — the exact
+        # post-resolution window boltx's Config.new would honor. The connect-time reject must fire
+        # BEFORE any socket work, so no live server is needed (a bad host would otherwise {:error}).
+        for v <- ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT), do: System.delete_env(v)
+        opts = Bolt.resolve_opts(hostname: "127.0.0.1", port: 1, username: "u", password: "p")
+        System.put_env(var, "operator-set-value")
+        on_exit(fn -> System.delete_env(var) end)
+
+        err = assert_raise ArgumentError, fn -> Bolt.leak_safe_connect(opts) end
+
+        assert err.message =~ var
+        refute err.message =~ "operator-set-value"
+      end
+    end
+  end
 end

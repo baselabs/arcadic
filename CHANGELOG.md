@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hood); `ssl_opts: [verify: :verify_none]` is an explicit caller opt-in to skip verification.
   A `:uri` opt is rejected (it would bypass the scheme translation and silently skip verification).
 - Bolt now fails loud if a `BOLT_USER`/`BOLT_PWD`/`BOLT_HOST`/`BOLT_TCP_PORT` environment variable is
-  set (boltx reads them with precedence over arcadic's explicit config); unset the var.
+  set — both at pool setup (`start_link/1`/`setup/1`) and again on every connect/reconnect, because
+  boltx re-reads them with precedence over arcadic's explicit config at connect time (so a var set
+  after startup is caught too); unset the var.
 
 ### Changed
 

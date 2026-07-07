@@ -132,10 +132,12 @@ admin even when queries run over Bolt. **Vector search is HTTP-only too** —
 Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt `RUN` carries no
 SQL-language selector), so keep vector queries on the HTTP transport.
 
-**`BOLT_*` env vars are rejected.** `start_link/1` **raises** if `BOLT_USER`,
-`BOLT_PWD`, `BOLT_HOST`, or `BOLT_TCP_PORT` is set in the environment — boltx reads
-those with precedence over arcadic's explicit config and would silently override the
-connection or its credentials. Unset the var and pass
+**`BOLT_*` env vars are rejected.** arcadic **raises** if `BOLT_USER`, `BOLT_PWD`,
+`BOLT_HOST`, or `BOLT_TCP_PORT` is set in the environment — at pool setup
+(`start_link/1`/`setup/1`) **and** on every connect/reconnect. boltx reads those with
+precedence over arcadic's explicit config and re-reads them at connect time, so a var
+set after startup would otherwise silently override the connection or its credentials;
+the connect-time reject closes that window. Unset the var and pass
 `:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
 
 See `AGENTS.md` for the full working rules and the verified ArcadeDB HTTP contract.
