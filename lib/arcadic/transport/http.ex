@@ -54,6 +54,21 @@ defmodule Arcadic.Transport.HTTP do
   # ^…$ — PCRE $ matches before a trailing newline). Any other shape fails the stream LOUD.
   @rid_cursor_re ~r/\A#\d+:\d+\z/
 
+  # @rid is arcadic's RESERVED SQL paging column: the appended `ORDER BY @rid` orders by it and the
+  # keyset cursor is READ from it. A caller projection that REBINDS @rid — `… AS `@rid`` (backtick),
+  # `… AS @rid` (bare), or the backtick implicit-alias `… `@rid`` (all three accepted by ArcadeDB,
+  # probed 2026-07-06) — makes ORDER BY @rid bind to the caller's column, so the real record RID
+  # never reaches the row and the cursor becomes caller-controlled: SILENT truncation or a re-serve
+  # loop, injection-free (the shadow value still passes @rid_cursor_re). Structurally a shadowed row
+  # is indistinguishable from a bare row (both carry @rid, no alias column), so this can only be
+  # caught in the STATEMENT text — reject it value-free, the same collision-guard posture as
+  # @paging_clause_re / comment_re / @reserved_params. A backtick-quoted `@rid`, or `@rid` right after
+  # `AS`, is only ever an alias TARGET; a legitimate bare `SELECT @rid, …` (real-RID projection) has
+  # neither, so it streams unaffected. SQL-only — Cypher pages by an offset counter, never an @rid
+  # cursor. Best-effort like the sibling textual guards (an exotic alias syntax is a documented
+  # residual; @rid is reserved — see the query_stream/4 @doc).
+  @rid_alias_re ~r/(?:`|\bas\s+`?)@rid/i
+
   @impl true
   @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
@@ -70,6 +85,19 @@ defmodule Arcadic.Transport.HTTP do
         %{statement: statement, params: params, language: language},
         opts
       ) do
+    with :ok <- check_streamable(statement, params, language) do
+      if language == "cypher",
+        do: stream_cypher(conn, statement, params, opts),
+        else: {:ok, build_sql_stream(conn, statement, params, opts)}
+    end
+  end
+
+  # Every value-free streamability rejection in one place (`:ok` or `{:error, Error.t()}`) so
+  # query_stream/3 stays flat: an unsupported language; a caller ORDER BY/SKIP/LIMIT that would
+  # collide with arcadic's suffix; a comment (--, /*, or // for cypher) that would neutralize it; a
+  # caller param colliding with the reserved paging namespace; and (SQL) a projection that rebinds
+  # arcadic's reserved @rid paging column (see @rid_alias_re). None echoes the statement/value (Rule 3).
+  defp check_streamable(statement, params, language) do
     cond do
       language not in ["sql", "cypher"] ->
         {:error,
@@ -102,20 +130,27 @@ defmodule Arcadic.Transport.HTTP do
              "HTTP streaming reserves the params __arcadic_skip / __arcadic_limit (arcadic pages the statement)"
          }}
 
-      language == "cypher" ->
-        stream_cypher(conn, statement, params, opts)
+      language == "sql" and Regex.match?(@rid_alias_re, statement) ->
+        {:error,
+         %Error{
+           reason: :not_supported,
+           message:
+             "HTTP SQL streaming reserves @rid as its paging column — the statement must not alias an output column to @rid"
+         }}
 
       true ->
-        chunk = Keyword.get(opts, :chunk_size, 1000)
-        timeout = Keyword.get(opts, :timeout, :infinity)
-
-        stream =
-          if has_where?(statement),
-            do: build_offset_stream(conn, statement, params, chunk, timeout),
-            else: build_keyset_stream(conn, statement, params, chunk, timeout)
-
-        {:ok, stream}
+        :ok
     end
+  end
+
+  # SQL streaming: WHERE-less pages by the O(n) @rid keyset, a caller WHERE falls back to O(n²) offset.
+  defp build_sql_stream(conn, statement, params, opts) do
+    chunk = Keyword.get(opts, :chunk_size, 1000)
+    timeout = Keyword.get(opts, :timeout, :infinity)
+
+    if has_where?(statement),
+      do: build_offset_stream(conn, statement, params, chunk, timeout),
+      else: build_keyset_stream(conn, statement, params, chunk, timeout)
   end
 
   # Cypher streaming: validate the required :order_key, then OFFSET-page over it with Cypher $name

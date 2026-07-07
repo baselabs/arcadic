@@ -372,6 +372,68 @@ defmodule Arcadic.QueryStreamTest do
       refute err.message =~ "SELECT FROM V"
     end
 
+    test "SQL streaming rejects a statement that REBINDS @rid via a projection alias (silent-truncation guard), value-free" do
+      # A caller projection aliasing anything AS `@rid` shadows the real record RID that arcadic's
+      # appended `ORDER BY @rid` + keyset cursor depend on: ArcadeDB's ORDER BY @rid binds to the
+      # caller alias, the real RID never reaches the row, and the cursor becomes caller-controlled →
+      # SILENT truncation or a re-serve loop (live-proven: `SELECT i, '#9:9' AS `@rid`` drops rows).
+      # @rid is arcadic's reserved paging column; reject the rebind value-free, like ORDER BY/comment.
+      Req.Test.stub(__MODULE__, fn _ -> flunk("must not reach the transport") end)
+      secret = "SECRET_9f3a"
+
+      for stmt <- [
+            "SELECT i, '#{secret}' AS `@rid` FROM V",
+            "SELECT i, x AS @rid FROM V",
+            "SELECT i, 'x' `@rid` FROM V"
+          ] do
+        assert {:error, %Arcadic.Error{reason: :not_supported} = e} =
+                 Arcadic.query_stream(http_conn(), stmt, %{}, language: "sql")
+
+        assert e.message =~ "@rid"
+        # value-free: the caller statement/value is never echoed (Rule 3)
+        refute e.message =~ secret
+      end
+
+      refute_received {:page_body, _}
+    end
+
+    test "SQL streaming ALLOWS a legitimate bare @rid projection (SELECT @rid, ... is not a rebind)" do
+      # `SELECT @rid, n FROM V` PROJECTS the real record @rid (bare, no backtick/AS) — arcadic reads
+      # it correctly; only an ALIAS *to* @rid is a collision. This must still stream, not over-reject.
+      stub_pages([[%{"@rid" => "#1:0", "n" => 1}]])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT @rid, n FROM V", %{},
+                 language: "sql",
+                 chunk_size: 2
+               )
+
+      assert Enum.to_list(stream) == [%{"@rid" => "#1:0", "n" => 1}]
+      assert_received {:page_body, b1}
+      assert b1["command"] == "SELECT @rid, n FROM V ORDER BY @rid LIMIT :__arcadic_limit"
+    end
+
+    test "Cypher streaming is unaffected by an @rid token (cypher pages by id(v) offset, not @rid)" do
+      # The @rid reserve applies to SQL only — Cypher advances by arcadic's own offset counter over
+      # id(v), never reads an @rid cursor, so an @rid mention must not trip the SQL-only guard.
+      {:ok, agent} = Agent.start_link(fn -> [[]] end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:page_body, Jason.decode!(Req.Test.raw_body(c))})
+        rows = Agent.get_and_update(agent, fn [h | t] -> {h, t ++ [[]]} end)
+        Req.Test.json(c, %{"result" => rows})
+      end)
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "MATCH (v:V) RETURN v.`@rid`", %{},
+                 language: "cypher",
+                 order_key: "id(v)",
+                 chunk_size: 5
+               )
+
+      assert Enum.to_list(stream) == []
+    end
+
     test "SQL WHERE-present offset paging (offsets param-bound) drains on a short page" do
       # chunk 2: page1 [2 rows] → page2 [1 row, short → last]
       stub_pages([
