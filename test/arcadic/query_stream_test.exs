@@ -224,6 +224,22 @@ defmodule Arcadic.QueryStreamTest do
       refute err.message =~ "SENTINEL"
     end
 
+    test "rejects non-map params value-free — never echoes the offending value (Rule 3)" do
+      conn = Conn.new("http://localhost:2480", "db", auth: {"u", "p"})
+
+      # A caller passing a keyword list for params (a natural mistake — opts IS a keyword list) must
+      # NOT reach `Map.has_key?`/`map_size` and blow up with a BadMapError echoing the value.
+      err =
+        assert_raise ArgumentError, fn ->
+          Arcadic.query_stream(conn, "SELECT FROM V", [{"api_token", "SENTINEL_SECRET_9f3a"}],
+            language: "sql"
+          )
+        end
+
+      assert err.message =~ "params"
+      refute err.message =~ "SENTINEL"
+    end
+
     test "passes the value as a bound param, never interpolated into the statement" do
       conn =
         Conn.new("http://h:2480", "db",

@@ -141,6 +141,7 @@ defmodule Arcadic do
   def query_stream(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
     opts = validate_opts!(opts, @query_stream_opts)
     validate_chunk_size!(opts[:chunk_size])
+    validate_params!(params)
 
     if Code.ensure_loaded?(conn.transport) and
          function_exported?(conn.transport, :query_stream, 3) do
@@ -224,6 +225,13 @@ defmodule Arcadic do
 
   defp validate_chunk_size!(_),
     do: raise(ArgumentError, "chunk_size must be a positive integer")
+
+  # `params` must be a map before it reaches the transport — downstream `Map.has_key?/2` (the reserved
+  # paging guard) and `map_size/1` (`build_body`) raise a `BadMapError` that echoes the whole value, so
+  # a caller passing a keyword list (a natural mistake — `opts` IS a keyword list) would leak its values
+  # into the message (Rule 3). Reject value-free at the facade instead. `nil` is not a valid params.
+  defp validate_params!(params) when is_map(params), do: :ok
+  defp validate_params!(_), do: raise(ArgumentError, "params must be a map")
 
   defp validate_language!(language) when language in @language_allowlist, do: :ok
 
