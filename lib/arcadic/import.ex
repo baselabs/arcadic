@@ -10,7 +10,7 @@ defmodule Arcadic.Import do
   escapes inside single-quoted literals, so a mere quote-denylist would be unsound). `with:`
   import settings are developer config: names are `Arcadic.Identifier`-validated; number/boolean
   values are interpolated bare, and string values are single-quoted behind a positive ASCII charset
-  allowlist (`'` / `\` / control / non-ASCII excluded) — injection-inert either way. Every rejection
+  allowlist (`'` / `\\` / control / non-ASCII excluded) — injection-inert either way. Every rejection
   is value-free (never echoes the offending URL / name / value — AGENTS.md Rule 3).
 
   ## Security & operational notes
