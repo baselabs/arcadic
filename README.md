@@ -251,6 +251,14 @@ default** (verifies the server certificate against the OS trust store); pass
 `ssl_opts: [verify: :verify_none]` to opt out (documents the MITM exposure — only for a trusted
 network path, e.g. local dev).
 
+> **Operator note — upstream ArcadeDB Bolt-TLS hazard.** With ArcadeDB's Bolt-TLS listener enabled,
+> a single untrusted-cert TLS handshake failure can wedge the server's **shared** Bolt listener: it
+> pins a core at ~100% CPU and stops answering (no ServerHello) for every subsequent client until
+> ArcadeDB is restarted. This is an ArcadeDB **server** defect, not an arcadic one — arcadic's
+> client-side TLS (secure-by-default `verify_peer`, fail-closed on an untrusted cert) is unaffected
+> and live-verified. Tracked upstream at
+> [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
+
 ## Bolt transport (optional)
 
 The query hot path can run over Bolt via the optional

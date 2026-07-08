@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rule-3 value leak on the core query paths. The opt-key guard is now shared across the query,
   `Schema`, `Import`, and `Vector` surfaces.
 
+### Notes
+
+- Documented an upstream ArcadeDB **server** hazard for operators running Bolt over TLS: a single
+  untrusted-cert TLS handshake failure can wedge ArcadeDB's shared Bolt listener (~100% CPU, no
+  ServerHello for any client) until the server restarts. arcadic's client-side TLS is unaffected.
+  Tracked upstream at [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
+
 ## [0.3.0] - 2026-07-05
 
 ### Added

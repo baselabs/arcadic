@@ -78,6 +78,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   store (`verify_peer`) unless the caller passes `ssl_opts: [verify: :verify_none]` — an explicit
   opt-in that accepts any certificate (documents the MITM exposure; only use it against a trusted
   network path, e.g. local dev). Omitting `:scheme` stays on the plaintext `bolt` scheme.
+  **Operator note (upstream):** with ArcadeDB's Bolt-TLS listener enabled, a single untrusted-cert
+  handshake failure can wedge the server's shared Bolt listener (~100% CPU, no ServerHello for any
+  client) until ArcadeDB restarts — an ArcadeDB **server** defect, not arcadic's (client-side TLS is
+  unaffected). Tracked at [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
