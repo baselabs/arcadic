@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-07
+
 ### Added
 
 - `Arcadic.Schema` — tenant-blind schema introspection: `types/1`, `properties/2`, `indexes/2`
