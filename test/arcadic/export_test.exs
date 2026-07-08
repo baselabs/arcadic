@@ -47,6 +47,18 @@ defmodule Arcadic.ExportTest do
     end
   end
 
+  test "database/3 rejects a non-string name value-free (no wire) — symmetric to Import" do
+    no_wire()
+    err = assert_raise ArgumentError, fn -> Export.database(conn(), :not_a_string) end
+    assert err.message =~ "export name must be a string"
+  end
+
+  test "database/3 rejects an empty name value-free (charset branch, no wire)" do
+    no_wire()
+    err = assert_raise ArgumentError, fn -> Export.database(conn(), "") end
+    assert err.message =~ "allowed set"
+  end
+
   test "database!/3 returns the rows or raises" do
     stub()
     assert [%{"result" => "OK"}] = Export.database!(conn(), "b")

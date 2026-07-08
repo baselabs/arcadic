@@ -7,7 +7,8 @@ defmodule Arcadic.Export do
   `overwrite: true`) reuse `Arcadic.Import`'s no-parens grammar: names `Arcadic.Identifier`-validated,
   values number/boolean/string (string values charset-allowlisted, injection-inert). Tenant-blind;
   every rejection is value-free (never echoes the name/value — AGENTS.md Rule 3). The success row
-  (`operation`/`toUrl`/`totalRecords`/…) is `@props`-stripped by `Result.normalize` via `command/4`.
+  (`operation`/`toUrl`/`totalRecords`/…) is top-level-`@props`-stripped by `Result.normalize` (a
+  shallow `Map.drop` per row — correct because the export row is flat) via `command/4`.
   """
   alias Arcadic.{Conn, Import, Opts}
 

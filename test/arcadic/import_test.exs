@@ -27,6 +27,16 @@ defmodule Arcadic.ImportTest do
     refute Map.has_key?(body, "params")
   end
 
+  test "database/3 emits a float with: value via Float.to_string (is_float clause)" do
+    # Exercises the setting_value!/1 is_float clause (import.ex). arcadic is tenant-blind about a
+    # setting's MEANING; any float value drives the clause. If the clause were dropped, a float would
+    # fall to the catch-all and raise — so {:ok, _} here also pins the clause's presence.
+    stub_ok()
+    assert {:ok, _} = Import.database(conn(), "file:///x", with: [commitEvery: 1.5])
+    assert_received {:body, body}
+    assert body["command"] == "IMPORT DATABASE 'file:///x' WITH commitEvery = 1.5"
+  end
+
   test "database/3 emits a WITH clause for number/boolean settings" do
     stub_ok()
 
