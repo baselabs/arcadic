@@ -117,4 +117,44 @@ defmodule Arcadic.Transport.HTTPTest do
     assert {:error, %TransportError{reason: :econnrefused}} =
              req(conn(), :read, cypher("RETURN 1"))
   end
+
+  test "explain/3 posts to /command and returns the plan envelope" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:path, c.request_path})
+
+      Req.Test.json(c, %{
+        "result" => [],
+        "explain" => "+ FETCH FROM TYPE Person ()",
+        "explainPlan" => %{"type" => "QueryExecutionPlan"}
+      })
+    end)
+
+    req = %{statement: "EXPLAIN SELECT FROM Person", params: %{}, language: "sql"}
+
+    assert {:ok,
+            %{
+              plan: "+ FETCH FROM TYPE Person ()",
+              plan_tree: %{"type" => "QueryExecutionPlan"},
+              rows: []
+            }} =
+             HTTP.explain(conn(), req, [])
+
+    assert_received {:path, "/api/v1/command/mydb"}
+  end
+
+  test "explain/3 maps a server error to Arcadic.Error" do
+    Req.Test.stub(__MODULE__, fn c ->
+      c
+      |> Plug.Conn.put_status(400)
+      |> Req.Test.json(%{
+        "error" => "boom",
+        "exception" => "com.arcadedb.query.sql.parser.ParseException"
+      })
+    end)
+
+    req = %{statement: "EXPLAIN nonsense", params: %{}, language: "sql"}
+
+    assert {:error, %Error{reason: :parse_error}} =
+             HTTP.explain(conn(), req, [])
+  end
 end

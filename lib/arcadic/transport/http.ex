@@ -23,6 +23,15 @@ defmodule Arcadic.Transport.HTTP do
     |> handle_result()
   end
 
+  @impl true
+  @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
+          Arcadic.Transport.plan_result()
+  def explain(%Conn{} = conn, request, opts) do
+    conn
+    |> post("/api/v1/command/#{conn.database}", build_body(request, opts), opts)
+    |> handle_plan_result()
+  end
+
   defp endpoint(:read), do: "query"
   defp endpoint(:write), do: "command"
 
@@ -460,6 +469,31 @@ defmodule Arcadic.Transport.HTTP do
   # single clause is exhaustive per the type — a `_` catch-all would be dead code
   # (dialyzer `pattern_match_cov`).
   defp inspect_reason(%{__struct__: mod}), do: mod
+
+  # Like handle_result/1 but the 2xx-map branch extracts the PLAN (normalize_plan, not normalize —
+  # normalize/1's :use_explain clause would fire on explain's own explainPlan envelope and wrongly
+  # return {:error, :use_explain}), and the 2xx-empty branch returns the empty plan MAP so the
+  # success type stays inside plan_result() (a real EXPLAIN always returns a map body; the empty
+  # branch is defensive). Kept SEPARATE from the monomorphic handle_result/1 so execute/4's
+  # list-shaped result() contract is not polluted by normalize_plan's map (dialyzer).
+  defp handle_plan_result({:ok, %Req.Response{status: status, body: body}})
+       when status in 200..299 and is_map(body),
+       do: Result.normalize_plan(body)
+
+  defp handle_plan_result({:ok, %Req.Response{status: status}}) when status in 200..299,
+    do: {:ok, %{plan: "", plan_tree: %{}, rows: []}}
+
+  defp handle_plan_result({:ok, %Req.Response{status: status, body: body}}) when is_map(body),
+    do: {:error, Error.from_response(status, body)}
+
+  defp handle_plan_result({:ok, %Req.Response{status: status}}),
+    do: {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+  defp handle_plan_result({:error, %{reason: reason}}),
+    do: {:error, %TransportError{reason: reason}}
+
+  defp handle_plan_result({:error, exception}),
+    do: {:error, %TransportError{reason: inspect_reason(exception)}}
 
   @impl true
   def server_command(%Conn{} = conn, command) do
