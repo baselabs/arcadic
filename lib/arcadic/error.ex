@@ -67,6 +67,14 @@ defmodule Arcadic.Error do
 
   @impl true
   @spec message(t()) :: String.t()
+  # Client-side reasons (:use_explain, :not_supported) are raised BY arcadic, not the server;
+  # their :message is a static, developer-authored hint (no statement/params — Rule 3 safe) and
+  # is the point of the error, so surface it. Server-origin reasons keep the generic render
+  # (their :message holds server "error" text, quarantined from message/1 and inspect/1).
+  def message(%__MODULE__{reason: reason, message: msg})
+      when reason in [:use_explain, :not_supported] and is_binary(msg),
+      do: msg
+
   def message(%__MODULE__{reason: reason, http_status: status, exception: exception}) do
     "ArcadeDB error (#{inspect(reason)}, HTTP #{status}): #{exception || "unknown"}"
   end

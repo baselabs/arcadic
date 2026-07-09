@@ -26,6 +26,10 @@ defmodule Arcadic do
   @command_opts ~w(language limit serializer timeout retries)a
   @query_opts ~w(language limit serializer timeout)a
   @query_stream_opts ~w(chunk_size timeout language order_key)a
+  # explain/profile take only :language + :timeout. retries is EXCLUDED — PROFILE executes, so a
+  # retry double-runs the write; limit/serializer are meaningless for a plan.
+  @explain_opts ~w(language timeout)a
+  @profile_opts ~w(language timeout)a
 
   @doc "Build a connection handle. See `Arcadic.Conn.new/3`."
   @spec connect(String.t(), String.t(), keyword()) :: Conn.t()
@@ -81,6 +85,62 @@ defmodule Arcadic do
       {result, %{reason: async_reason(result)}}
     end)
   end
+
+  @doc """
+  Return the execution plan for a statement WITHOUT running it: prepends `EXPLAIN `
+  and returns `{:ok, %{plan: <human string>, plan_tree: <raw, transport-defined map>,
+  rows: []}}`.
+
+  EXPLAIN is plan-only and side-effect-free (portable across read/write statements),
+  so it routes the read path. Takes only `:language` (default `"cypher"`) and
+  `:timeout`; `:retries`/`:limit`/`:serializer` are rejected value-free (a plan is
+  not a paged, retried, or serialized row set). Returns
+  `{:error, %Arcadic.Error{reason: :not_supported}}` when the active transport does
+  not implement `explain/3`.
+  """
+  @spec explain(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
+  def explain(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do:
+      run_explain(
+        conn,
+        :read,
+        "EXPLAIN " <> statement,
+        params,
+        validate_opts!(opts, @explain_opts)
+      )
+
+  @doc "Like `explain/4` but returns the plan map or raises."
+  @spec explain!(Conn.t(), String.t(), map(), keyword()) :: map()
+  def explain!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang_plan(explain(conn, statement, params, opts))
+
+  @doc """
+  Profile a statement by EXECUTING it, returning its plan annotated with real runtime
+  metrics: prepends `PROFILE ` and returns `{:ok, %{plan: <human string>,
+  plan_tree: <raw, transport-defined map>, rows: <executed rows>}}`.
+
+  **PROFILE runs the statement** — a write mutates — so it routes the write path and
+  its telemetry span carries `in_transaction?` (like `command/4`). Takes only
+  `:language` (default `"cypher"`) and `:timeout`; `:retries` is EXCLUDED (a retry
+  would double-run the write) and `:limit`/`:serializer` are meaningless for a plan —
+  all rejected value-free. Returns `{:error, %Arcadic.Error{reason: :not_supported}}`
+  when the active transport does not implement `explain/3`.
+  """
+  @spec profile(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
+  def profile(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do:
+      run_explain(
+        conn,
+        :write,
+        "PROFILE " <> statement,
+        params,
+        validate_opts!(opts, @profile_opts)
+      )
+
+  @doc "Like `profile/4` but returns the plan map or raises."
+  @spec profile!(Conn.t(), String.t(), map(), keyword()) :: map()
+  def profile!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang_plan(profile(conn, statement, params, opts))
 
   @doc """
   Lazily stream a large read result as raw row maps. Returns `{:ok, Stream.t()}` or
@@ -187,6 +247,48 @@ defmodule Arcadic do
 
   defp reason_of(%{reason: reason}), do: reason
   defp reason_of(_), do: :error
+
+  # explain/profile dispatch to the OPTIONAL transport `explain/3` callback (guarded by
+  # function_exported?, like query_stream/4) — a transport without it gets a typed
+  # `:not_supported`, never an UndefinedFunctionError. The span dispatch is extracted to
+  # dispatch_explain/5 so neither the guard nor the span nests too deep (credo max-depth 2).
+  defp run_explain(conn, mode, statement, params, opts) do
+    validate_params!(params)
+
+    if Code.ensure_loaded?(conn.transport) and function_exported?(conn.transport, :explain, 3) do
+      dispatch_explain(conn, mode, statement, params, opts)
+    else
+      {:error,
+       %Arcadic.Error{
+         reason: :not_supported,
+         message: "transport does not support explain/profile"
+       }}
+    end
+  end
+
+  # The `:explain` span mirrors run/5: start_meta from explain_meta/3, stop_meta carries
+  # reason + row_count of the executed rows (0 for EXPLAIN's plan-only result).
+  defp dispatch_explain(conn, mode, statement, params, opts) do
+    language = opts[:language] || "cypher"
+    request = %{statement: statement, params: params, language: language}
+
+    Telemetry.span(:explain, explain_meta(mode, language, conn), fn ->
+      case conn.transport.explain(conn, request, opts) do
+        {:ok, plan} = ok -> {ok, %{http_status: 200, reason: :ok, row_count: length(plan.rows)}}
+        {:error, err} = error -> {error, %{reason: reason_of(err)}}
+      end
+    end)
+  end
+
+  # EXPLAIN is plan-only → read span; PROFILE executes → write span carrying `in_transaction?`
+  # (spec §10 telemetry table), mirroring start_meta/3 for command/4.
+  defp explain_meta(:read, language, _conn), do: %{language: language, mode: :read}
+
+  defp explain_meta(:write, language, conn),
+    do: %{language: language, mode: :write, in_transaction?: not is_nil(conn.session_id)}
+
+  defp bang_plan({:ok, plan}), do: plan
+  defp bang_plan({:error, error}), do: raise(error)
 
   # Async is an OPTIONAL transport capability — a transport without execute_async/3
   # (Bolt, a minimal mock) gets a typed error, never an UndefinedFunctionError.

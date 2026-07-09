@@ -85,6 +85,37 @@ defmodule Arcadic.ErrorTest do
     end
   end
 
+  describe "message/1 client-side surfacing" do
+    test "message/1 surfaces the client-side hint for :use_explain and :not_supported" do
+      e = %Arcadic.Error{
+        reason: :not_supported,
+        message: "transport does not support explain/profile"
+      }
+
+      assert Exception.message(e) == "transport does not support explain/profile"
+
+      u = %Arcadic.Error{
+        reason: :use_explain,
+        message: "use Arcadic.explain/3 or Arcadic.profile/3"
+      }
+
+      assert Exception.message(u) =~ "explain/3"
+    end
+
+    test "message/1 keeps the generic render for a server reason (:message stays quarantined — Rule 3)" do
+      e = %Arcadic.Error{
+        reason: :parse_error,
+        http_status: 400,
+        exception: "com.x.ParseException",
+        message: "SECRET server text"
+      }
+
+      rendered = Exception.message(e)
+      assert rendered == "ArcadeDB error (:parse_error, HTTP 400): com.x.ParseException"
+      refute rendered =~ "SECRET"
+    end
+  end
+
   describe "TransportError" do
     test "carries a network reason atom and renders it" do
       err = %TransportError{reason: :econnrefused}
