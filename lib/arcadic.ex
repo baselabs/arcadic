@@ -94,23 +94,18 @@ defmodule Arcadic do
   and returns `{:ok, %{plan: <human string>, plan_tree: <raw, transport-defined map>,
   rows: []}}`.
 
-  EXPLAIN is plan-only and side-effect-free (portable across read/write statements),
-  so it routes the read path. Takes only `:language` (default `"cypher"`) and
+  EXPLAIN is plan-only and side-effect-free (portable across read/write statements);
+  its telemetry span is read-labeled (`mode: :read`). Takes only `:language` (default `"cypher"`) and
   `:timeout`; `:retries`/`:limit`/`:serializer` are rejected value-free (a plan is
   not a paged, retried, or serialized row set). Returns
   `{:error, %Arcadic.Error{reason: :not_supported}}` when the active transport does
   not implement `explain/3`.
   """
   @spec explain(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def explain(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
-    do:
-      run_explain(
-        conn,
-        :read,
-        "EXPLAIN " <> statement,
-        params,
-        validate_opts!(opts, @explain_opts)
-      )
+  def explain(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    validate_statement!(statement)
+    run_explain(conn, :read, "EXPLAIN " <> statement, params, validate_opts!(opts, @explain_opts))
+  end
 
   @doc "Like `explain/4` but returns the plan map or raises."
   @spec explain!(Conn.t(), String.t(), map(), keyword()) :: map()
@@ -130,15 +125,17 @@ defmodule Arcadic do
   when the active transport does not implement `explain/3`.
   """
   @spec profile(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def profile(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
-    do:
-      run_explain(
-        conn,
-        :write,
-        "PROFILE " <> statement,
-        params,
-        validate_opts!(opts, @profile_opts)
-      )
+  def profile(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    validate_statement!(statement)
+
+    run_explain(
+      conn,
+      :write,
+      "PROFILE " <> statement,
+      params,
+      validate_opts!(opts, @profile_opts)
+    )
+  end
 
   @doc "Like `profile/4` but returns the plan map or raises."
   @spec profile!(Conn.t(), String.t(), map(), keyword()) :: map()
@@ -339,6 +336,14 @@ defmodule Arcadic do
   # into the message (Rule 3). Reject value-free at the facade instead. `nil` is not a valid params.
   defp validate_params!(params) when is_map(params), do: :ok
   defp validate_params!(_), do: raise(ArgumentError, "params must be a map")
+
+  # `statement` must be a binary BEFORE the `EXPLAIN `/`PROFILE ` keyword is prepended — a non-binary
+  # term makes the `<>` concat raise `construction of binary failed ... got: <value>`, echoing the
+  # whole term into the message (the Rule-3 leak class validate_params!/1 already guards for `opts`).
+  # Reject value-free at the explain/profile facade. query/command carry the statement through to the
+  # transport body without a `<>`, so they never hit this raise path and need no guard here.
+  defp validate_statement!(statement) when is_binary(statement), do: :ok
+  defp validate_statement!(_), do: raise(ArgumentError, "statement must be a string")
 
   defp validate_language!(language) when language in @language_allowlist, do: :ok
 

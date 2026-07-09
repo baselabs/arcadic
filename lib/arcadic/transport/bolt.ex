@@ -184,10 +184,28 @@ if Code.ensure_loaded?(Boltx) do
       query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
 
       case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
-        {:ok, _query, %Boltx.Response{results: results}} -> {:ok, results}
+        {:ok, _query, %Boltx.Response{} = resp} -> rows_or_use_explain(resp)
         {:error, %Boltx.Error{} = e} -> {:error, bolt_error(e)}
         {:error, other} -> {:error, %TransportError{reason: transport_reason(other)}}
       end
+    end
+
+    # G1 parity for Bolt: a query/command that actually RAN an EXPLAIN/PROFILE gets its plan in
+    # resp.plan (EXPLAIN) or resp.profile (PROFILE) with no rows — the same silent `{:ok, []}` drop the
+    # HTTP `Result.normalize/1` guard closes. Bolt has no `explainPlan` envelope key, so the analog is
+    # resp.plan/resp.profile presence (both nil for every normal query). Redirect to explain/4/profile/4
+    # with the same static, Rule-3-safe message `Result.normalize/1` uses. (Closeout amendment to spec
+    # Decision 6, whose response-layer mechanism was HTTP-envelope-specific — see the spec's amendment.)
+    defp rows_or_use_explain(%Boltx.Response{plan: nil, profile: nil, results: results}),
+      do: {:ok, results}
+
+    defp rows_or_use_explain(%Boltx.Response{}) do
+      {:error,
+       %Error{
+         reason: :use_explain,
+         message:
+           "EXPLAIN/PROFILE returns an execution tree, not rows — use Arcadic.explain/4 or Arcadic.profile/4"
+       }}
     end
 
     @impl true
@@ -202,18 +220,7 @@ if Code.ensure_loaded?(Boltx) do
 
       case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
         {:ok, _query, %Boltx.Response{} = resp} ->
-          # Normalize to a map once (mirrors the HTTP sibling's `is_map` guard): `resp.plan`/
-          # `resp.profile` are server-populated and typed loosely (`profile: any` in boltx), so a
-          # truthy non-map would make `get_in/2` RAISE and violate the `plan_tree: map()` @spec.
-          summary =
-            case resp.plan || resp.profile do
-              m when is_map(m) -> m
-              _ -> %{}
-            end
-
-          repr = get_in(summary, ["args", "string-representation"])
-          plan = if is_binary(repr), do: repr, else: ""
-          {:ok, %{plan: plan, plan_tree: summary, rows: resp.results}}
+          {:ok, build_plan(resp)}
 
         {:error, %Boltx.Error{} = e} ->
           {:error, bolt_error(e)}
@@ -221,6 +228,26 @@ if Code.ensure_loaded?(Boltx) do
         {:error, other} ->
           {:error, %TransportError{reason: transport_reason(other)}}
       end
+    end
+
+    # Shape a `%Boltx.Response{}` into arcadic's `%{plan, plan_tree, rows}`. boltx types plan/profile
+    # loosely (`profile: any`), so BOTH the outer summary AND its nested `args` are `is_map`-guarded —
+    # a truthy non-map at EITHER level would make the nested access RAISE and violate the
+    # `plan_tree: map()` / `plan: String.t()` @spec. `@doc false` + separately callable so the drift
+    # guard is unit-testable without a live Bolt connection.
+    @doc false
+    @spec build_plan(Boltx.Response.t()) :: %{plan: String.t(), plan_tree: map(), rows: [map()]}
+    def build_plan(%Boltx.Response{} = resp) do
+      summary =
+        case resp.plan || resp.profile do
+          m when is_map(m) -> m
+          _ -> %{}
+        end
+
+      args = summary["args"]
+      repr = if is_map(args), do: args["string-representation"], else: nil
+      plan = if is_binary(repr), do: repr, else: ""
+      %{plan: plan, plan_tree: summary, rows: resp.results}
     end
 
     # The `db` extra selects the ArcadeDB database per RUN/BEGIN (Boltx's RunMessage

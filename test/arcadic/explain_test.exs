@@ -107,6 +107,23 @@ defmodule Arcadic.ExplainTest do
     end
   end
 
+  test "explain/profile reject a non-binary statement value-free (Rule 3 — no value echo)" do
+    for stmt <- [["SECRET_TOKEN"], :not_a_string, %{leak: "SECRET_TOKEN"}] do
+      e =
+        assert_raise ArgumentError, ~r/statement must be a string/, fn ->
+          Arcadic.explain(conn(), stmt, %{}, language: "sql")
+        end
+
+      # Without the facade guard, `"EXPLAIN " <> stmt` raises "construction of binary failed ...
+      # got: <stmt>", echoing the value — Rule 3 leak. The guard's message must never carry it.
+      refute Exception.message(e) =~ "SECRET_TOKEN"
+
+      assert_raise ArgumentError, ~r/statement must be a string/, fn ->
+        Arcadic.profile(conn(), stmt, %{}, language: "sql")
+      end
+    end
+  end
+
   test "query/4 on an EXPLAIN statement surfaces :use_explain (response-layer guard, end to end)" do
     Req.Test.stub(__MODULE__, fn c ->
       Req.Test.json(c, %{"result" => [], "explainPlan" => %{"type" => "P"}})

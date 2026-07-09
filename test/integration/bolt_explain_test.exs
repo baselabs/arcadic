@@ -51,4 +51,20 @@ defmodule Arcadic.Integration.BoltExplainTest do
     assert plan =~ "Profile"
     assert rows != []
   end
+
+  test "query/command on a bare EXPLAIN/PROFILE over Bolt surfaces :use_explain (G1 parity, not silent {:ok, []})",
+       %{bolt: conn} do
+    assert {:error, %Arcadic.Error{reason: :use_explain}} =
+             Arcadic.query(conn, "EXPLAIN MATCH (n:Person) RETURN n")
+
+    assert {:error, %Arcadic.Error{reason: :use_explain}} =
+             Arcadic.command(conn, "PROFILE MATCH (n:Person) RETURN n")
+  end
+
+  test "a normal Bolt query still returns rows — the guard does not false-positive", %{bolt: conn} do
+    # Regression oracle for the execute/4 rows_or_use_explain guard: a normal query has
+    # resp.plan == nil and resp.profile == nil, so it must still return {:ok, rows}.
+    assert {:ok, rows} = Arcadic.query(conn, "MATCH (n:Person) RETURN n")
+    assert is_list(rows) and rows != []
+  end
 end
