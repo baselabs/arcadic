@@ -1,6 +1,8 @@
 defmodule Arcadic.Transport.BoltExplainTest do
   use ExUnit.Case, async: true
 
+  alias Arcadic.Transport.Bolt
+
   @moduletag :bolt
 
   test "Bolt transport implements the explain/3 optional callback" do
@@ -22,7 +24,7 @@ defmodule Arcadic.Transport.BoltExplainTest do
         results: []
       }
 
-      assert %{plan: "OpenCypher X", rows: []} = Arcadic.Transport.Bolt.build_plan(resp)
+      assert %{plan: "OpenCypher X", rows: []} = Bolt.build_plan(resp)
     end
 
     test "defaults plan to \"\" WITHOUT raising when nested args is a non-map (server/driver drift)" do
@@ -30,7 +32,7 @@ defmodule Arcadic.Transport.BoltExplainTest do
       # guard degrades to plan: "" instead, and plan_tree still carries the raw summary verbatim.
       for bad <- [%{"args" => [1, 2, 3]}, %{"args" => "str"}, %{"args" => 5}] do
         resp = %Boltx.Response{plan: bad, results: []}
-        assert %{plan: "", plan_tree: ^bad, rows: []} = Arcadic.Transport.Bolt.build_plan(resp)
+        assert %{plan: "", plan_tree: ^bad, rows: []} = Bolt.build_plan(resp)
       end
     end
 
@@ -38,7 +40,7 @@ defmodule Arcadic.Transport.BoltExplainTest do
       resp = %Boltx.Response{plan: nil, profile: nil, results: [%{"n" => 1}]}
 
       assert %{plan: "", plan_tree: %{}, rows: [%{"n" => 1}]} =
-               Arcadic.Transport.Bolt.build_plan(resp)
+               Bolt.build_plan(resp)
     end
   end
 end
