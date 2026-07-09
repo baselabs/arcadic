@@ -211,4 +211,31 @@ defmodule Arcadic.Integration.SchemaImportTest do
     refute map_reason == :unauthorized
     refute map_exc == "java.lang.SecurityException"
   end
+
+  test "with: settings are PROCESSED not ignored — a bad commitEvery errors on the SETTING (B9 direct effect)",
+       %{conn: conn, url: url, pass: pass} do
+    name = "s7_b9_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    # Distinct type name — the shared setup_all db is reused across tests, and the sibling
+    # "import with: settings PARSES + RUNS" test already creates type `W` (schema_import_test.exs:137);
+    # a duplicate CREATE raises. IF NOT EXISTS is belt-and-suspenders.
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE Wb9 IF NOT EXISTS", %{}, language: "sql")
+    Arcadic.command!(conn, "INSERT INTO Wb9 SET n = 1", %{}, language: "sql")
+
+    Arcadic.command!(conn, "EXPORT DATABASE file://#{name} WITH overwrite = true", %{},
+      language: "sql"
+    )
+
+    dst = new_db(url, pass)
+
+    # Same valid path the happy-path sibling imports OK; only commitEvery changes to a charset-clean
+    # NON-numeric string. The server PARSES the WITH clause and rejects the value ("For input string"),
+    # so the setting is demonstrably processed, not silently dropped. `reason` is :server_error
+    # (CommandExecutionException is unmapped → fallback); the setting-specific signal is `detail`.
+    assert {:error, %Arcadic.Error{reason: :server_error} = e} =
+             Arcadic.Import.database(dst, "file://#{@export_dir}/#{name}",
+               with: [commitEvery: "notanumber"]
+             )
+
+    assert e.detail =~ "For input string"
+  end
 end
