@@ -38,5 +38,5 @@ priv/plts/
 
 # Lifecycle artifacts — brainstorm specs, plans, exec notes, reviews, handoffs.
 # Local-only, NEVER tracked or published. CHARTER.md/AGENTS.md live at the repo
-# root (tracked); published guides live in documentation/ (tracked).
+# root (tracked); published guides live in README.md/notebooks/ (tracked).
 /docs/

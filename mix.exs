@@ -61,7 +61,8 @@ defmodule Arcadic.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules.md),
+      files:
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules.md CONTRIBUTING.md notebooks),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
@@ -82,6 +83,22 @@ defmodule Arcadic.MixProject do
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
+      ],
+      groups_for_modules: [
+        Core: [
+          Arcadic,
+          Arcadic.Conn,
+          Arcadic.Result,
+          Arcadic.Error,
+          Arcadic.TransportError,
+          Arcadic.Opts,
+          Arcadic.Identifier,
+          Arcadic.Telemetry
+        ],
+        Transport: [Arcadic.Transport, Arcadic.Transport.HTTP, Arcadic.Transport.Bolt],
+        "Schema & data": [Arcadic.Schema, Arcadic.Import, Arcadic.Export, Arcadic.Vector],
+        Migrations: [Arcadic.Migration, Arcadic.MigrationRegistry, Arcadic.Migrator],
+        Transactions: [Arcadic.Transaction, Arcadic.Server]
       ]
     ]
   end

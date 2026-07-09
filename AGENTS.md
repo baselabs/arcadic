@@ -95,8 +95,7 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 ## Docs & lifecycle-artifact policy
 
 - **Tracked / published:** `AGENTS.md`, `README.md`, `CHANGELOG.md`,
-  `CONTRIBUTING.md`, `usage-rules.md`, `LICENSE`, and published guides under
-  `documentation/`.
+  `CONTRIBUTING.md`, `usage-rules.md`, `LICENSE`, and `notebooks/`.
 - **Never tracked:** the project charter (`docs/CHARTER.md`) plus all brainstorm
   specs, plans, exec notes, reviews, and handoffs. They live under `/docs/`,
   which is **gitignored** (matching the `ash_age` convention). Do not move
@@ -105,5 +104,8 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 
 ## Next action
 
-`/brainstorm-autopilot` on the client surface (see CHARTER "Open"), then plan,
-then implement against the verified contract above.
+The client surface and the Phase-1 completion design (S1–S6) are shipped and
+closed. Current work is **Phase 2 — gap closure (S7–S12)**: see the local working
+docs `docs/superpowers/ROADMAP.md` (detail) and `docs/superpowers/BACKLOG.md`
+(status). Next: `/brainstorm-autopilot` S7 (correctness + docs currency), then
+plan → exec → review against the verified contract above.

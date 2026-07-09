@@ -24,11 +24,9 @@ mix test
 3. Ensure all checks pass before opening a PR:
 
 ```bash
-mix format                        # Format code
-mix credo --strict                # Lint
 mix compile --warnings-as-errors  # Zero warnings
-mix test                          # Run tests
-mix dialyzer                      # Type checking
+mix quality                       # format --check-formatted + credo --strict + dialyzer
+mix test                          # Run tests (add ARCADIC_TEST_URL for the integration suite)
 ```
 
 4. Update `CHANGELOG.md` under `[Unreleased]`.

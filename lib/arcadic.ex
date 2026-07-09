@@ -16,8 +16,11 @@ defmodule Arcadic do
         Arcadic.command!(tx, "MERGE (u:User {id:$id})", %{"id" => "u1"})
       end)
 
-  All dynamic values reach ArcadeDB **only as bound parameters** (`$name`), never
-  string interpolation.
+  All dynamic values reach ArcadeDB **only as bound parameters** — `$name` for
+  Cypher, `:name` for SQL (the `language:` opt selects the dialect) — never string
+  interpolation. Use `explain/4`/`profile/4` to inspect a statement's execution
+  plan without guessing: `explain` is plan-only, `profile` executes the
+  statement (a write mutates).
   """
 
   alias Arcadic.{Conn, Opts, Telemetry}

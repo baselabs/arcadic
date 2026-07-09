@@ -6,6 +6,39 @@ defmodule Arcadic.Error do
   struct field for debugging, but is QUARANTINED: it appears in neither
   `Exception.message/1` nor `inspect/1` (AGENTS.md Critical Rule 3). Reach it only
   via explicit `error.detail`.
+
+  ## `reason` taxonomy
+
+  Server-derived (mapped from the HTTP status and/or the ArcadeDB `exception` FQN
+  in `from_response/2`):
+
+  - `:not_idempotent` — a write reached the read-only `/query` endpoint
+    (`QueryNotIdempotentException`).
+  - `:parse_error` — the statement failed to parse (`Parsing`/`ParseException`).
+  - `:unauthorized` — bad credentials, or an HTTP 403 (`SecurityException`).
+  - `:database_not_found` — the target database doesn't exist
+    (`DatabaseOperationException`).
+  - `:transaction_error` — a transaction-lifecycle failure, both server-derived
+    (`TransactionException`) and client-raised (no active/already-open session;
+    a Bolt commit failure).
+  - `:concurrent_modification` — an optimistic-concurrency conflict
+    (`ConcurrentModificationException`/`NeedRetryException`).
+  - `:duplicate_key` — a unique-index violation (`DuplicatedKeyException`).
+  - `:timeout` — the server reported a timeout (`TimeoutException`).
+  - `:invalid_begin_body` — a malformed `isolationLevel` in a transaction-begin body.
+  - `:server_error` — the generic fallback: an unrecognized HTTP 400 body, or an
+    `exception` FQN that matches none of the above.
+
+  Client-side (raised BY arcadic, never by the server — the statement never left
+  the process):
+
+  - `:use_explain` — `query`/`command`/`query_stream` was called on a statement
+    that already carries an `EXPLAIN`/`PROFILE` prefix; call `explain/4`/`profile/4`
+    instead (see `Arcadic.Result.normalize/1`).
+  - `:not_supported` — the active transport doesn't implement the called
+    capability (e.g. `explain/4` against a transport without it, HTTP streaming
+    inside a transaction, Bolt's admin-only calls, async writes without
+    `execute_async/3`).
   """
 
   defexception [:reason, :http_status, :exception, :message, :detail]

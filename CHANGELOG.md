@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.explain/4` + `Arcadic.profile/4` (+ `!`) — surface the ArcadeDB EXPLAIN/PROFILE plan
+  (`%{plan, plan_tree, rows}`) that `query`/`command` silently dropped. `explain` is plan-only;
+  **`profile` executes the statement** (a write mutates). Works over HTTP and Bolt (Cypher-only).
+- `query`/`command`/`query_stream` now return `{:error, %Arcadic.Error{reason: :use_explain}}` on a
+  bare EXPLAIN/PROFILE (was a silent `{:ok, []}`).
+
+### Fixed
+
+- Docs: SQL `:name` vs Cypher `$name` parameter binding is now documented; the Bolt-streaming
+  example uses `Arcadic.Transport.Bolt.setup/1` (the prior `transport_options: [bolt: …]` form
+  returned `:not_supported` for streaming); `~> 0.4` install pins; hexdoc module groups.
+
+### Notes
+
+- Re-verified boltx temporal decode against ArcadeDB 26.8.1 (`:integration_bolt` green).
+
 ## [0.4.0] - 2026-07-07
 
 ### Added
