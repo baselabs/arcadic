@@ -13,6 +13,9 @@ defmodule Arcadic.Transport do
 
   @type request :: %{statement: String.t(), params: map(), language: String.t()}
   @type result :: {:ok, [map()]} | {:error, Error.t() | TransportError.t()}
+  @type plan_result ::
+          {:ok, %{plan: String.t(), plan_tree: map(), rows: [map()]}}
+          | {:error, Error.t() | TransportError.t()}
 
   @doc "Run a read (`:read` → idempotent endpoint) or write (`:write`) statement."
   @callback execute(Conn.t(), mode :: :read | :write, request(), opts :: keyword()) :: result()
@@ -65,4 +68,12 @@ defmodule Arcadic.Transport do
   @callback query_stream(Conn.t(), request(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, Error.t() | TransportError.t()}
   @optional_callbacks query_stream: 3
+
+  @doc """
+  Run an EXPLAIN/PROFILE statement and return its plan. The `request.statement` already
+  carries the `EXPLAIN `/`PROFILE ` prefix (the facade prepends it). Optional. Returns
+  `%{plan: <human string>, plan_tree: <raw, transport-defined map>, rows: <executed rows>}`.
+  """
+  @callback explain(Conn.t(), request(), opts :: keyword()) :: plan_result()
+  @optional_callbacks explain: 3
 end

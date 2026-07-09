@@ -22,4 +22,8 @@ defmodule Arcadic.TransportTest do
     assert {:query_stream, 3} in Arcadic.Transport.behaviour_info(:callbacks)
     assert {:query_stream, 3} in Arcadic.Transport.behaviour_info(:optional_callbacks)
   end
+
+  test "explain/3 is an optional callback" do
+    assert {:explain, 3} in Arcadic.Transport.behaviour_info(:optional_callbacks)
+  end
 end
