@@ -8,10 +8,10 @@ if Code.ensure_loaded?(Boltx) do
   defmodule Arcadic.Transport.Bolt do
     @moduledoc """
     Bolt transport for ArcadeDB via the `boltx` driver (Bolt v4). Verified interop
-    (spec §15 P19/P20). The consumer starts a Bolt connection with `start_link/1`
-    (which encodes the ArcadeDB-correct defaults — Bolt v4 pin, and the plaintext
-    `bolt` scheme by default; pass `scheme: "bolt+s"` for TLS, see below) and passes
-    it as `transport_options: [bolt: conn_ref]`.
+    (spec §15 P19/P20). Build the `transport_options` with `Arcadic.Transport.Bolt.setup/1`
+    — it returns `[bolt: pool, bolt_opts: resolved]`, so both the query hot path (`:bolt`)
+    AND `query_stream/4` (`:bolt_opts`) work from one call and cannot drift to different
+    hosts/creds. (`start_link/1` returns only the pool ref — use `setup/1` if you also stream.)
 
     Supports the query hot path (`execute/4`), native fun-based transactions
     (`transaction/3`), and a `RETURN 1` health check (`ready?/1`). Server admin
@@ -187,6 +187,39 @@ if Code.ensure_loaded?(Boltx) do
         {:ok, _query, %Boltx.Response{results: results}} -> {:ok, results}
         {:error, %Boltx.Error{} = e} -> {:error, bolt_error(e)}
         {:error, other} -> {:error, %TransportError{reason: transport_reason(other)}}
+      end
+    end
+
+    @impl true
+    @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
+            Arcadic.Transport.plan_result()
+    def explain(%Conn{} = conn, %{statement: statement, params: params}, _opts) do
+      # statement already carries EXPLAIN/PROFILE (facade-prepended). Bolt returns the plan in
+      # resp.plan (EXPLAIN) or resp.profile (PROFILE) — pick whichever is set. `plan` (the human
+      # string) lives at ["args"]["string-representation"]; `plan_tree` is the raw summary map;
+      # `results` holds executed rows (same shape execute/4 returns; empty for EXPLAIN).
+      query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
+
+      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
+        {:ok, _query, %Boltx.Response{} = resp} ->
+          # Normalize to a map once (mirrors the HTTP sibling's `is_map` guard): `resp.plan`/
+          # `resp.profile` are server-populated and typed loosely (`profile: any` in boltx), so a
+          # truthy non-map would make `get_in/2` RAISE and violate the `plan_tree: map()` @spec.
+          summary =
+            case resp.plan || resp.profile do
+              m when is_map(m) -> m
+              _ -> %{}
+            end
+
+          repr = get_in(summary, ["args", "string-representation"])
+          plan = if is_binary(repr), do: repr, else: ""
+          {:ok, %{plan: plan, plan_tree: summary, rows: resp.results}}
+
+        {:error, %Boltx.Error{} = e} ->
+          {:error, bolt_error(e)}
+
+        {:error, other} ->
+          {:error, %TransportError{reason: transport_reason(other)}}
       end
     end
 
