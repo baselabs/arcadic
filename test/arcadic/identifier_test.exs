@@ -1,5 +1,6 @@
 defmodule Arcadic.IdentifierTest do
   use ExUnit.Case, async: true
+  doctest Arcadic.Identifier
   alias Arcadic.Identifier
 
   describe "validate/1" do

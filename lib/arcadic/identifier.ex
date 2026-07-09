@@ -12,7 +12,17 @@ defmodule Arcadic.Identifier do
   # First char a letter, then up to 127 letters/digits/underscores (128 total).
   @pattern ~r/\A[A-Za-z][A-Za-z0-9_]{0,127}\z/
 
-  @doc "Returns `:ok` for a valid identifier, `{:error, :invalid_identifier}` otherwise."
+  @doc """
+  Returns `:ok` for a valid identifier, `{:error, :invalid_identifier}` otherwise.
+
+  ## Examples
+
+      iex> Arcadic.Identifier.validate("Person")
+      :ok
+      iex> Arcadic.Identifier.validate("1bad")
+      {:error, :invalid_identifier}
+
+  """
   @spec validate(term()) :: :ok | {:error, :invalid_identifier}
   def validate(value) when is_binary(value) do
     if Regex.match?(@pattern, value), do: :ok, else: {:error, :invalid_identifier}

@@ -1,5 +1,6 @@
 defmodule Arcadic.ResultTest do
   use ExUnit.Case, async: true
+  doctest Arcadic.Result
   alias Arcadic.Result
 
   test "strips @props (serializer noise) from scalar rows" do

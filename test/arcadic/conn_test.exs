@@ -1,5 +1,6 @@
 defmodule Arcadic.ConnTest do
   use ExUnit.Case, async: true
+  doctest Arcadic.Conn
   alias Arcadic.Conn
 
   describe "new/3" do

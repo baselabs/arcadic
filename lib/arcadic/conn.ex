@@ -39,6 +39,12 @@ defmodule Arcadic.Conn do
     * `:transport` — transport module (default `Arcadic.Transport.HTTP`).
     * `:transport_options` — keyword passed to the transport (`:finch`, `:plug`, `:timeout`, pool knobs).
     * `:timeout` — default per-call receive timeout (ms).
+
+  ## Examples
+
+      iex> Arcadic.connect("http://localhost:2480", "mydb", auth: {"root", "x"}).database
+      "mydb"
+
   """
   @spec new(String.t(), String.t(), keyword()) :: t()
   def new(base_url, database, opts \\ []) when is_binary(base_url) and is_binary(database) do

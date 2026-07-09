@@ -7,14 +7,22 @@ defmodule Arcadic.Result do
   `@in`, `@out` (edges only). Probe-verified — spec §15 P4/P5/P15.
 
   An EXPLAIN/PROFILE envelope carries its plan under `explainPlan` (never `result`),
-  so `normalize/1` returns `{:error, :use_explain}` for it rather than a silent
-  empty row set. The plan surface is `normalize_plan/1`, consumed by
-  `Arcadic.explain/3` and `Arcadic.profile/3`.
+  so `normalize/1` returns `{:error, %Arcadic.Error{reason: :use_explain}}` for it
+  rather than a silent empty row set. The plan surface is `normalize_plan/1`,
+  consumed by `Arcadic.explain/3` and `Arcadic.profile/3`.
   """
 
   @stripped_keys ~w(@props)
 
-  @doc "Extract `result`, strip `@props` per row; return `{:ok, rows}`."
+  @doc """
+  Extract `result`, strip `@props` per row; return `{:ok, rows}`.
+
+  ## Examples
+
+      iex> Arcadic.Result.normalize(%{"result" => [%{"n" => 1, "@props" => "n:1"}]})
+      {:ok, [%{"n" => 1}]}
+
+  """
   @spec normalize(map()) :: {:ok, [map()]} | {:error, Arcadic.Error.t()}
   # A plan envelope (EXPLAIN/PROFILE) carries a top-level `explainPlan` key and an empty
   # (or executed-rows) `result`. It cannot be represented as `{:ok, rows}` on the rows path,
@@ -36,7 +44,15 @@ defmodule Arcadic.Result do
     {:ok, extract_rows(body)}
   end
 
-  @doc "Extract the EXPLAIN/PROFILE plan envelope: `{:ok, %{plan, plan_tree, rows}}`."
+  @doc """
+  Extract the EXPLAIN/PROFILE plan envelope: `{:ok, %{plan, plan_tree, rows}}`.
+
+  ## Examples
+
+      iex> Arcadic.Result.normalize_plan(%{"explain" => "plan", "explainPlan" => %{}, "result" => []})
+      {:ok, %{rows: [], plan: "plan", plan_tree: %{}}}
+
+  """
   @spec normalize_plan(map()) :: {:ok, %{plan: String.t(), plan_tree: map(), rows: [map()]}}
   def normalize_plan(body) when is_map(body) do
     explain = Map.get(body, "explain")
