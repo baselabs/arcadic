@@ -134,6 +134,41 @@ defmodule Arcadic.QueryStreamTest do
     end
   end
 
+  describe "Bolt.exec_opts/1 (db_connection opts threading)" do
+    test "threads :timeout through to prepare_execute and drops arcadic-only opts" do
+      # Before the fix, execute/4 + explain/3 hardcoded `[]`, so a caller's :timeout was accepted by
+      # the facade then silently dropped on Bolt. exec_opts forwards :timeout — and ONLY db_connection
+      # opts — into DBConnection.prepare_execute/4 (arcadic opts like :language/:limit must not leak).
+      assert Bolt.exec_opts(timeout: 2_500, language: "cypher", limit: 5) == [timeout: 2_500]
+    end
+
+    test "is empty when the caller omits :timeout (db_connection keeps its own default)" do
+      assert Bolt.exec_opts(language: "cypher") == []
+      assert Bolt.exec_opts([]) == []
+    end
+  end
+
+  describe "Bolt.transport_reason/1 (preserve the typed reason, don't collapse to the module)" do
+    test "surfaces the :reason of an already-typed TransportError (e.g. :cursor_open)" do
+      # The tx cursor-desync guard (Connection.handle_execute) fails closed with
+      # %TransportError{reason: :cursor_open}; db_connection surfaces it to execute/4's `{:error,
+      # other}` branch. Before the fix this collapsed to `reason: Arcadic.TransportError` (the MODULE),
+      # losing :cursor_open. Composes with bolt_connection_test.exs (which proves handle_execute
+      # PRODUCES :cursor_open) to prove the end-to-end query/explain surfacing — the mid-cursor state
+      # is not reliably reachable through the public Stream API (halting to issue a query deallocates
+      # the cursor first), so the guard is verified at the unit level as the existing suite does.
+      assert Bolt.transport_reason(%Arcadic.TransportError{reason: :cursor_open}) == :cursor_open
+    end
+
+    test "surfaces the :reason of an already-typed Arcadic.Error" do
+      assert Bolt.transport_reason(%Arcadic.Error{reason: :parse_error}) == :parse_error
+    end
+
+    test "falls back to the struct MODULE for a raw boltx/db_connection exception (unchanged)" do
+      assert Bolt.transport_reason(%RuntimeError{message: "x"}) == RuntimeError
+    end
+  end
+
   describe "Bolt.query_stream/3 guards (server-free)" do
     # replaces the old blanket in-tx refusal — an in-tx Bolt conn with no tx_ref is a
     # malformed conn, raised value-free (in-tx streaming policy now lives in the transport).

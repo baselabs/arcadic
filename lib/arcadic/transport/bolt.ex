@@ -180,10 +180,10 @@ if Code.ensure_loaded?(Boltx) do
     end
 
     @impl true
-    def execute(%Conn{} = conn, _mode, %{statement: statement, params: params}, _opts) do
+    def execute(%Conn{} = conn, _mode, %{statement: statement, params: params}, opts) do
       query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
 
-      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
+      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), exec_opts(opts)) do
         {:ok, _query, %Boltx.Response{} = resp} -> rows_or_use_explain(resp)
         {:error, %Boltx.Error{} = e} -> {:error, bolt_error(e)}
         {:error, other} -> {:error, %TransportError{reason: transport_reason(other)}}
@@ -211,14 +211,14 @@ if Code.ensure_loaded?(Boltx) do
     @impl true
     @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
             Arcadic.Transport.plan_result()
-    def explain(%Conn{} = conn, %{statement: statement, params: params}, _opts) do
+    def explain(%Conn{} = conn, %{statement: statement, params: params}, opts) do
       # statement already carries EXPLAIN/PROFILE (facade-prepended). Bolt returns the plan in
       # resp.plan (EXPLAIN) or resp.profile (PROFILE) — pick whichever is set. `plan` (the human
       # string) lives at ["args"]["string-representation"]; `plan_tree` is the raw summary map;
       # `results` holds executed rows (same shape execute/4 returns; empty for EXPLAIN).
       query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
 
-      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), []) do
+      case DBConnection.prepare_execute(bolt(conn), query, format_params(params), exec_opts(opts)) do
         {:ok, _query, %Boltx.Response{} = resp} ->
           {:ok, build_plan(resp)}
 
@@ -694,9 +694,26 @@ if Code.ensure_loaded?(Boltx) do
     defp bolt_code(%{code: code}), do: code
     defp bolt_code(_), do: nil
 
-    # boltx/db_connection error paths always yield an Exception struct (see
-    # DBConnection.prepare_execute/4 :: {:error, Exception.t()}), so the reason is
-    # the exception module. A non-struct fallback would be dead code (dialyzer).
-    defp transport_reason(%{__struct__: mod}), do: mod
+    # db_connection-relevant opts to thread into `DBConnection.prepare_execute/4` — currently just
+    # `:timeout` (the caller's query timeout, forwarded by the facade). When the caller omits it this
+    # is `[]`, so db_connection uses its own default (unchanged behavior). Arcadic opts (:language,
+    # :limit, :serializer, :retries, …) are NOT db_connection opts and must not leak into the pool
+    # call. `@doc false` + public so the filter is unit-testable server-free.
+    @doc false
+    @spec exec_opts(keyword()) :: keyword()
+    def exec_opts(opts), do: Keyword.take(opts, [:timeout])
+
+    # An already-typed arcadic error carries a MEANINGFUL `:reason` — e.g. `:cursor_open` from the
+    # tx cursor-desync guard (`Connection.handle_execute/4`), surfaced by db_connection as
+    # `{:error, %TransportError{reason: :cursor_open}}`. Extract it, don't collapse to the struct
+    # MODULE (which double-wrapped it as `reason: Arcadic.TransportError` and lost `:cursor_open`).
+    # Only a RAW boltx/db_connection exception (no arcadic `:reason`) falls back to its module name.
+    # `@doc false` + public so the mapping is unit-testable server-free (mirrors stream_error/1,
+    # map_transaction_outcome/1, build_plan/1).
+    @doc false
+    @spec transport_reason(term()) :: atom()
+    def transport_reason(%TransportError{reason: reason}), do: reason
+    def transport_reason(%Error{reason: reason}), do: reason
+    def transport_reason(%{__struct__: mod}), do: mod
   end
 end
