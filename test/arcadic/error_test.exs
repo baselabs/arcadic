@@ -96,10 +96,10 @@ defmodule Arcadic.ErrorTest do
 
       u = %Arcadic.Error{
         reason: :use_explain,
-        message: "use Arcadic.explain/3 or Arcadic.profile/3"
+        message: "use Arcadic.explain/4 or Arcadic.profile/4"
       }
 
-      assert Exception.message(u) =~ "explain/3"
+      assert Exception.message(u) =~ "explain/4"
     end
 
     test "message/1 keeps the generic render for a server reason (:message stays quarantined — Rule 3)" do

@@ -32,9 +32,11 @@ defmodule Arcadic.Error do
   Client-side (raised BY arcadic, never by the server — the statement never left
   the process):
 
-  - `:use_explain` — `query`/`command`/`query_stream` was called on a statement
-    that already carries an `EXPLAIN`/`PROFILE` prefix; call `explain/4`/`profile/4`
-    instead (see `Arcadic.Result.normalize/1`).
+  - `:use_explain` — `query`/`command` (either transport) or `query_stream` (HTTP)
+    was called on a statement that already carries an `EXPLAIN`/`PROFILE` prefix,
+    which returns a plan rather than rows; call `explain/4`/`profile/4` instead. The
+    guard is response-layer: HTTP via `Arcadic.Result.normalize/1`, Bolt via the
+    `execute/4` plan-presence check.
   - `:not_supported` — the active transport doesn't implement the called
     capability (e.g. `explain/4` against a transport without it, HTTP streaming
     inside a transaction, Bolt's admin-only calls, async writes without

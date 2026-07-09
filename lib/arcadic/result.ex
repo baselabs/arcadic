@@ -9,7 +9,7 @@ defmodule Arcadic.Result do
   An EXPLAIN/PROFILE envelope carries its plan under `explainPlan` (never `result`),
   so `normalize/1` returns `{:error, %Arcadic.Error{reason: :use_explain}}` for it
   rather than a silent empty row set. The plan surface is `normalize_plan/1`,
-  consumed by `Arcadic.explain/3` and `Arcadic.profile/3`.
+  consumed by `Arcadic.explain/4` and `Arcadic.profile/4`.
   """
 
   @stripped_keys ~w(@props)
@@ -36,7 +36,7 @@ defmodule Arcadic.Result do
      %Arcadic.Error{
        reason: :use_explain,
        message:
-         "EXPLAIN/PROFILE returns an execution tree, not rows — use Arcadic.explain/3 or Arcadic.profile/3"
+         "EXPLAIN/PROFILE returns an execution tree, not rows — use Arcadic.explain/4 or Arcadic.profile/4"
      }}
   end
 

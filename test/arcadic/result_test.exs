@@ -85,7 +85,7 @@ defmodule Arcadic.ResultTest do
       body = %{"result" => [], "explain" => "plan", "explainPlan" => %{"type" => "x"}}
       assert {:error, %Arcadic.Error{reason: :use_explain} = e} = Result.normalize(body)
       refute e.message =~ "plan"
-      assert e.message =~ "explain/3"
+      assert e.message =~ "explain/4"
     end
 
     test "a normal response is unaffected by the guard" do
