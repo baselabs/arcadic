@@ -42,7 +42,7 @@ you launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_BOLT_HOST`, `ARCADIC_BOLT_PORT
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.2"},
+  {:arcadic, "~> 0.4"},
   {:boltx, "~> 0.0.6"},
   {:kino, "~> 0.14"}
 ])
@@ -128,6 +128,39 @@ call with `language:` — here, SQL.
 Arcadic.query!(conn, "SELECT name, role FROM Person ORDER BY name", %{}, language: "sql")
 ```
 
+## Inspecting the plan (EXPLAIN)
+
+`Arcadic.explain!/4` prepends `EXPLAIN` and returns the query plan **without running
+the statement** — handy for checking how ArcadeDB will resolve a query (by type scan,
+bucket, or index) before you run it for real. It returns a `%{plan, plan_tree, rows}`
+map; `.plan` is the human-readable summary (`plan_tree` holds the raw, transport-defined
+tree and `rows` is empty for EXPLAIN).
+
+> **Careful with its sibling.** `Arcadic.profile!/4` looks similar but **executes** the
+> statement to collect real runtime metrics — on a write it mutates. Don't profile a
+> write unless you want the effect.
+
+```elixir
+Arcadic.explain!(conn, "SELECT FROM Person", %{}, language: "sql").plan
+```
+
+## Streaming large results over HTTP
+
+`Arcadic.query_stream/4` streams a large read as a lazy `Stream` over the default
+**HTTP** transport — no Bolt setup required (it runs over Bolt too, shown next). It
+pages a WHERE-less `SELECT`/`MATCH` behind the scenes (an `@rid` keyset for SQL) so the
+whole result never has to sit in memory at once, and returns `{:ok, stream}`.
+`chunk_size: 5` is the page size — the rows fetched per round-trip. With only the two
+people seeded above the whole result fits one page, but the cursor pages automatically
+as the type grows.
+
+```elixir
+{:ok, page_stream} =
+  Arcadic.query_stream(conn, "SELECT FROM Person", %{}, language: "sql", chunk_size: 5)
+
+page_stream |> Enum.to_list() |> Kino.DataTable.new()
+```
+
 ## Streaming large results over Bolt
 
 For large result sets, `Arcadic.query_stream/4` returns a lazy `Stream` of rows
@@ -161,6 +194,14 @@ bolt_conn =
 stream |> Enum.to_list() |> Kino.DataTable.new()
 ```
 
+> **Bolt over TLS.** `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ...)` is secure by
+> default (verifies the server certificate). This notebook does not demo it: a
+> verify_peer handshake against an untrusted cert can currently wedge ArcadeDB's
+> **shared** Bolt listener server-side (an upstream ArcadeDB defect, not arcadic's — see
+> the [README's TLS section](../README.md#bolt-transport-optional) and
+> [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106)).
+> Don't paste a `bolt+s` connect into this notebook against a server you don't control.
+
 ## Migrations
 
 `Arcadic.Migrator` runs `Arcadic.Migration`s in order and records applied versions
@@ -188,6 +229,15 @@ end
 {applied, status}
 ```
 
+## Schema introspection
+
+`Arcadic.Schema` reads the database's own catalog — the `Widget` type the migration
+above just created shows up here too.
+
+```elixir
+Arcadic.Schema.types!(conn)
+```
+
 ## Server admin
 
 `Arcadic.Server` covers server-level operations. Database identifiers are
@@ -198,6 +248,19 @@ allowlist-validated before they reach the wire.
 {:ok, exists?} = Arcadic.Server.database_exists?(admin, database)
 {databases, exists?}
 ```
+
+## Beyond this notebook
+
+Two more areas `Arcadic` covers that don't fit a quickstart cell:
+
+- **`Arcadic.Vector`** builds and queries ArcadeDB's `LSM_VECTOR`-backed indexes for
+  similarity search — e.g.
+  `Arcadic.Vector.create_dense_index!(conn, "Person", "embedding", 384)`, then
+  `Arcadic.Vector.neighbors!/5` for a k-NN lookup.
+- **`Arcadic.Import`/`Arcadic.Export`** wrap ArcadeDB's bulk `IMPORT DATABASE`/`EXPORT
+  DATABASE` commands — e.g.
+  `Arcadic.Export.database!(conn, "backup", with: [format: "jsonl"])` writes a bare,
+  allowlisted export name server-side (never a path).
 
 ## Cleanup
 
