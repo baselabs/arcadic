@@ -387,12 +387,16 @@ default** (verifies the server certificate against the OS trust store); pass
 `ssl_opts: [verify: :verify_none]` to opt out (documents the MITM exposure — only for a trusted
 network path, e.g. local dev).
 
-> **Operator note — upstream ArcadeDB Bolt-TLS hazard.** With ArcadeDB's Bolt-TLS listener enabled,
-> a single untrusted-cert TLS handshake failure can wedge the server's **shared** Bolt listener: it
-> pins a core at ~100% CPU and stops answering (no ServerHello) for every subsequent client until
-> ArcadeDB is restarted. This is an ArcadeDB **server** defect, not an arcadic one — arcadic's
-> client-side TLS (secure-by-default `verify_peer`, fail-closed on an untrusted cert) is unaffected
-> and live-verified. Tracked upstream at
+> **Operator note — upstream ArcadeDB Bolt-TLS hazard (older builds only).** On older ArcadeDB
+> builds, with the Bolt-TLS listener enabled, a single untrusted-cert TLS handshake failure could
+> wedge the server's **shared** Bolt listener: it pinned a core at ~100% CPU and stopped answering
+> (no ServerHello) for every subsequent client until ArcadeDB was restarted. This is an ArcadeDB
+> **server** defect, not an arcadic one — arcadic's client-side TLS (secure-by-default `verify_peer`,
+> fail-closed on an untrusted cert) is unaffected. **Re-verified FIXED on ArcadeDB 26.8.1-SNAPSHOT
+> (build `5cc625613`, 2026-07-09):** after a `verify_peer` `unknown_ca` rejection the listener kept
+> answering ServerHello for all subsequent clients with idle CPU (probed on a throwaway container).
+> The hazard was still observed on the `latest` image as of 2026-07-06, so if you run an older
+> ArcadeDB build, treat it as present and upgrade. Tracked upstream at
 > [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
 
 ## Bolt transport (optional)
