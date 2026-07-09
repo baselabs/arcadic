@@ -130,6 +130,12 @@ Arcadic.query!(conn, "SELECT name, role FROM Person ORDER BY name", %{}, languag
 
 ## Inspecting the plan (EXPLAIN)
 
+> **Requires arcadic ≥ 0.5.** `explain/4`/`profile/4` are not yet in a published release, so
+> this cell raises `UndefinedFunctionError` under the `{:arcadic, "~> 0.4"}` pin above. To run
+> it today, point the install at the repo instead —
+> `{:arcadic, github: "baselabs/arcadic"}` (or a local `path:` dep). Once 0.5 publishes, the
+> `~> 0.4` pin resolves to it and this note no longer applies.
+
 `Arcadic.explain!/4` prepends `EXPLAIN` and returns the query plan **without running
 the statement** — handy for checking how ArcadeDB will resolve a query (by type scan,
 bucket, or index) before you run it for real. It returns a `%{plan, plan_tree, rows}`
