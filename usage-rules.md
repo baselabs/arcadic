@@ -13,10 +13,18 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 
 - **`Arcadic`** — `connect/3`, `with_database/2`; `query/4` + `query!/4`
   (idempotent read endpoint), `command/4` + `command!/4` (write endpoint),
-  `command_async/4` (fire-and-forget, returns `:ok` on 202); `transaction/3` and
+  `command_async/4` (fire-and-forget, returns `:ok` on 202); `explain/4` + `explain!/4`
+  (execution plan, **does NOT run** the statement) and `profile/4` + `profile!/4`
+  (**EXECUTES** the statement — a write mutates — plan annotated with runtime
+  metrics), both returning `{:ok, %{plan: String.t(), plan_tree: map(), rows:
+  [map()]}}` (`plan` the portable human string, `plan_tree` the raw
+  transport-defined structure, `rows` empty for `explain/4`); `transaction/3` and
   `rollback/2` for session transactions. Non-bang calls return `{:ok, rows}` or
   `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`. Default language is
   `"cypher"`; opt into `sql`/`gremlin`/`graphql`/`mongo`/`sqlscript` per call.
+  `query/4`/`command/4`/`query_stream/4` on a statement already carrying an
+  `EXPLAIN`/`PROFILE` prefix return `{:error, %Arcadic.Error{reason: :use_explain}}`
+  — call `explain/4`/`profile/4` instead.
 - **`Arcadic.Conn`** — a pure-data connection handle (no process). Its `Inspect`
   redacts auth and session id.
 - **`Arcadic.Server`** — server admin: `create_database/2` (+ `!`),
@@ -27,8 +35,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   tracking applied versions in `_arcadic_migrations`.
 - **`Arcadic.Vector`** — dense + sparse vector search over ArcadeDB `LSM_VECTOR` /
   `LSM_SPARSE_VECTOR`: `create_dense_index/5`, `drop_dense_index/3`, `neighbors/6`,
-  `fuse/3`, `index_ref/2`, plus `create_sparse_index/5`, `drop_sparse_index/4`,
-  `sparse_neighbors/8` (all + `!`). Tenant-blind; query vector / tokens / weights / `k` /
+  `fuse/3`, `index_ref/2`, plus `create_sparse_index/5`, `sparse_index_ref/3`,
+  `drop_sparse_index/4`, `sparse_neighbors/8` (all + `!`). Tenant-blind; query vector / tokens / weights / `k` /
   `ef_search` / `max_distance` bind as params, index refs are identifier-validated, and
   metadata / query / fusion option inputs are allowlisted and validated value-free.
   Shared opts on `neighbors` / `sparse_neighbors` / `fuse`: `filter` (non-empty
@@ -40,7 +48,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.Schema`** — read-only schema introspection: `types/1`, `properties/2`,
   `indexes/2` (with a `:type` filter), `buckets/1`, and `database/1` (the engine config,
   `schema:database`) (all + `!`). SQL-only `SELECT FROM
-  schema:*`; a caller type name binds as a `$param` and is `Identifier`-shape-guarded;
+  schema:*`; a caller type name binds as a SQL `:name` param (never `$name` — see
+  Parameter binding below) and is `Identifier`-shape-guarded;
   ArcadeDB's `@props` serializer noise is deep-stripped at every depth. `indexes/2` returns
   both logical and physical per-bucket rows (filter on `fileId` absence for logical-only).
 - **`Arcadic.Import`** — `database/3` (+ `!`): `IMPORT DATABASE` bulk load. The source URL is
@@ -72,7 +81,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   Bolt-only, over the transaction's own connection (so it sees the transaction's own uncommitted
   writes), guarded so a `command`/`query` on that same conn cannot interleave an open cursor on the
   shared socket. **Consume an in-tx stream INSIDE the `transaction/3` body** — it is bound to the
-  transaction's connection and cannot be enumerated after the transaction returns.
+  transaction's connection and cannot be enumerated after the transaction returns. ArcadeDB aborts
+  a server-side scan cursor idle for ~10 minutes (`parallelScanAbandonedTimeout`) — a Bolt
+  `query_stream/4` consumer that pauses between `PULL`s longer than that can have its cursor
+  abandoned mid-stream, so keep pulling.
 - **Bolt TLS** — `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ssl_opts: [...])` runs Bolt over
   TLS. `bolt+s` is **secure by default**: it verifies the server certificate against the OS trust
   store (`verify_peer`) unless the caller passes `ssl_opts: [verify: :verify_none]` — an explicit
@@ -109,9 +121,11 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 ## Non-negotiable rules
 
 - **Parameters only.** Every dynamic value goes into the request `params` map and
-  is referenced as `$name` in the statement. Never interpolate a value into a
-  Cypher/SQL string — that is a query-injection defect. This holds for
-  `query/4`, `command/4`, `command_async/4`, and inside `transaction/3`.
+  is referenced by a placeholder in the statement — **`$name` for Cypher, `:name`
+  for SQL** (see Parameter binding below; never interpolate a value into a
+  Cypher/SQL string — that is a query-injection defect). This holds for
+  `query/4`, `command/4`, `command_async/4`, `query_stream/4`, `explain/4`,
+  `profile/4`, and inside `transaction/3`.
 - **Redact at the boundary.** Errors and logs carry structure only.
   `Arcadic.Error` exposes a typed `reason`, `http_status`, and `exception` class;
   its `detail` field is quarantined (absent from `message/1` and `inspect/1`).
@@ -122,14 +136,96 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   carries the invalid-shape fact only, never the offending string). Values are
   never identifiers — they ride `params`.
 
+## Parameter binding
+
+**SQL binds `:name`; Cypher binds `$name`.** A `$name` placeholder in a
+`language: "sql"` statement binds to **null** (ArcadeDB does not error — a silent
+mis-bind); a `:name` placeholder in Cypher (or any default-language call) is a
+**parse error**.
+
+```elixir
+# SQL
+Arcadic.query(conn, "SELECT FROM User WHERE name = :name", %{"name" => n}, language: "sql")
+# Cypher (default language)
+Arcadic.query(conn, "MATCH (u:User {name: $name}) RETURN u", %{"name" => n})
+```
+
+## Options reference
+
+Which options each function accepts (an unknown key is rejected value-free):
+
+| opt | `query/4` | `command/4` / `command_async/4` | `query_stream/4` | `explain/4` / `profile/4` |
+|---|---|---|---|---|
+| `:language` | yes | yes | yes | yes |
+| `:limit` | yes | yes | no | no |
+| `:serializer` | yes | yes | no | no |
+| `:retries` | no | yes | no | no |
+| `:timeout` | yes | yes | yes | yes |
+| `:chunk_size` | no | no | yes | no |
+| `:order_key` | no | no | yes (Cypher only) | no |
+
+## Errors
+
+`Arcadic.Error.reason`: `:not_idempotent` (write via `query/4`), `:parse_error`,
+`:unauthorized` (auth failure, or a blocked private/loopback import URL),
+`:database_not_found`, `:transaction_error` (server fault, or client-side session
+misuse), `:concurrent_modification`, `:duplicate_key`, `:timeout` (server-side
+statement timeout — distinct from the client-side `TransportError` below),
+`:invalid_begin_body` (bad `:isolation` on `transaction/3`), `:server_error`
+(generic fallback), `:use_explain` (call `explain/4`/`profile/4` instead), and
+`:not_supported` (the transport lacks the called capability, e.g. `explain/4`
+without a transport impl, HTTP streaming in a transaction, Bolt database admin —
+or the statement/opts fail a streaming-eligibility check).
+
+`Arcadic.TransportError.reason` is a connection-level failure with **no HTTP
+response** — the underlying transport's own atom, not a fixed enum: for HTTP,
+whatever Mint/Finch reports (e.g. `:timeout`, `:closed`, `:econnrefused`); for
+Bolt, `:timeout` (a RUN/PULL receive timeout), `:bolt_protocol_error`,
+`:transaction_error`, `:cursor_open`/`:cursor_already_open` (the stream
+interleaving guard), a `boltx` error code, or `:unknown`.
+
+A separate, non-`Arcadic.Error` convention: an invalid identifier (e.g. a bad type
+name to `Arcadic.Schema.properties/2`) returns the bare `{:error,
+:invalid_identifier}`, never echoing the offending string.
+
+## Telemetry
+
+Value-free `:telemetry.span/3` spans; metadata is validated against the fixed
+allowlist in `Arcadic.Telemetry.allowed_meta_keys/0`: `:language`, `:mode`,
+`:http_status`, `:reason`, `:row_count`, `:in_transaction?`, `:isolation`,
+`:async?`. No statement, params, values, or database name ever rides telemetry.
+
+- `[:arcadic, :query, :start | :stop | :exception]` — `query/4`.
+- `[:arcadic, :command, :start | :stop | :exception]` — `command/4` and
+  `command_async/4` (the latter's metadata carries `:async? true`).
+- `[:arcadic, :explain, :start | :stop | :exception]` — `explain/4` (`:mode`
+  `:read`) and `profile/4` (`:mode` `:write`, carries `:in_transaction?`, since
+  PROFILE executes).
+- `[:arcadic, :query_stream, :start]` / `[:arcadic, :query_stream, :stop]` — every
+  HTTP and Bolt stream path (manual `:telemetry.execute/3` events, not a span — no
+  `:exception` variant); `:stop` carries `reason: :ok | :halted` plus a
+  `:row_count` measurement.
+- `[:arcadic, :transaction, :start | :stop | :exception]` — `transaction/3`
+  (metadata carries `:isolation`).
+- `[:arcadic, :vector, :sparse_index_preexisting]` — see `Arcadic.Vector` above.
+
+`:start` measurements are `:telemetry.span/3`'s standard `:system_time`/
+`:monotonic_time`; `:stop`/`:exception` carry `:duration`/`:monotonic_time`.
+
 ## Bolt transport (optional)
 
 The `Arcadic.Transport.Bolt` adapter (optional `boltx` dependency) runs the query
-hot path over Bolt. Start it with `Arcadic.Transport.Bolt.start_link/1`, which
-pins Bolt to **v4** (`versions: [4.4, 4.3, 4.2, 4.1]` — ArcadeDB speaks v4;
-boltx defaults to v5), uses the non-TLS **`bolt` scheme** (ArcadeDB Bolt is
-TLS-disabled by default), and takes `username`/`password`. Pass the connection
-reference as `transport: Arcadic.Transport.Bolt, transport_options: [bolt: ref]`.
+hot path over Bolt. Build it with `Arcadic.Transport.Bolt.setup/1`, which pins Bolt
+to **v4** (`versions: [4.4, 4.3, 4.2, 4.1]` — ArcadeDB speaks v4; boltx defaults to
+v5), uses the non-TLS **`bolt` scheme** (ArcadeDB Bolt is TLS-disabled by default),
+and takes `username`/`password`. `setup/1` starts the pool AND returns the
+`transport_options` for `Arcadic.connect/3` in one call — `[bolt: pool, bolt_opts:
+resolved]` — carrying both the pool (`:bolt`, for `execute`/`transaction`/`ready?`)
+and the resolved per-stream connect opts (`:bolt_opts`, for `query_stream/4`); pass
+its return value straight through as `transport_options`. Do NOT hand-build
+`transport_options: [bolt: pool]` alone (`start_link/1`'s bare return) — it omits
+`:bolt_opts` and makes `query_stream/4` return `{:error, %Arcadic.Error{reason:
+:not_supported}}`.
 **Server admin (create/drop/list database) is HTTP-only** — use an HTTP conn for
 admin even when queries run over Bolt. **Vector search is HTTP-only too** —
 `Arcadic.Vector` (`LSM_VECTOR` / `LSM_SPARSE_VECTOR`) runs SQL, and Bolt is

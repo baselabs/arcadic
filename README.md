@@ -58,7 +58,8 @@ conn = Arcadic.connect("http://localhost:2480", "mydb", auth: {"root", pass})
   end)
 ```
 
-Every dynamic value reaches ArcadeDB **only as a bound parameter** (`$name`).
+Every dynamic value reaches ArcadeDB **only as a bound parameter** (`$name` here is
+Cypher; SQL uses `:name` — see [Parameter binding by language](#parameter-binding-by-language)).
 `query/4` hits the idempotent read endpoint; `command/4` hits the write endpoint.
 Both return `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`;
 `query!/4` and `command!/4` return the rows or raise. `command_async/4` submits a
@@ -69,6 +70,134 @@ fire-and-forget write, returning `:ok` once ArcadeDB accepts it for processing
 `Arcadic.transaction/3` opens an ArcadeDB session, runs the fun with a
 session-scoped conn, and commits on normal return. An exception rolls back and
 reraises; `Arcadic.rollback/2` aborts intentionally and yields `{:error, reason}`.
+
+## Parameter binding by language
+
+Every dynamic value is a bound parameter, never string interpolation — but the
+placeholder syntax is language-specific: **SQL binds `:name`; Cypher binds `$name`**.
+The two fail differently if swapped: a `$name` placeholder in a `language: "sql"`
+statement binds to **null** (ArcadeDB does not error — a silent mis-bind), while a
+`:name` placeholder in Cypher (or any default-language call) is a **parse error**.
+
+```elixir
+# SQL — :name
+{:ok, rows} =
+  Arcadic.query(conn, "SELECT FROM User WHERE name = :name", %{"name" => "Jo"}, language: "sql")
+
+# Cypher (the default language) — $name
+{:ok, rows} =
+  Arcadic.query(conn, "MATCH (u:User {name: $name}) RETURN u", %{"name" => "Jo"})
+```
+
+## EXPLAIN & PROFILE
+
+`Arcadic.explain/4` returns a statement's execution plan **without running it** —
+plan-only and side-effect-free, so it is safe to call on a write statement.
+`Arcadic.profile/4` **executes** the statement — a write mutates — and annotates the
+plan with real runtime metrics. Both prepend `EXPLAIN `/`PROFILE ` to the statement and
+return `{:ok, %{plan: String.t(), plan_tree: map(), rows: [map()]}}`: `plan` is the
+portable, human-readable plan string; `plan_tree` is the raw, transport-defined plan
+structure (its shape differs between HTTP and Bolt); `rows` is `[]` for `explain/4` and
+the executed rows for `profile/4`. Both accept only `:language` (default `"cypher"`) and
+`:timeout` — `:retries`/`:limit`/`:serializer` are rejected value-free (a plan is not a
+retried, paged, or serialized row set). Bolt support is Cypher-only, same as everywhere
+else in arcadic.
+
+```elixir
+{:ok, plan} = Arcadic.explain(conn, "MATCH (u:User) RETURN u")
+plan.rows #=> []
+
+{:ok, profiled} =
+  Arcadic.profile(conn, "CREATE (u:User {name: $name}) RETURN u", %{"name" => "Jo"})
+profiled.rows #=> [%{"u" => %{...}}]  # the write ran
+```
+
+Calling `query/4`, `command/4`, or `query_stream/4` on a statement that already carries
+an `EXPLAIN`/`PROFILE` prefix now returns `{:error, %Arcadic.Error{reason: :use_explain}}`
+(previously a silent `{:ok, []}`) — use `explain/4`/`profile/4` instead.
+
+## Options reference
+
+Which options each function accepts (an unknown key is rejected value-free):
+
+| opt | `query/4` | `command/4` / `command_async/4` | `query_stream/4` | `explain/4` / `profile/4` |
+|---|---|---|---|---|
+| `:language` | yes | yes | yes | yes |
+| `:limit` | yes | yes | no | no |
+| `:serializer` | yes | yes | no | no |
+| `:retries` | no | yes | no | no |
+| `:timeout` | yes | yes | yes | yes |
+| `:chunk_size` | no | no | yes | no |
+| `:order_key` | no | no | yes (Cypher only) | no |
+
+## Errors
+
+Non-bang calls return `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`.
+`Arcadic.Error.reason` is one of:
+
+- `:not_idempotent` — a write submitted to the read endpoint (`query/4`)
+- `:parse_error` — a statement syntax error
+- `:unauthorized` — an ArcadeDB `SecurityException` (an auth failure, or a blocked
+  private/loopback import URL — see [Schema introspection and bulk import](#schema-introspection-and-bulk-import))
+- `:database_not_found`
+- `:transaction_error` — a server transaction fault, or a client-side session misuse
+  (nesting, or a commit/rollback with no active session)
+- `:concurrent_modification` — an optimistic-concurrency or retry-needed conflict
+- `:duplicate_key`
+- `:timeout` — a server-side statement timeout (distinct from
+  `%Arcadic.TransportError{reason: :timeout}`, the client-side connection timeout)
+- `:invalid_begin_body` — an invalid `:isolation` value on `transaction/3`
+- `:server_error` — the generic fallback for an unmatched or absent ArcadeDB exception
+- `:use_explain` — `query/4`/`command/4`/`query_stream/4` called on a statement that
+  already carries an `EXPLAIN`/`PROFILE` prefix; call `explain/4`/`profile/4` instead
+- `:not_supported` — the active transport doesn't implement the called capability
+  (e.g. `explain/4` on a transport without it, HTTP streaming inside a transaction,
+  Bolt database admin) or the statement/opts fail a streaming-eligibility check
+
+`Arcadic.TransportError.reason` is a connection-level failure with no HTTP response —
+the underlying transport's own atom, not a fixed enum: for HTTP, whatever Mint/Finch
+reports (e.g. `:timeout`, `:closed`, `:econnrefused`); for Bolt, `:timeout` (a RUN/PULL
+receive timeout), `:bolt_protocol_error`, `:transaction_error`, `:cursor_open` /
+`:cursor_already_open` (the stream-interleaving guard), a `boltx` error code, or
+`:unknown` as a last-resort fallback.
+
+A separate, non-`Arcadic.Error` convention: an invalid identifier (e.g. a bad type name
+to `Arcadic.Schema.properties/2`) returns the bare `{:error, :invalid_identifier}`, never
+echoing the offending string.
+
+## Telemetry
+
+arcadic emits value-free `:telemetry.span/3` spans — metadata is validated against a
+fixed allowlist (`Arcadic.Telemetry.allowed_meta_keys/0`): `:language`, `:mode`,
+`:http_status`, `:reason`, `:row_count`, `:in_transaction?`, `:isolation`, `:async?`. No
+statement, params, values, or database name ever rides telemetry.
+
+- `[:arcadic, :query, :start | :stop | :exception]` — `query/4`. Metadata: `:language`,
+  `:mode` (`:read`), plus `:http_status`/`:reason`/`:row_count` on `:stop`.
+- `[:arcadic, :command, :start | :stop | :exception]` — both `command/4` and
+  `command_async/4`. Shared metadata: `:language`, `:mode` (`:write`), plus `:reason`
+  on `:stop`. `command/4` also carries `:in_transaction?` (start) and
+  `:http_status`/`:row_count` (on its success case); `command_async/4` instead carries
+  `:async? true` and, being fire-and-forget, has no rows to count.
+- `[:arcadic, :explain, :start | :stop | :exception]` — both `explain/4` (`:mode`
+  `:read`) and `profile/4` (`:mode` `:write`, carries `:in_transaction?`, since PROFILE
+  executes). Otherwise mirrors `:query`/`:command`; `:row_count` is `0` for a bare
+  EXPLAIN.
+- `[:arcadic, :query_stream, :start]` / `[:arcadic, :query_stream, :stop]` — every HTTP
+  and Bolt stream path (manual `:telemetry.execute/3` events, not a span — no
+  `:exception` variant). `:start` metadata is `%{mode: :read}`; `:stop` carries
+  `%{mode: :read, reason: :ok | :halted}` (`:ok` drained, `:halted` stopped early) plus a
+  `:row_count` measurement.
+
+arcadic also emits `[:arcadic, :transaction, :start | :stop | :exception]`
+(`transaction/3`, metadata carrying `:isolation`) and the standalone
+`[:arcadic, :vector, :sparse_index_preexisting]` event (see
+[Vector search](#vector-search)) under the same allowlist.
+
+`:start` measurements are `:telemetry.span/3`'s standard `:system_time`/`:monotonic_time`;
+`:stop` and `:exception` carry `:duration`/`:monotonic_time`. An `:exception` event's
+metadata is the span's *start* metadata (not the `:stop`-only additions like `:reason`)
+plus `:kind`/`:reason`/`:stacktrace`, added by `:telemetry` itself.
 
 ## Production pool
 
@@ -172,11 +301,12 @@ rows are ranked by `score` (higher is better); `sparse_neighbors/8` rows carry `
 and no `distance`. The Ash-native data-layer surface remains a non-goal (owned by the
 sibling `ash_arcadic`).
 
-## Schema introspection & bulk import
+## Schema introspection and bulk import
 
 `Arcadic.Schema` reflects the live schema, tenant-blind and `@props`-stripped. Every
-query is arcadic's own fixed `SELECT FROM schema:*` literal; a caller type name binds as
-a `$param` (never interpolated) and is identifier-shape-guarded.
+query is arcadic's own fixed `SELECT FROM schema:*` literal, SQL-only (see
+[Parameter binding by language](#parameter-binding-by-language)); a caller type name
+binds as a SQL `:name` parameter (never interpolated) and is identifier-shape-guarded.
 
 ```elixir
 {:ok, types}   = Arcadic.Schema.types(conn)
@@ -246,6 +376,12 @@ writes) and guarded against interleaving a `command`/`query` on the same socket 
 open. Consume an in-transaction stream **inside** the `transaction/3` body — it is bound to the
 transaction's connection.
 
+> **ArcadeDB `parallelScanAbandonedTimeout` caveat.** ArcadeDB aborts a server-side scan cursor
+> left idle for roughly 10 minutes. A Bolt `query_stream/4` consumer that pauses between `PULL`s
+> longer than that (slow per-row processing, backpressure) can have its cursor abandoned
+> server-side mid-stream — keep pulling, or move per-row processing off the enumeration path so
+> the stream itself isn't the bottleneck.
+
 Bolt can also run over TLS: `Arcadic.Transport.Bolt.setup(scheme: "bolt+s", ...)` is **secure by
 default** (verifies the server certificate against the OS trust store); pass
 `ssl_opts: [verify: :verify_none]` to opt out (documents the MITM exposure — only for a trusted
@@ -262,16 +398,20 @@ network path, e.g. local dev).
 ## Bolt transport (optional)
 
 The query hot path can run over Bolt via the optional
-[`boltx`](https://hex.pm/packages/boltx) dependency. Add `{:boltx, "~> 0.0.6"}`,
-start a Bolt connection with `Arcadic.Transport.Bolt.start_link/1` (it pins Bolt
-v4 — `versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which
-ArcadeDB uses, and takes `username`/`password`), then pass the connection
-reference. Server admin runs over HTTP; use an HTTP conn for it even when queries
-go over Bolt.
+[`boltx`](https://hex.pm/packages/boltx) dependency. Add `{:boltx, "~> 0.0.6"}`, then
+build the connection with `Arcadic.Transport.Bolt.setup/1` (it pins Bolt v4 —
+`versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which ArcadeDB uses,
+and takes `username`/`password`). `setup/1` starts the pool AND returns the
+`transport_options` for `Arcadic.connect/3` in one call, carrying both `:bolt` (the pool,
+used by `execute`/`transaction`/`ready?`) and `:bolt_opts` (the resolved per-stream
+connect opts, used by `query_stream/4`) — pass its whole return value straight through
+as `transport_options`. A bare `transport_options: [bolt: pool]` (skipping `setup/1`)
+omits `:bolt_opts` and makes `query_stream/4` return `{:error, %Arcadic.Error{reason:
+:not_supported}}`.
 
 ```elixir
-{:ok, bolt} =
-  Arcadic.Transport.Bolt.start_link(
+{:ok, transport_options} =
+  Arcadic.Transport.Bolt.setup(
     hostname: "localhost", port: 7687, username: "root", password: pass
   )
 
@@ -279,7 +419,7 @@ conn =
   Arcadic.connect("http://localhost:2480", "mydb",
     auth: {"root", pass},
     transport: Arcadic.Transport.Bolt,
-    transport_options: [bolt: bolt]
+    transport_options: transport_options
   )
 ```
 
@@ -317,7 +457,7 @@ Add `arcadic` from [Hex](https://hex.pm/packages/arcadic):
 ```elixir
 def deps do
   [
-    {:arcadic, "~> 0.2"},
+    {:arcadic, "~> 0.4"},
     # optional, for the Bolt transport:
     {:boltx, "~> 0.0.6"}
   ]
