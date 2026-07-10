@@ -350,6 +350,14 @@ defmodule Arcadic.Vector do
   # maybe_put_filter in fuse/3); the FT arm interpolates the RIDs as LITERALS (@rid IN [...]) — the
   # proven keyset-cursor path, NOT param-bound @rid (dead per S5). The RIDs were allowlist-validated
   # by fuse_filter! -> validate_rids! before reaching here.
+  # ArcadeDB's `vector.fuse` requires at least 2 sources — a single-source fuse raises server-side
+  # ("requires at least 2 sources, got 1"). Reject a one-element spec list client-side, value-free
+  # (the count carries no caller value), before emitting a statement the server would reject. Empty
+  # and non-list specs still fall to the total fallback below (its existing non-empty message).
+  defp build_subqueries([_single], _filter) do
+    raise ArgumentError, "neighbor_specs must contain at least 2 sources"
+  end
+
   defp build_subqueries(specs, filter) when is_list(specs) and specs != [] do
     with_filter = filter != nil
     rid_literals = if with_filter, do: " AND @rid IN [#{Enum.join(filter, ", ")}]", else: ""

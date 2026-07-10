@@ -346,16 +346,34 @@ defmodule Arcadic.VectorTest do
       assert body["params"] == %{"vec0" => [1.0, 0.0], "k0" => 3, "vec1" => [0.0, 1.0], "k1" => 3}
     end
 
+    test "rejects a single-source spec list value-free (ArcadeDB fuse requires >= 2 sources)" do
+      # ArcadeDB's vector.fuse raises server-side on one source ("requires at least 2 sources,
+      # got 1"). Reject a single-element spec list client-side, value-free, before emitting it.
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 3}])
+        end
+
+      assert err.message =~ "at least 2 sources"
+    end
+
     test "defaults fusion to RRF and rejects a bad fusion strategy value-free" do
       Req.Test.stub(__MODULE__, fn c ->
         send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
         Req.Test.json(c, %{"result" => []})
       end)
 
-      assert {:ok, []} = Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}])
+      assert {:ok, []} =
+               Vector.fuse(conn(), [
+                 {"Doc", "embedding", [1.0], 2},
+                 {"Doc", "embedding", [0.0, 1.0], 2}
+               ])
+
       assert_received {:cmd, cmd}
       assert cmd =~ "{fusion:'RRF'}"
 
+      # fusion validation precedes the spec-count guard, so a single-spec + bad fusion still
+      # surfaces the fusion error.
       assert_raise ArgumentError, ~r/fusion/, fn ->
         Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}], fusion: :magic)
       end
@@ -372,7 +390,11 @@ defmodule Arcadic.VectorTest do
     test "rejects non-list weights value-free (no value echoed)" do
       err =
         assert_raise ArgumentError, fn ->
-          Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 2}], weights: "SEKRIT")
+          Vector.fuse(
+            conn(),
+            [{"Doc", "embedding", [1.0], 2}, {"Doc", "embedding", [0.0, 1.0], 2}],
+            weights: "SEKRIT"
+          )
         end
 
       assert err.message =~ "weights"
@@ -389,9 +411,13 @@ defmodule Arcadic.VectorTest do
       assert_raise ArgumentError, ~r/neighbor_specs/, fn -> Vector.fuse(conn(), []) end
 
       # a malformed spec tuple must raise a controlled value-free error, not FunctionClauseError
+      # (2 specs so the spec-count guard passes and the per-spec malformed guard is exercised)
       bad =
         assert_raise ArgumentError, fn ->
-          Vector.fuse(conn(), [{"Doc", "embedding", "SEKRIT_ELEM"}])
+          Vector.fuse(conn(), [
+            {"Doc", "embedding", [1.0], 2},
+            {"Doc", "embedding", "SEKRIT_ELEM"}
+          ])
         end
 
       assert bad.message =~ "neighbor_spec"
@@ -405,7 +431,9 @@ defmodule Arcadic.VectorTest do
       end)
 
       assert {:ok, []} =
-               Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0], 3}],
+               Vector.fuse(
+                 conn(),
+                 [{"Doc", "embedding", [1.0, 0.0], 3}, {"Doc", "embedding", [0.0, 1.0], 3}],
                  weights: [0.7, 0.3],
                  k: 10
                )
@@ -415,9 +443,15 @@ defmodule Arcadic.VectorTest do
       assert body["command"] ==
                "SELECT expand(vector.fuse(" <>
                  "(SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec1, :k1))), " <>
                  "{fusion:'RRF', weights:[0.7, 0.3], k:10}))"
 
-      assert body["params"] == %{"vec0" => [1.0, 0.0], "k0" => 3}
+      assert body["params"] == %{
+               "vec0" => [1.0, 0.0],
+               "k0" => 3,
+               "vec1" => [0.0, 1.0],
+               "k1" => 3
+             }
     end
 
     test "fuse threads a shared filter param into each subquery and param-binds group opts on the outer object" do
@@ -467,7 +501,12 @@ defmodule Arcadic.VectorTest do
       end)
 
       assert {:ok, []} =
-               Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0, 0.0], 3}],
+               Vector.fuse(
+                 conn(),
+                 [
+                   {"Doc", "embedding", [1.0, 0.0, 0.0], 3},
+                   {"Doc", "embedding", [0.0, 1.0, 0.0], 3}
+                 ],
                  group_by: "category",
                  group_size: 2
                )
@@ -476,11 +515,14 @@ defmodule Arcadic.VectorTest do
 
       assert body["command"] ==
                "SELECT expand(vector.fuse((SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec1, :k1))), " <>
                  "{fusion:'RRF', groupBy: :gb, groupSize: :gs}))"
 
       assert body["params"] == %{
                "vec0" => [1.0, 0.0, 0.0],
                "k0" => 3,
+               "vec1" => [0.0, 1.0, 0.0],
+               "k1" => 3,
                "gb" => "category",
                "gs" => 2
              }
@@ -494,12 +536,20 @@ defmodule Arcadic.VectorTest do
         Req.Test.json(c, %{"result" => []})
       end)
 
-      assert {:ok, []} = Vector.fuse(conn(), [{"Doc", "embedding", [1.0, 0.0, 0.0], 3}])
+      assert {:ok, []} =
+               Vector.fuse(conn(), [
+                 {"Doc", "embedding", [1.0, 0.0, 0.0], 3},
+                 {"Doc", "embedding", [0.0, 1.0, 0.0], 3}
+               ])
+
       assert_received {:cmd, cmd}
 
       assert cmd ==
-               "SELECT expand(vector.fuse((SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), {fusion:'RRF'}))"
+               "SELECT expand(vector.fuse((SELECT expand(vector.neighbors('Doc[embedding]', :vec0, :k0))), " <>
+                 "(SELECT expand(vector.neighbors('Doc[embedding]', :vec1, :k1))), {fusion:'RRF'}))"
 
+      # filter validation precedes the spec-count guard, so a single-spec + empty filter still
+      # surfaces the non-empty-filter error.
       assert_raise ArgumentError, ~r/non-empty/, fn ->
         Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 3}], filter: [])
       end
@@ -553,16 +603,23 @@ defmodule Arcadic.VectorTest do
     end
 
     test "an unknown-tag / wrong-arity spec is rejected value-free (no FunctionClauseError, no arg echo)" do
+      # 2 specs so the spec-count guard passes and the per-spec unknown-tag/wrong-arity guard runs.
       err =
         assert_raise ArgumentError, fn ->
-          Vector.fuse(conn(), [{:fulltxt, "Doc", "body", "SEKRIT", 5}])
+          Vector.fuse(conn(), [
+            {"Doc", "embedding", [1.0], 2},
+            {:fulltxt, "Doc", "body", "SEKRIT", 5}
+          ])
         end
 
       refute err.message =~ "SEKRIT"
 
       err2 =
         assert_raise ArgumentError, fn ->
-          Vector.fuse(conn(), [{:fulltext, "Doc", "body", "SEKRIT"}])
+          Vector.fuse(conn(), [
+            {"Doc", "embedding", [1.0], 2},
+            {:fulltext, "Doc", "body", "SEKRIT"}
+          ])
         end
 
       refute err2.message =~ "SEKRIT"
