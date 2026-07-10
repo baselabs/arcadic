@@ -172,6 +172,44 @@ defmodule Arcadic.Server do
   def shutdown(%Conn{} = conn),
     do: Admin.span(:shutdown, fn -> Admin.to_ok(Admin.command(conn, "shutdown")) end)
 
+  # Bang variants for the new admin functions (raise on error; mirror create_database!/drop_database!).
+  # `health?`/`database_exists?`/`ready?` are predicates — an Elixir name cannot be `health?!`, and
+  # their existing convention carries no bang, so they are excluded.
+  @spec info!(Conn.t(), keyword()) :: map()
+  def info!(%Conn{} = conn, opts \\ []), do: bang(info(conn, opts))
+
+  @spec metrics!(Conn.t()) :: map()
+  def metrics!(%Conn{} = conn), do: bang(metrics(conn))
+
+  @spec events!(Conn.t()) :: map()
+  def events!(%Conn{} = conn), do: bang(events(conn))
+
+  @spec set_server_setting!(Conn.t(), String.t(), String.t()) :: :ok
+  def set_server_setting!(%Conn{} = conn, key, value),
+    do: bang(set_server_setting(conn, key, value))
+
+  @spec set_database_setting!(Conn.t(), String.t(), String.t()) :: :ok
+  def set_database_setting!(%Conn{} = conn, key, value),
+    do: bang(set_database_setting(conn, key, value))
+
+  @spec open_database!(Conn.t(), String.t()) :: :ok
+  def open_database!(%Conn{} = conn, name), do: bang(open_database(conn, name))
+
+  @spec close_database!(Conn.t(), String.t()) :: :ok
+  def close_database!(%Conn{} = conn, name), do: bang(close_database(conn, name))
+
+  @spec align_database!(Conn.t(), String.t()) :: map()
+  def align_database!(%Conn{} = conn, name), do: bang(align_database(conn, name))
+
+  @spec check_database!(Conn.t(), keyword()) :: map()
+  def check_database!(%Conn{} = conn, opts \\ []), do: bang(check_database(conn, opts))
+
+  @spec profiler!(Conn.t(), atom()) :: map()
+  def profiler!(%Conn{} = conn, action), do: bang(profiler(conn, action))
+
+  @spec shutdown!(Conn.t()) :: :ok
+  def shutdown!(%Conn{} = conn), do: bang(shutdown(conn))
+
   defp with_valid(name, fun) do
     case Identifier.validate(name) do
       :ok -> fun.()
@@ -203,6 +241,7 @@ defmodule Arcadic.Server do
   defp valid_setting_value(_), do: {:error, :invalid_setting_value}
 
   defp bang(:ok), do: :ok
+  defp bang({:ok, value}), do: value
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)
 
   defp bang({:error, reason}),

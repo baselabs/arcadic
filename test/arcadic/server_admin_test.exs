@@ -262,4 +262,50 @@ defmodule Arcadic.ServerAdminTest do
     assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :ready?}}
     :telemetry.detach(ref)
   end
+
+  describe "bang variants for the new Server functions (spec requires bangs for each new fn)" do
+    test "all 11 new bangs are exported with the right arity" do
+      Code.ensure_loaded!(Server)
+
+      for {fun, arity} <- [
+            info!: 2,
+            metrics!: 1,
+            events!: 1,
+            set_server_setting!: 3,
+            set_database_setting!: 3,
+            open_database!: 2,
+            close_database!: 2,
+            align_database!: 2,
+            check_database!: 2,
+            profiler!: 2,
+            shutdown!: 1
+          ] do
+        assert function_exported?(Server, fun, arity), "Server.#{fun}/#{arity} is not exported"
+      end
+    end
+
+    test "a {:ok, map} bang unwraps to the map; a :ok bang returns :ok; both raise on a server error" do
+      Req.Test.stub(__MODULE__, fn c ->
+        cmd = Jason.decode!(Req.Test.raw_body(c))["command"]
+
+        cond do
+          cmd == "CHECK DATABASE" ->
+            Req.Test.json(c, %{"result" => [%{"operation" => "check database"}]})
+
+          cmd == "open database ok_db" ->
+            Req.Test.json(c, %{"result" => "ok"})
+
+          true ->
+            c |> Plug.Conn.put_status(400) |> Req.Test.json(%{"error" => "boom", "exception" => "X"})
+        end
+      end)
+
+      # {:ok, map} bang → the bare map
+      assert %{"operation" => "check database"} = Server.check_database!(conn())
+      # :ok bang → :ok
+      assert :ok = Server.open_database!(conn(), "ok_db")
+      # error → raises the Arcadic.Error
+      assert_raise Arcadic.Error, fn -> Server.open_database!(conn(), "bad_db") end
+    end
+  end
 end
