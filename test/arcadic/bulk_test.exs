@@ -21,8 +21,8 @@ defmodule Arcadic.BulkTest do
 
     assert {:ok, %{vertices_created: 2, edges_created: 0, elapsed_ms: 3}} =
              Bulk.ingest(conn(), [
-               %{"@type" => "vertex", "@class" => "P", "id" => 1},
-               %{"@type" => "vertex", "@class" => "P", "id" => 2}
+               %{"@type" => "vertex", "@class" => "P", "@id" => "t1"},
+               %{"@type" => "vertex", "@class" => "P", "@id" => "t2"}
              ])
 
     assert_received {:body, body}
@@ -32,9 +32,30 @@ defmodule Arcadic.BulkTest do
     assert length(lines) == 2
 
     assert Enum.map(lines, &Jason.decode!/1) == [
-             %{"@type" => "vertex", "@class" => "P", "id" => 1},
-             %{"@type" => "vertex", "@class" => "P", "id" => 2}
+             %{"@type" => "vertex", "@class" => "P", "@id" => "t1"},
+             %{"@type" => "vertex", "@class" => "P", "@id" => "t2"}
            ]
+  end
+
+  test "surfaces the server idMapping (temp @id -> real RID) as :id_mapping" do
+    Req.Test.stub(__MODULE__, fn c ->
+      Req.Test.json(c, %{
+        "verticesCreated" => 1,
+        "edgesCreated" => 0,
+        "elapsedMs" => 2,
+        "idMapping" => %{"t1" => "#1:0"}
+      })
+    end)
+
+    assert {:ok, %{id_mapping: %{"t1" => "#1:0"}}} =
+             Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
+  end
+
+  test "a response with no idMapping surfaces an empty :id_mapping map" do
+    stub_ok()
+
+    assert {:ok, %{id_mapping: %{}}} =
+             Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
   end
 
   test "a non-map record is rejected value-free before any wire call" do
@@ -52,12 +73,16 @@ defmodule Arcadic.BulkTest do
     assert {:error, :invalid_record} = Bulk.ingest(conn(), [bad])
   end
 
-  test "id_property is Identifier-validated value-free" do
+  test "the removed :id_property opt is now rejected value-free (edges resolve by @id, not a property)" do
     err =
       assert_raise ArgumentError, fn ->
         Bulk.ingest(conn(), [%{"@type" => "vertex"}], id_property: "bad prop")
       end
 
+    # Pins the NEW rejection path (Opts.validate_keys! unknown-option), not the old
+    # identifier-validation error — both would satisfy the value-free refute below.
+    assert err.message =~ "unknown option"
+    assert err.message =~ ":id_property"
     refute err.message =~ "bad prop"
   end
 
@@ -116,7 +141,7 @@ defmodule Arcadic.BulkTest do
     end)
 
     ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :bulk, :stop]])
-    Bulk.ingest(conn(), [%{"@type" => "edge", "@class" => "K", "@from" => 1, "@to" => 2}])
+    Bulk.ingest(conn(), [%{"@type" => "edge", "@class" => "K", "@from" => "t1", "@to" => "t2"}])
     # 2 + 3 = 5 — dropping `+ edgesCreated` from row_count goes red here.
     assert_received {[:arcadic, :bulk, :stop], ^ref, _m, %{reason: :ok, row_count: 5}}
     :telemetry.detach(ref)

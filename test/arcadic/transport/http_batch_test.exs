@@ -20,17 +20,18 @@ defmodule Arcadic.Transport.HTTPBatchTest do
       Req.Test.json(c, %{"verticesCreated" => 2, "edgesCreated" => 1, "elapsedMs" => 7})
     end)
 
-    ndjson = ~s({"@type":"vertex","@class":"P","id":1}\n{"@type":"vertex","@class":"P","id":2}\n)
+    ndjson =
+      ~s({"@type":"vertex","@class":"P","@id":"t1"}\n{"@type":"vertex","@class":"P","@id":"t2"}\n)
 
     assert {:ok, %{"verticesCreated" => 2, "edgesCreated" => 1, "elapsedMs" => 7}} =
              Transport.HTTP.batch_ingest(conn(), ndjson,
-               id_property: "id",
                light_edges: false,
                commit_every: 1000
              )
 
     assert_received {:req, "/api/v1/batch/mydb", ^ndjson, q, ctype}
-    assert q["idProperty"] == "id"
+    # Edges resolve by the body's `@id` temp key — there is no `idProperty` query param.
+    refute Map.has_key?(q, "idProperty")
     assert q["lightEdges"] == "false"
     assert q["commitEvery"] == "1000"
     assert Enum.any?(ctype, &(&1 =~ "application/x-ndjson"))

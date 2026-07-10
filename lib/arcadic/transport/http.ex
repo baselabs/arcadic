@@ -526,11 +526,12 @@ defmodule Arcadic.Transport.HTTP do
     req_opts |> Req.post() |> unwrap_body()
   end
 
-  # Only the provided knobs ride the query string, as ArcadeDB's camelCase param names.
+  # Only the provided knobs ride the query string, as ArcadeDB's camelCase param names. Edge
+  # endpoints resolve by the vertex `@id` temp key in the NDJSON body (or a real RID), never a
+  # query param — the endpoint has no `idProperty` support (live-probed 26.8.1-SNAPSHOT).
   defp batch_query(opts) do
     pairs =
       [
-        {"idProperty", opts[:id_property]},
         {"lightEdges", opts[:light_edges]},
         {"commitEvery", opts[:commit_every]}
       ]

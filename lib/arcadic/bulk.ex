@@ -4,41 +4,46 @@ defmodule Arcadic.Bulk do
   the heavy-ingest sibling of `Arcadic.Import.database`, for records you hold in the client.
 
   Each record is a caller map with ArcadeDB's structural keys — `"@type" => "vertex" | "edge"`,
-  `"@class" => <TypeName>`, arbitrary properties, and (edges) `"@from"`/`"@to"` referencing the
-  vertices' id-property values. Vertices must appear before the edges that reference them; pass
-  `id_property:` to resolve edge endpoints. Records are serialized to NDJSON and sent as one POST;
-  the batch is **structured record ingest, not statement text, so it is injection-inert** (a value
-  is stored verbatim). Tenant-blind, HTTP-only.
+  `"@class" => <TypeName>`, arbitrary properties, and, on a **vertex**, an `"@id"` temporary-id
+  string that edges reference. An **edge** carries `"@from"`/`"@to"` holding those vertex `"@id"`
+  values (or an existing vertex's real `#bucket:pos` RID). Vertices must appear before the edges
+  that reference them. Records are serialized to NDJSON and sent as one POST; the batch is
+  **structured record ingest, not statement text, so it is injection-inert** (a value is stored
+  verbatim). The `200` response's `idMapping` (temp `"@id"` → assigned RID) is surfaced as
+  `:id_mapping`. Tenant-blind, HTTP-only.
 
       Arcadic.Bulk.ingest(conn, [
-        %{"@type" => "vertex", "@class" => "Person", "id" => 1, "name" => "Alice"},
-        %{"@type" => "vertex", "@class" => "Person", "id" => 2, "name" => "Bob"},
-        %{"@type" => "edge", "@class" => "Knows", "@from" => 1, "@to" => 2}
-      ], id_property: "id")
-      #=> {:ok, %{vertices_created: 2, edges_created: 1, elapsed_ms: 7}}
+        %{"@type" => "vertex", "@class" => "Person", "@id" => "p1", "name" => "Alice"},
+        %{"@type" => "vertex", "@class" => "Person", "@id" => "p2", "name" => "Bob"},
+        %{"@type" => "edge", "@class" => "Knows", "@from" => "p1", "@to" => "p2"}
+      ])
+      #=> {:ok, %{vertices_created: 2, edges_created: 1, elapsed_ms: 7,
+      #=>        id_mapping: %{"p1" => "#1:0", "p2" => "#1:1"}}}
 
   ## Operational contract (read before relying on it)
 
   - **Atomic by default** — any bad line rolls back the whole batch. Passing `:commit_every`
     **forfeits that guarantee**: a fault after a commit boundary leaves a committed prefix.
-  - **Create-only, not upsert** — records are always created (no dedup; `:id_property` resolves
-    edge endpoints, it does not dedupe vertices). A lost response then a naive retry **duplicates**
-    every vertex (the same non-confirmability class as `Arcadic.command_async/4`). For idempotent
-    bulk-upsert use the `UNWIND $rows` idiom over `Arcadic.command/4` (see usage-rules "Bulk loading").
+  - **Create-only, not upsert** — records are always created (no dedup; the vertex `"@id"` is an
+    in-batch temporary handle for edge wiring, not a persisted identity — a re-ingest with the same
+    `"@id"` creates fresh records). A lost response then a naive retry **duplicates** every vertex
+    (the same non-confirmability class as `Arcadic.command_async/4`). For idempotent bulk-upsert use
+    the `UNWIND $rows` idiom over `Arcadic.command/4` (see usage-rules "Bulk loading").
   - **One in-memory POST** — the whole NDJSON body is held and sent at once, against one receive
     timeout. For a very large or streamed load, prefer `Arcadic.Import.database` (server-side fetch).
   - **Line errors are reachable** — a failed line's `%Arcadic.Error{}.detail` (quarantined from
     `message/1`/`inspect/1` but reachable via `error.detail`) may contain the rejected record
     fragment (caller data — assume PII); redact before logging.
   """
-  alias Arcadic.{Conn, Error, Identifier, Opts, Telemetry}
+  alias Arcadic.{Conn, Error, Opts, Telemetry}
 
-  @ingest_opts [:id_property, :light_edges, :commit_every, :timeout]
+  @ingest_opts [:light_edges, :commit_every, :timeout]
 
   @doc """
-  Bulk-create `records` (a list of caller vertex/edge maps). `opts`: `:id_property`
-  (identifier-validated), `:light_edges` (bool), `:commit_every` (pos_integer), `:timeout` (ms).
-  Returns `{:ok, %{vertices_created, edges_created, elapsed_ms}}` or `{:error, …}` (`:invalid_record`
+  Bulk-create `records` (a list of caller vertex/edge maps). `opts`: `:light_edges` (bool),
+  `:commit_every` (pos_integer), `:timeout` (ms). Returns
+  `{:ok, %{vertices_created, edges_created, elapsed_ms, id_mapping}}` — where `id_mapping` maps each
+  vertex `"@id"` temporary handle to its assigned real RID — or `{:error, …}` (`:invalid_record`
   on an unencodable record; `:not_supported` on a transport with no batch endpoint; else an
   `Arcadic.Error`/`Arcadic.TransportError`).
   """
@@ -47,7 +52,8 @@ defmodule Arcadic.Bulk do
            %{
              vertices_created: non_neg_integer(),
              edges_created: non_neg_integer(),
-             elapsed_ms: non_neg_integer()
+             elapsed_ms: non_neg_integer(),
+             id_mapping: %{optional(String.t()) => String.t()}
            }}
           | {:error, :invalid_record | atom() | Exception.t()}
   def ingest(%Conn{} = conn, records, opts \\ []) do
@@ -59,7 +65,6 @@ defmodule Arcadic.Bulk do
     end
 
     Opts.validate_keys!(opts, @ingest_opts)
-    validate_id_property!(opts)
 
     with {:ok, ndjson} <- encode_ndjson(records) do
       Telemetry.span(:bulk, %{operation: :ingest, mode: :write}, fn ->
@@ -123,7 +128,8 @@ defmodule Arcadic.Bulk do
      %{
        vertices_created: Map.get(body, "verticesCreated", 0),
        edges_created: Map.get(body, "edgesCreated", 0),
-       elapsed_ms: Map.get(body, "elapsedMs", 0)
+       elapsed_ms: Map.get(body, "elapsedMs", 0),
+       id_mapping: Map.get(body, "idMapping", %{})
      }}
   end
 
@@ -142,20 +148,4 @@ defmodule Arcadic.Bulk do
   defp stop_meta({:ok, _}), do: %{reason: :unexpected_response}
   defp stop_meta({:error, %{reason: reason}}), do: %{reason: reason}
   defp stop_meta({:error, _}), do: %{reason: :error}
-
-  defp validate_id_property!(opts) do
-    case Keyword.fetch(opts, :id_property) do
-      :error ->
-        :ok
-
-      {:ok, prop} ->
-        case Identifier.validate(prop) do
-          :ok ->
-            :ok
-
-          {:error, :invalid_identifier} ->
-            raise ArgumentError, "id_property must be a valid identifier"
-        end
-    end
-  end
 end
