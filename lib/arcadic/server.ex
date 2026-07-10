@@ -7,7 +7,7 @@ defmodule Arcadic.Server do
   Not delegated from the `Arcadic` facade: destructive admin stays namespaced.
   """
 
-  alias Arcadic.{Admin, Conn, Identifier}
+  alias Arcadic.{Admin, Conn, Identifier, Opts}
 
   @doc "Create a database. Validates `name`."
   @spec create_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -93,6 +93,69 @@ defmodule Arcadic.Server do
       end)
     end
   end
+
+  @doc "Open a closed database on the server. Validates `name`."
+  @spec open_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
+  def open_database(%Conn{} = conn, name),
+    do:
+      with_valid(name, fn ->
+        Admin.span(:open_database, fn ->
+          Admin.to_ok(Admin.command(conn, "open database #{name}"))
+        end)
+      end)
+
+  @doc "Close an open database on the server. Validates `name`."
+  @spec close_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
+  def close_database(%Conn{} = conn, name),
+    do:
+      with_valid(name, fn ->
+        Admin.span(:close_database, fn ->
+          Admin.to_ok(Admin.command(conn, "close database #{name}"))
+        end)
+      end)
+
+  @doc """
+  Cluster-realign a database. **CLUSTER-ONLY** — a single-server node returns a server error
+  (`java.lang.UnsupportedOperationException`, surfaced as `{:error, %Arcadic.Error{reason: :server_error}}`).
+  Validates `name`.
+  """
+  @spec align_database(Conn.t(), String.t()) :: {:ok, map()} | {:error, atom() | Exception.t()}
+  def align_database(%Conn{} = conn, name),
+    do:
+      with_valid(name, fn ->
+        Admin.span(:align_database, fn -> Admin.command(conn, "align database #{name}") end)
+      end)
+
+  @doc "Run `CHECK DATABASE [FIX]` on `conn.database`. `fix: true` repairs. Returns the integrity map."
+  @spec check_database(Conn.t(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
+  def check_database(%Conn{} = conn, opts \\ []) do
+    Opts.validate_keys!(opts, [:fix])
+    statement = if opts[:fix] == true, do: "CHECK DATABASE FIX", else: "CHECK DATABASE"
+
+    Admin.span(:check_database, fn ->
+      with {:ok, rows} <- Admin.sql(conn, statement), do: {:ok, List.first(rows, %{})}
+    end)
+  end
+
+  @profiler_actions ~w(results start stop reset)a
+
+  @doc "Control the server profiler. `action` ∈ #{inspect(@profiler_actions)}."
+  @spec profiler(Conn.t(), atom()) :: {:ok, map()} | {:error, Exception.t()}
+  def profiler(%Conn{} = conn, action) when action in @profiler_actions,
+    do: Admin.span(:profiler, fn -> Admin.command(conn, "profiler #{action}") end)
+
+  def profiler(%Conn{} = _conn, _action),
+    do: raise(ArgumentError, "profiler action must be one of #{inspect(@profiler_actions)}")
+
+  @doc """
+  Shut the server down (`shutdown`). **DESTRUCTIVE — halts shared infrastructure.** The server stops
+  responding mid-request, so a SUCCESSFUL shutdown typically surfaces as
+  `{:error, %Arcadic.TransportError{reason: :closed}}` (connection reset), not `:ok` — treat a
+  transport-closed error here as success, not a retryable failure.
+  """
+  @spec shutdown(Conn.t()) :: :ok | {:error, Exception.t()}
+  def shutdown(%Conn{} = conn),
+    do: Admin.span(:shutdown, fn -> Admin.to_ok(Admin.command(conn, "shutdown")) end)
 
   defp command_ok(conn, command) do
     case conn.transport.server_command(conn, command) do

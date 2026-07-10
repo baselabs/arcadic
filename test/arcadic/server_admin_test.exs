@@ -101,4 +101,110 @@ defmodule Arcadic.ServerAdminTest do
 
     refute_received :wire
   end
+
+  test "open/close/align_database validate the name value-free (no wire on bad name)" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), :wire)
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert {:error, :invalid_identifier} = Server.open_database(conn(), "bad name")
+    assert {:error, :invalid_identifier} = Server.close_database(conn(), "bad;name")
+    assert {:error, :invalid_identifier} = Server.align_database(conn(), "1bad")
+    refute_received :wire
+  end
+
+  test "open_database sends the command for a valid name" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert :ok = Server.open_database(conn(), "otherdb")
+    assert_received {:cmd, "open database otherdb"}
+  end
+
+  test "check_database/2 runs CHECK DATABASE [FIX] and returns the integrity map" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+
+      Req.Test.json(c, %{
+        "result" => [%{"operation" => "check database", "totalActiveRecords" => 0}]
+      })
+    end)
+
+    assert {:ok, %{"operation" => "check database"}} = Server.check_database(conn())
+    assert_received {:cmd, "CHECK DATABASE"}
+    assert {:ok, _} = Server.check_database(conn(), fix: true)
+    assert_received {:cmd, "CHECK DATABASE FIX"}
+  end
+
+  test "profiler/2 rejects an unknown action value-free; sends a valid one" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"recording" => true})
+    end)
+
+    assert_raise ArgumentError, ~r/profiler action/, fn -> Server.profiler(conn(), :on) end
+    assert {:ok, _} = Server.profiler(conn(), :start)
+    assert_received {:cmd, "profiler start"}
+  end
+
+  test "shutdown/1 sends the shutdown command (unit path; a real reset surfaces as {:error, :closed})" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert :ok = Server.shutdown(conn())
+    assert_received {:cmd, "shutdown"}
+  end
+
+  test "close_database sends the command for a valid name" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert :ok = Server.close_database(conn(), "otherdb")
+    assert_received {:cmd, "close database otherdb"}
+  end
+
+  test "align_database returns the raw command result on success (no to_ok)" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => %{"realigned" => true}})
+    end)
+
+    assert {:ok, %{"result" => %{"realigned" => true}}} =
+             Server.align_database(conn(), "otherdb")
+
+    assert_received {:cmd, "align database otherdb"}
+  end
+
+  test "align_database surfaces a single-server server error as {:error, %Arcadic.Error{}}" do
+    # Live contract (Task 13): a non-clustered node returns HTTP 500 with a
+    # java.lang.UnsupportedOperationException FQN — matched by NO @exception_reasons
+    # substring, so Error.from_response falls to reason: :server_error. align skips to_ok,
+    # so the {:error, _} propagates raw.
+    Req.Test.stub(__MODULE__, fn c ->
+      c
+      |> Plug.Conn.put_status(500)
+      |> Req.Test.json(%{
+        "error" => "Cannot align a non-clustered database",
+        "exception" => "java.lang.UnsupportedOperationException"
+      })
+    end)
+
+    assert {:error, %Arcadic.Error{reason: :server_error}} =
+             Server.align_database(conn(), "otherdb")
+  end
+
+  test "check_database rejects an unknown opt key value-free (Opts.validate_keys!)" do
+    # No stub registered: validate_keys! raises BEFORE any wire, so reaching the wire
+    # would surface as a non-ArgumentError stub miss and fail this assert_raise.
+    assert_raise ArgumentError, ~r/unknown option/, fn ->
+      Server.check_database(conn(), bogus: 1)
+    end
+  end
 end
