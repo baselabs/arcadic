@@ -304,7 +304,9 @@ defmodule Arcadic.ServerAdminTest do
             Req.Test.json(c, %{"result" => "ok"})
 
           true ->
-            c |> Plug.Conn.put_status(400) |> Req.Test.json(%{"error" => "boom", "exception" => "X"})
+            c
+            |> Plug.Conn.put_status(400)
+            |> Req.Test.json(%{"error" => "boom", "exception" => "X"})
         end
       end)
 

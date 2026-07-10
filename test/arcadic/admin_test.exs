@@ -7,7 +7,11 @@ defmodule Arcadic.AdminTest do
   test "span/2 raises value-free on an off-contract thunk return (no value echo — Rule 3)" do
     # An off-contract return (a bare tuple/map/list/nil) would otherwise CaseClauseError, which renders
     # the offending value — a Rule-3 leak if it carries caller data. Must raise value-free instead.
-    e = assert_raise ArgumentError, fn -> Admin.span(:probe, fn -> {:weird, "SENTINEL_VALUE"} end) end
+    e =
+      assert_raise ArgumentError, fn ->
+        Admin.span(:probe, fn -> {:weird, "SENTINEL_VALUE"} end)
+      end
+
     refute Exception.message(e) =~ "SENTINEL_VALUE"
   end
 
