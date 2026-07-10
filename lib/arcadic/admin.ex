@@ -7,14 +7,16 @@ defmodule Arcadic.Admin do
   alias Arcadic.{Conn, Error, Telemetry}
 
   @doc "Run `fun` (returns :ok | {:ok,_} | {:error,_}) inside a value-free [:arcadic, :admin] span."
-  @spec span(atom(), (-> :ok | {:ok, term()} | {:error, term()})) ::
-          :ok | {:ok, term()} | {:error, term()}
+  @spec span(atom(), (-> term())) :: :ok | {:ok, term()} | {:error, term()}
   def span(operation, fun) when is_atom(operation) and is_function(fun, 0) do
     Telemetry.span(:admin, %{operation: operation}, fn ->
       case fun.() do
         :ok -> {:ok, %{reason: :ok}}
         {:ok, _} = ok -> {ok, %{reason: :ok}}
         {:error, err} = error -> {error, %{reason: reason_of(err)}}
+        # Value-free catch-all: an off-contract thunk return would otherwise CaseClauseError, echoing
+        # the offending value (a Rule-3 leak if it carries caller data). Raise value-free instead.
+        _other -> raise ArgumentError, "admin operation returned an unexpected result shape"
       end
     end)
   end
@@ -46,10 +48,12 @@ defmodule Arcadic.Admin do
   end
 
   @doc "Normalize an :ok | {:ok,_} | {:error,_} command result to :ok | {:error,_}."
-  @spec to_ok(:ok | {:ok, term()} | {:error, term()}) :: :ok | {:error, term()}
+  @spec to_ok(term()) :: :ok | {:error, term()}
   def to_ok(:ok), do: :ok
   def to_ok({:ok, _}), do: :ok
   def to_ok({:error, _} = e), do: e
+  # Value-free catch-all (Rule 3): never FunctionClauseError-echo an off-contract result.
+  def to_ok(_other), do: raise(ArgumentError, "admin command returned an unexpected result shape")
 
   @doc "Extract a nested \"result\" from a server body; pass the whole body/error through otherwise."
   @spec result({:ok, map()} | {:error, term()}) :: {:ok, term()} | {:error, term()}
