@@ -412,6 +412,12 @@ small graphRAG pipeline — bulk-load a graph, index it for full-text, then hybr
 across a dense embedding arm and a full-text arm in one fused, ranked result set:
 
 ```elixir
+# 0. Declare the schema first — the batch endpoint needs the vertex/edge TYPEs to exist,
+#    and a FULL_TEXT index needs a declared property (a bulk-inserted value is schemaless).
+Arcadic.command!(conn, "CREATE VERTEX TYPE Doc IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE EDGE TYPE RELATED IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE PROPERTY Doc.title IF NOT EXISTS STRING", %{}, language: "sql")
+
 # 1. Bulk-create vertices + edges in one atomic POST — vertices carry a temporary "@id"
 #    that edges reference via "@from"/"@to"; the response maps each "@id" to its real RID.
 {:ok, counts} =
@@ -423,11 +429,14 @@ across a dense embedding arm and a full-text arm in one fused, ranked result set
 
 counts.id_mapping #=> %{"d1" => "#12:0", "d2" => "#12:1"}
 
-# 2. Full-text index (retro-indexes the rows just created) + search
+# 2. Full-text index (retro-indexes the rows just created) + BM25-ranked search
 :ok = Arcadic.FullText.create_index(conn, "Doc", "title")
 {:ok, hits} = Arcadic.FullText.search(conn, "Doc", "title", "graph", with_score: true)
 
-# 3. Hybrid fusion — a dense vector arm plus a full-text arm, fused by reciprocal-rank fusion
+# 3. Hybrid fusion — a dense vector arm plus a full-text arm, fused by reciprocal-rank fusion.
+#    Prerequisites (see the vector docs above): a dense index on `Doc.embedding` via
+#    `Vector.create_dense_index!/5`, embeddings loaded on the docs, and `query_vector` = your
+#    query embedding (a list of floats). SEARCH_INDEX contributes the BM25-ranked full-text arm.
 {:ok, fused} =
   Arcadic.Vector.fuse(conn, [
     {"Doc", "embedding", query_vector, 10},

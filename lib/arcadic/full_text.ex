@@ -98,7 +98,9 @@ defmodule Arcadic.FullText do
 
   @doc """
   Full-text search via `SEARCH_FIELDS(['p1','p2'…], :q)` over a property list (all must be
-  FULL_TEXT-indexed). Same `opts`/return shape as `search/5`.
+  FULL_TEXT-indexed). Same `opts`/return shape as `search/5` — but note **`SEARCH_FIELDS`
+  computes no relevance score**: with `:with_score` it projects a constant `score: 0.0` on every
+  row (a shape-only column, not a ranking). Use `search/5` (`SEARCH_INDEX`) for the BM25 `$score`.
   """
   @spec search_fields(Conn.t(), String.t(), [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}

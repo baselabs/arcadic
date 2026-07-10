@@ -151,7 +151,9 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.FullText`** — `FULL_TEXT` (Lucene) index DDL (`create_index/4` +
   `drop_index/3`) and `SEARCH_INDEX`/`SEARCH_FIELDS` query builders
   (`search/5`, `search_fields/5`), parallel to `Arcadic.Vector`. HTTP-only SQL;
-  a `FULL_TEXT` index retro-indexes rows that already exist.
+  a `FULL_TEXT` index retro-indexes rows that already exist. `:with_score` (BM25 `$score`)
+  applies to `search/5` (`SEARCH_INDEX`) only — `SEARCH_FIELDS` has no relevance score, so
+  `search_fields/5` with `:with_score` projects a constant `0.0`.
 - **`Arcadic.Bulk`** — `ingest/3` (+ `!`): bulk-creates vertices and edges over
   ArcadeDB's `POST /api/v1/batch/<db>` NDJSON endpoint, the heavy-ingest
   sibling of `Arcadic.Import.database`. Create-only, atomic by default,

@@ -114,5 +114,12 @@ CLOSED** — closeout `/review-autopilot --fix` complete 2026-07-10 at **100/100
 closeout added the 11 spec-required `Server.*!` bang variants, closed a Rule-3
 `create_user`/`with_bearer` `FunctionClauseError` secret-leak (value-free
 fallbacks), and relaxed the setting-value guard to allow non-ASCII printable.
-Next: `/brainstorm-autopilot` S9 (batch/full-text/hybrid-fuse/`$bytes`) against
-the verified contract above.
+**S9 (ingest & retrieval / graphRAG — G9–G12, G19 + new `Arcadic.Param`/`FullText`/`Bulk`,
+heterogeneous `Vector.fuse/3`, an optional `batch_ingest/3` transport callback, and
+`notebooks/graphrag.livemd`) is EXECUTED + closeout `/review-autopilot --fix` 2026-07-10**
+(exec `53129e0..3c7acf5` + closeout fixes). The env-gated live suite corrected the `/batch`
+edge contract — edges resolve by a structural `@id` temp key (NOT `?idProperty`, probed inert
+and dropped), and the response's `idMapping` (temp `@id` → real RID) is surfaced; closeout
+hardened the batch response envelope (require counts), opt-value guards, empty-property-list
+guards, and the README quickstart. Next: `/brainstorm-autopilot` S10 (managed-retry
+transaction G13 + HA/read-consistency G14).
