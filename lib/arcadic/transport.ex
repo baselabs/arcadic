@@ -93,4 +93,14 @@ defmodule Arcadic.Transport do
   """
   @callback explain(Conn.t(), request(), opts :: keyword()) :: plan_result()
   @optional_callbacks explain: 3
+
+  @doc """
+  Bulk-ingest NDJSON vertex/edge records (`POST /api/v1/batch/<db>`). The body is already-serialized
+  NDJSON iodata; `opts` carries the query params (`:id_property`, `:light_edges`, `:commit_every`).
+  Optional — HTTP implements it; Bolt has no batch endpoint. Returns the parsed
+  `{verticesCreated, edgesCreated, elapsedMs}` map.
+  """
+  @callback batch_ingest(Conn.t(), ndjson :: iodata(), opts :: keyword()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks batch_ingest: 3
 end

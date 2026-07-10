@@ -506,6 +506,43 @@ defmodule Arcadic.Transport.HTTP do
     conn |> post("/api/v1/server", %{command: command}, []) |> unwrap_body()
   end
 
+  @impl true
+  def batch_ingest(%Conn{} = conn, ndjson, opts) do
+    query = batch_query(opts)
+    url = conn.base_url <> "/api/v1/batch/#{conn.database}" <> query
+
+    req_opts =
+      [
+        url: url,
+        headers: [{"content-type", "application/x-ndjson"} | headers(conn)],
+        body: ndjson,
+        retry: false,
+        finch: conn.transport_options[:finch],
+        plug: conn.transport_options[:plug],
+        receive_timeout: opts[:timeout] || conn.timeout
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    req_opts |> Req.post() |> unwrap_body()
+  end
+
+  # Only the provided knobs ride the query string, as ArcadeDB's camelCase param names.
+  defp batch_query(opts) do
+    pairs =
+      [
+        {"idProperty", opts[:id_property]},
+        {"lightEdges", opts[:light_edges]},
+        {"commitEvery", opts[:commit_every]}
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Enum.map(fn {k, v} -> {k, to_string(v)} end)
+
+    case pairs do
+      [] -> ""
+      list -> "?" <> URI.encode_query(list)
+    end
+  end
+
   # Inlines a map-guarded success branch (NOT the shared unwrap_body/1, whose 2xx clause returns
   # {:ok, term()}) so the success type stays the monomorphic {:ok, map()} the @callback declares.
   @impl true
