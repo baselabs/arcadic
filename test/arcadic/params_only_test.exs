@@ -57,4 +57,25 @@ defmodule Arcadic.ParamsOnlyTest do
     refute body["command"] =~ @secret
     assert body["params"]["q"] == @secret
   end
+
+  test "FullText.search_fields/5: the query value stays in params and never enters the statement" do
+    capture_body()
+    Arcadic.FullText.search_fields(conn(), "Doc", ["body"], @secret)
+    assert_received {:body, body}
+    refute body["command"] =~ @secret
+    assert body["params"]["q"] == @secret
+  end
+
+  test "Vector.fuse/3 FT arm: the RID-filterable query binds as :q1, never entering the statement" do
+    capture_body()
+
+    Arcadic.Vector.fuse(conn(), [
+      {"Doc", "embedding", [1.0], 3},
+      {:fulltext, "Doc", "body", @secret, 5}
+    ])
+
+    assert_received {:body, body}
+    refute body["command"] =~ @secret
+    assert body["params"]["q1"] == @secret
+  end
 end
