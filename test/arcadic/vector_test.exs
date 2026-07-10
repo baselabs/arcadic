@@ -504,6 +504,78 @@ defmodule Arcadic.VectorTest do
         Vector.fuse(conn(), [{"Doc", "embedding", [1.0], 3}], filter: [])
       end
     end
+
+    test "fuses a heterogeneous dense + sparse + full-text spec list with distinct indexed params" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:body, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(conn(), [
+                 {"Doc", "embedding", [1.0, 0.0], 3},
+                 {:sparse, "Doc", "toks", "wts", [1, 2], [0.5, 0.5], 4},
+                 {:fulltext, "Doc", "body", "graph", 5}
+               ])
+
+      assert_received {:body, %{"command" => cmd, "params" => params}}
+      assert cmd =~ "vector.neighbors('Doc[embedding]', :vec0, :k0)"
+      assert cmd =~ "vector.sparseNeighbors('Doc[toks,wts]', :toks1, :wts1, :k1)"
+      assert cmd =~ "SEARCH_INDEX('Doc[body]', :q2, {metadata:true}) = true LIMIT :k2"
+      assert params["vec0"] == [1.0, 0.0]
+      assert params["toks1"] == [1, 2]
+      assert params["q2"] == "graph"
+      assert params["k2"] == 5
+    end
+
+    test "shared filter threads dense/sparse as {filter: :rids} and the FT arm as literal @rid IN [...]" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:body, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(
+                 conn(),
+                 [
+                   {"Doc", "embedding", [1.0], 3},
+                   {:fulltext, "Doc", "body", "graph", 5}
+                 ],
+                 filter: ["#1:0", "#1:1"]
+               )
+
+      assert_received {:body, %{"command" => cmd, "params" => params}}
+      assert cmd =~ "vector.neighbors('Doc[embedding]', :vec0, :k0, {filter: :rids})"
+      assert cmd =~ "AND @rid IN [#1:0, #1:1] LIMIT :k1"
+      assert params["rids"] == ["#1:0", "#1:1"]
+      # the FT arm (index 1) interpolates RID literals — it is NOT re-bound per subquery
+      refute cmd =~ ":rids1"
+    end
+
+    test "an unknown-tag / wrong-arity spec is rejected value-free (no FunctionClauseError, no arg echo)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{:fulltxt, "Doc", "body", "SEKRIT", 5}])
+        end
+
+      refute err.message =~ "SEKRIT"
+
+      err2 =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{:fulltext, "Doc", "body", "SEKRIT"}])
+        end
+
+      refute err2.message =~ "SEKRIT"
+    end
+
+    test "a malformed RID in a shared filter is rejected value-free (FT literal path)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Vector.fuse(conn(), [{:fulltext, "Doc", "body", "q", 5}], filter: ["not-a-rid"])
+        end
+
+      refute err.message =~ "not-a-rid"
+    end
   end
 
   describe "sparse_neighbors/8" do

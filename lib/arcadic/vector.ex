@@ -256,12 +256,26 @@ defmodule Arcadic.Vector do
   @fuse_opts [:fusion, :weights, :k, :filter, :group_by, :group_size]
 
   @doc """
-  Runs a hybrid fusion over dense neighbour subqueries. `neighbor_specs` is a non-empty
-  list of `{type, property, query_vector, k}`, each built as a validated `vector.neighbors`
-  subquery with distinct indexed params. `opts`: `fusion` (`:rrf` default | `:dbsf` |
-  `:linear`), `weights` (list of numbers), `k` (pos_integer), `filter` (non-empty list of
-  `#<bucket>:<pos>` candidate RID strings — a SHARED candidate set threaded into every
-  subquery), `group_by` (property name to group by; validated for identifier shape),
+  Runs a hybrid fusion over heterogeneous neighbour subqueries. `neighbor_specs` is a
+  non-empty list whose elements may each take one of three shapes, every one built with
+  distinct indexed params:
+
+    * `{type, property, query_vector, k}` — a dense `vector.neighbors` subquery;
+    * `{:sparse, type, tokens_property, weights_property, query_tokens, query_weights, k}` —
+      a `vector.sparseNeighbors` subquery;
+    * `{:fulltext, type, property, query, k}` — a full-text `SEARCH_INDEX(...) = true`
+      subquery bounded by `LIMIT :k`.
+
+  Each caller vector/tokens/weights/query binds as a distinct `$param`; only the validated
+  index identifiers are interpolated. An unknown tag or wrong-arity tuple is rejected
+  value-free (never a `FunctionClauseError` echoing the spec).
+
+  `opts`: `fusion` (`:rrf` default | `:dbsf` | `:linear`), `weights` (list of numbers),
+  `k` (pos_integer), `filter` (non-empty list of `#<bucket>:<pos>` candidate RID strings —
+  a SHARED candidate set: the dense/sparse arms thread it as a `{filter: :rids}` function
+  option, while the full-text arm interpolates the RIDs as `@rid IN [...]` literals because a
+  param-bound `@rid` is inert in ArcadeDB SQL — the RIDs are allowlist-validated before
+  interpolation), `group_by` (property name to group by; validated for identifier shape),
   `group_size` (pos_integer — max results per group). `group_by`/`group_size` apply to the
   FUSED output (the outer fuse object); all bind as params.
 
@@ -272,7 +286,12 @@ defmodule Arcadic.Vector do
   statement grows linearly with their length (no cap), matching arcadic's
   no-statement-size-limit posture elsewhere.
   """
-  @spec fuse(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) ::
+  @type fuse_spec ::
+          {String.t(), String.t(), [number()], pos_integer()}
+          | {:sparse, String.t(), String.t(), String.t(), [integer()], [number()], pos_integer()}
+          | {:fulltext, String.t(), String.t(), String.t(), pos_integer()}
+
+  @spec fuse(Conn.t(), [fuse_spec()], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
   def fuse(%Conn{} = conn, neighbor_specs, opts \\ []) do
     Opts.validate_keys!(opts, @fuse_opts)
@@ -280,7 +299,7 @@ defmodule Arcadic.Vector do
     filter = fuse_filter!(opts)
     {group_frag, group_params} = fuse_group_opts(opts)
 
-    with {:ok, subqueries, params} <- build_subqueries(neighbor_specs, filter != nil) do
+    with {:ok, subqueries, params} <- build_subqueries(neighbor_specs, filter) do
       params =
         params
         |> maybe_put_filter(filter)
@@ -321,31 +340,26 @@ defmodule Arcadic.Vector do
     do: {frag <> ", groupSize: :gs", Map.put(params, "gs", require_pos_int!(value, "group_size"))}
 
   @doc "Runs a hybrid fusion, returning rows or raising."
-  @spec fuse!(Conn.t(), [{String.t(), String.t(), [number()], pos_integer()}], keyword()) :: [
-          map()
-        ]
+  @spec fuse!(Conn.t(), [fuse_spec()], keyword()) :: [map()]
   def fuse!(%Conn{} = conn, neighbor_specs, opts \\ []),
     do: bang(fuse(conn, neighbor_specs, opts))
 
   # --- private ---
 
-  defp build_subqueries(specs, with_filter) when is_list(specs) and specs != [] do
-    opt = if with_filter, do: ", {filter: :rids}", else: ""
+  # `filter` is the validated RID list (or nil). Dense/sparse arms bind {filter: :rids} once (via
+  # maybe_put_filter in fuse/3); the FT arm interpolates the RIDs as LITERALS (@rid IN [...]) — the
+  # proven keyset-cursor path, NOT param-bound @rid (dead per S5). The RIDs were allowlist-validated
+  # by fuse_filter! -> validate_rids! before reaching here.
+  defp build_subqueries(specs, filter) when is_list(specs) and specs != [] do
+    with_filter = filter != nil
+    rid_literals = if with_filter, do: " AND @rid IN [#{Enum.join(filter, ", ")}]", else: ""
 
     specs
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, [], %{}}, fn {spec, i}, {:ok, subs, params} ->
-      {type, property, vec, k} = require_spec!(spec)
-
-      case index_ref(type, property) do
-        {:ok, ref} ->
-          k = require_pos_int!(k, "k")
-          vec = require_list!(vec, "query_vector")
-          sub = "(SELECT expand(vector.neighbors('#{ref}', :vec#{i}, :k#{i}#{opt})))"
-          {:cont, {:ok, [sub | subs], Map.merge(params, %{"vec#{i}" => vec, "k#{i}" => k})}}
-
-        {:error, :invalid_identifier} = err ->
-          {:halt, err}
+      case build_subquery(spec, i, with_filter, rid_literals) do
+        {:ok, sub, sub_params} -> {:cont, {:ok, [sub | subs], Map.merge(params, sub_params)}}
+        {:error, _} = err -> {:halt, err}
       end
     end)
     |> case do
@@ -354,19 +368,58 @@ defmodule Arcadic.Vector do
     end
   end
 
-  defp build_subqueries(_specs, _with_filter) do
+  defp build_subqueries(_specs, _filter) do
     raise ArgumentError,
-          "neighbor_specs must be a non-empty list of {type, property, query_vector, k} tuples"
+          "neighbor_specs must be a non-empty list of dense {type, property, query_vector, k}, " <>
+            "{:sparse, type, tokens_prop, weights_prop, tokens, weights, k}, or " <>
+            "{:fulltext, type, property, query, k} tuples"
   end
 
-  defp require_spec!({_type, _property, _vec, _k} = spec), do: spec
+  # Dense (bare 4-tuple) — filter via {filter: :rids} function-arg.
+  defp build_subquery({type, property, vec, k}, i, with_filter, _rid_literals)
+       when is_binary(type) and is_binary(property) do
+    opt = if with_filter, do: ", {filter: :rids}", else: ""
 
-  defp require_spec!(_spec),
-    do:
-      raise(
-        ArgumentError,
-        "each neighbor_spec must be a {type, property, query_vector, k} tuple"
-      )
+    with {:ok, ref} <- index_ref(type, property) do
+      k = require_pos_int!(k, "k")
+      vec = require_list!(vec, "query_vector")
+      sub = "(SELECT expand(vector.neighbors('#{ref}', :vec#{i}, :k#{i}#{opt})))"
+      {:ok, sub, %{"vec#{i}" => vec, "k#{i}" => k}}
+    end
+  end
+
+  # Sparse — filter via {filter: :rids} function-arg.
+  defp build_subquery({:sparse, type, tp, wp, toks, wts, k}, i, with_filter, _rid_literals) do
+    opt = if with_filter, do: ", {filter: :rids}", else: ""
+
+    with {:ok, ref} <- sparse_index_ref(type, tp, wp) do
+      k = require_pos_int!(k, "k")
+      toks = require_list!(toks, "query_tokens")
+      wts = require_list!(wts, "query_weights")
+      sub = "(SELECT expand(vector.sparseNeighbors('#{ref}', :toks#{i}, :wts#{i}, :k#{i}#{opt})))"
+      {:ok, sub, %{"toks#{i}" => toks, "wts#{i}" => wts, "k#{i}" => k}}
+    end
+  end
+
+  # Full-text — query binds as :q<i>, k bounds the arm (LIMIT :k<i>), filter via literal @rid IN [...].
+  defp build_subquery({:fulltext, type, property, query, k}, i, _with_filter, rid_literals) do
+    with {:ok, ref} <- index_ref(type, property) do
+      k = require_pos_int!(k, "k")
+
+      sub =
+        "(SELECT FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q#{i}, {metadata:true}) = true" <>
+          "#{rid_literals} LIMIT :k#{i})"
+
+      {:ok, sub, %{"q#{i}" => query, "k#{i}" => k}}
+    end
+  end
+
+  # Total, value-free: an unknown tag or wrong arity never FunctionClause-echoes the spec (Rule 3).
+  defp build_subquery(_spec, _i, _with_filter, _rid_literals) do
+    raise ArgumentError,
+          "each neighbor_spec must be a dense {type, property, query_vector, k}, a " <>
+            "{:sparse, …7…}, or a {:fulltext, type, property, query, k} tuple"
+  end
 
   # fusion + optional weights (validated numbers) + k (validated int), interpolated as
   # developer-supplied fusion config (not caller data).
