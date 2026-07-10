@@ -14,8 +14,9 @@ defmodule Arcadic.Identifier do
 
   @url_schemes ~w(http https file)
   # RFC 3986 URL characters MINUS the single quote and backslash (ArcadeDB honors backslash-escapes
-  # inside a quoted literal). Excludes space/newline/control by construction — the only injection
-  # vector for a rest-of-line restore URL is a newline (second statement), closed here.
+  # inside a quoted literal). Excludes ALL whitespace + control by construction — a bare rest-of-line
+  # restore URL cannot form a second server command (whose tokens need whitespace), regardless of how
+  # the server treats an in-token `;`/`#`.
   @url_pattern ~r/\A[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+\z/
   @max_url_length 2048
   # Setting keys are dotted (arcadedb.server.foo) — the identifier pattern rejects dots, so a

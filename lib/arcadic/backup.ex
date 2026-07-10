@@ -8,10 +8,12 @@ defmodule Arcadic.Backup do
   URL and the restore `<name>`/`<url>` are allowlist-validated value-free BEFORE any wire call:
   `name` via `Arcadic.Identifier`, `url` via `Arcadic.Identifier.validate_url/1` (RFC-3986 positive
   allowlist + `http`/`https`/`file` scheme). The allowlist excludes the single quote `'` (so a `:to`
-  URL cannot break out of `BACKUP DATABASE '<url>'`) and newline/space/control (so a restore `<url>`,
-  a rest-of-line literal server-side, cannot start a second statement) — that is the only injection
-  vector. **SSRF note:** whether the server blocks private/loopback restore sources is
-  server-config-dependent — treat the URL as trusted operator input.
+  URL cannot break out of `BACKUP DATABASE '<url>'`) and ALL whitespace + control characters. The
+  restore `<url>` is interpolated bare (a rest-of-line literal server-side): a second server command
+  needs whitespace to form its tokens (`drop database <name>` has spaces), so excluding whitespace
+  makes a second statement unconstructible regardless of how the server treats an in-token `;`/`#`.
+  **SSRF note:** whether the server blocks private/loopback restore sources is server-config-dependent
+  — treat the URL as trusted operator input.
   """
   alias Arcadic.{Admin, Conn, Identifier, Opts}
 
