@@ -64,6 +64,19 @@ defmodule Arcadic.ServerAdminTest do
     assert_received {:cmd, "set server setting `arcadedb.serverMetrics` `true`"}
   end
 
+  test "set_server_setting/3 accepts a non-ASCII printable (UTF-8) value — inert in the backtick quoting" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    # Spec Decision 24 requires rejecting only a backtick + control chars — NOT all non-ASCII. A UTF-8
+    # value (accent + non-Latin) is inert inside `k` `v` backtick quoting; blocking it was an
+    # unauthorized capability narrowing (the guard was printable-ASCII-only).
+    assert :ok = Server.set_server_setting(conn(), "arcadedb.serverName", "café-日本")
+    assert_received {:cmd, "set server setting `arcadedb.serverName` `café-日本`"}
+  end
+
   test "set_database_setting/3 targets conn.database" do
     Req.Test.stub(__MODULE__, fn c ->
       send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
@@ -81,10 +94,10 @@ defmodule Arcadic.ServerAdminTest do
       Req.Test.json(c, %{"result" => "ok"})
     end)
 
-    # backtick (breakout), backslash (escape), newline (second-statement), DEL (control) — REJECTED.
-    # A plain space is ALLOWED (inert inside the backtick-quoted value; the live server accepts it) —
-    # covered by the happy-path test above, NOT asserted here (it would reach the wire).
-    for bad_val <- ["ev`il", "ev\\il", "a\nb", "a\x7Fb"] do
+    # backtick (breakout), backslash (escape), newline (second-statement), DEL + a C1 control (U+0085
+    # NEL) — REJECTED. A plain space is ALLOWED (inert inside the backtick-quoted value; the live
+    # server accepts it) — covered by the happy-path test above, NOT asserted here (would reach wire).
+    for bad_val <- ["ev`il", "ev\\il", "a\nb", "a\x7Fb", "a\u0085b"] do
       assert {:error, :invalid_setting_value} = Server.set_server_setting(conn(), "k.ok", bad_val)
     end
 

@@ -82,8 +82,9 @@ defmodule Arcadic.Server do
 
   @doc """
   Set a server-level setting (`` set server setting `k` `v` ``). `key` is allowlist-validated
-  (dotted), `value` must be printable ASCII without a backtick or backslash (the backtick-quoting
-  context) — both rejected value-free (`{:error, :invalid_setting_key | :invalid_setting_value}`).
+  (dotted); `value` must not contain a backtick, backslash, or control character (the backtick-quoting
+  and escape context) — non-ASCII printable values are allowed. Both are rejected value-free
+  (`{:error, :invalid_setting_key | :invalid_setting_value}`).
   """
   @spec set_server_setting(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
@@ -185,11 +186,15 @@ defmodule Arcadic.Server do
     end
   end
 
-  # Positive posture: printable ASCII (0x20-0x7E) MINUS backtick + backslash (mirrors Import's
-  # single-quote-literal exclusion of `'`/`\`). Rejects control/newline/non-ASCII too. Value-free.
+  # Reject a backtick (breakout of the `k` `v` quoting), a backslash (ArcadeDB honors backslash-
+  # escapes inside a quoted literal, so it could escape the closing backtick), and any control
+  # character (C0 0x00-0x1F, DEL 0x7F, C1 0x80-0x9F) — the second-statement/newline vector. Non-ASCII
+  # PRINTABLE (UTF-8) is inert inside the backtick quoting and is allowed: spec Decision 24 requires
+  # rejecting only backtick + control, so a printable-ASCII-only guard was an unauthorized narrowing.
   defp valid_setting_value(v) when is_binary(v) do
     cond do
-      not Regex.match?(~r/\A[ -~]*\z/, v) -> {:error, :invalid_setting_value}
+      not String.valid?(v) -> {:error, :invalid_setting_value}
+      Regex.match?(~r/[\x00-\x1f\x7f-\x9f]/u, v) -> {:error, :invalid_setting_value}
       String.contains?(v, "`") or String.contains?(v, "\\") -> {:error, :invalid_setting_value}
       true -> :ok
     end
