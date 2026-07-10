@@ -49,4 +49,12 @@ defmodule Arcadic.ParamsOnlyTest do
     refute body["command"] =~ @secret
     assert body["params"]["t"] == @secret
   end
+
+  test "FullText.search/5: the query value stays in params and never enters the statement" do
+    capture_body()
+    Arcadic.FullText.search(conn(), "Doc", "body", @secret)
+    assert_received {:body, body}
+    refute body["command"] =~ @secret
+    assert body["params"]["q"] == @secret
+  end
 end
