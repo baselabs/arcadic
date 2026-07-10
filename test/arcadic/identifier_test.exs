@@ -54,4 +54,32 @@ defmodule Arcadic.IdentifierTest do
       refute Identifier.valid?("bad.name")
     end
   end
+
+  describe "validate_url/1" do
+    test "accepts allowlisted http/https/file URLs" do
+      assert :ok = Identifier.validate_url("https://host/backup.zip")
+      assert :ok = Identifier.validate_url("file:///home/arcadedb/backups/db.zip")
+    end
+
+    test "rejects value-free: empty, over-length, bad chars (space/newline), bad scheme, non-string" do
+      assert {:error, :empty} = Identifier.validate_url("   ")
+
+      assert {:error, :too_long} =
+               Identifier.validate_url("http://h/" <> String.duplicate("a", 2048))
+
+      assert {:error, :invalid_chars} = Identifier.validate_url("file:///a b.zip")
+      assert {:error, :invalid_chars} = Identifier.validate_url("file:///a\nDROP")
+      assert {:error, :invalid_scheme} = Identifier.validate_url("ftp://h/x.zip")
+      assert {:error, :not_a_string} = Identifier.validate_url(:x)
+    end
+  end
+
+  describe "validate_setting_key/1" do
+    test "accepts dotted setting keys, rejects backtick/space/control value-free" do
+      assert :ok = Identifier.validate_setting_key("arcadedb.server.backupDirectory")
+      assert {:error, :invalid_setting_key} = Identifier.validate_setting_key("bad`key")
+      assert {:error, :invalid_setting_key} = Identifier.validate_setting_key("bad key")
+      assert {:error, :invalid_setting_key} = Identifier.validate_setting_key(:x)
+    end
+  end
 end

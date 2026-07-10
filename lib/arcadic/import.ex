@@ -33,12 +33,8 @@ defmodule Arcadic.Import do
   """
   alias Arcadic.{Conn, Opts}
 
-  @schemes ~w(http https file)
-  @url_pattern ~r/\A[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+\z/
-  @max_url_length 2048
-
   # A string with:-value is interpolated into a single-quoted SQL literal, so it uses a POSITIVE
-  # ASCII allowlist (the URL-validator's lane, import.ex:36): the safe printable set MINUS `'` and
+  # ASCII allowlist (the URL-validator's lane, `Identifier.validate_url/1`): the safe printable set MINUS `'` and
   # `\` (ArcadeDB honors backslash-escapes inside a quoted literal, so both must be excluded). Being
   # ASCII-only it also excludes control bytes AND invalid UTF-8 (a >=0x80 byte would make Jason.encode!
   # raise with the value bytes — a Rule-3 leak). arcadic stays tenant-blind about the value's MEANING;
@@ -68,35 +64,30 @@ defmodule Arcadic.Import do
   @spec database!(Conn.t(), String.t(), keyword()) :: [map()]
   def database!(%Conn{} = conn, url, opts \\ []), do: bang(database(conn, url, opts))
 
-  # --- URL validation: positive allowlist, value-free, fail-closed before any wire call ---
+  # --- URL validation: delegates to the shared audited allowlist validator, mapping its value-free
+  # reasons to Import's messages; still fail-closed (raises) before any wire call. ---
 
-  defp validate_url!(url) when is_binary(url) do
-    cond do
-      String.trim(url) == "" ->
-        raise ArgumentError, "import url must be non-empty"
-
-      String.length(url) > @max_url_length ->
-        raise ArgumentError, "import url exceeds #{@max_url_length} characters"
-
-      not Regex.match?(@url_pattern, url) ->
-        raise ArgumentError, "import url contains characters outside the allowed URL set"
-
-      true ->
-        validate_scheme!(url)
-    end
-  end
-
-  defp validate_url!(_url), do: raise(ArgumentError, "import url must be a string")
-
-  defp validate_scheme!(url) do
-    case URI.new(url) do
-      {:ok, %URI{scheme: scheme}} when scheme in @schemes ->
+  defp validate_url!(url) do
+    case Arcadic.Identifier.validate_url(url) do
+      :ok ->
         :ok
 
-      {:ok, %URI{}} ->
-        raise ArgumentError, "import url scheme must be one of #{inspect(@schemes)}"
+      {:error, :not_a_string} ->
+        raise ArgumentError, "import url must be a string"
 
-      {:error, _} ->
+      {:error, :empty} ->
+        raise ArgumentError, "import url must be non-empty"
+
+      {:error, :too_long} ->
+        raise ArgumentError, "import url exceeds 2048 characters"
+
+      {:error, :invalid_chars} ->
+        raise ArgumentError, "import url contains characters outside the allowed URL set"
+
+      {:error, :invalid_scheme} ->
+        raise ArgumentError, "import url scheme must be one of [\"http\", \"https\", \"file\"]"
+
+      {:error, :invalid_uri} ->
         raise ArgumentError, "import url is not a valid URI"
     end
   end
