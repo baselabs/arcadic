@@ -79,6 +79,7 @@ defmodule Arcadic.MixProject do
       extras: [
         "README.md",
         "notebooks/getting_started.livemd",
+        "notebooks/graphrag.livemd",
         "usage-rules.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
@@ -93,10 +94,18 @@ defmodule Arcadic.MixProject do
           Arcadic.TransportError,
           Arcadic.Opts,
           Arcadic.Identifier,
-          Arcadic.Telemetry
+          Arcadic.Telemetry,
+          Arcadic.Param
         ],
         Transport: [Arcadic.Transport, Arcadic.Transport.HTTP, Arcadic.Transport.Bolt],
-        "Schema & data": [Arcadic.Schema, Arcadic.Import, Arcadic.Export, Arcadic.Vector],
+        "Schema & data": [
+          Arcadic.Schema,
+          Arcadic.Import,
+          Arcadic.Export,
+          Arcadic.Vector,
+          Arcadic.FullText,
+          Arcadic.Bulk
+        ],
         Migrations: [Arcadic.Migration, Arcadic.MigrationRegistry, Arcadic.Migrator],
         "Admin & operations": [Arcadic.Server, Arcadic.Security, Arcadic.Backup],
         Transactions: [Arcadic.Transaction]

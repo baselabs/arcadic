@@ -43,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:reason` — no database name, setting key/value, URL, or credential).
 - `Arcadic.command/4` / `command_async/4` accept an `:auto_commit` boolean opt, forwarded
   as-is to ArcadeDB's `autoCommit` body param.
+- `Arcadic.FullText` — full-text search: `FULL_TEXT` (Lucene) index DDL (`create_index/4` +
+  `drop_index/3`, retro-indexes existing rows) and `SEARCH_INDEX`/`SEARCH_FIELDS` query
+  builders (`search/5`, `search_fields/5`, `:with_score` projects the BM25 `$score`).
+  HTTP-only SQL.
+- `Arcadic.Bulk` — `ingest/3` (+ `!`): bulk-creates vertices and edges over ArcadeDB's
+  `POST /api/v1/batch/<db>` NDJSON endpoint in one atomic POST (edges wire via a
+  structural `"@id"` temp key on vertex records; the response's `id_mapping` maps each
+  temp `"@id"` to its assigned real RID). Create-only, HTTP-only, via a new optional
+  `batch_ingest/3` transport callback.
+- `Arcadic.Param` — `int8/1` / `bytes/1`: typed param-value wrappers (`$int8`/`$bytes`)
+  decoded server-side to a `byte[]` before the query runs. HTTP-only, requires
+  ArcadeDB ≥ 26.5.1.
+- `Arcadic.Vector.fuse/3` now accepts heterogeneous neighbor specs — dense (bare
+  4-tuple), `:sparse`, and `:fulltext` — fused together in one hybrid-ranked result set.
+- New notebook `notebooks/graphrag.livemd` — an end-to-end graphRAG walkthrough (bulk
+  ingest, idempotent `UNWIND` upsert, dense/sparse/full-text/hybrid retrieval, INT8
+  params, traversal).
 
 ### Fixed
 

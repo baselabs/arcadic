@@ -145,6 +145,22 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
 - **`Arcadic.Telemetry`** — value-free `:telemetry.span/3` spans.
 - **`Arcadic.Identifier`** — allowlist identifier validation.
+- **`Arcadic.Param`** — `int8/1` / `bytes/1` typed param-value wrappers
+  (`%{"$int8" => [...]}` / `%{"$bytes" => base64}`), decoded server-side to a
+  Java `byte[]` before the query runs. HTTP-only, requires ArcadeDB ≥ 26.5.1.
+- **`Arcadic.FullText`** — `FULL_TEXT` (Lucene) index DDL (`create_index/4` +
+  `drop_index/3`) and `SEARCH_INDEX`/`SEARCH_FIELDS` query builders
+  (`search/5`, `search_fields/5`), parallel to `Arcadic.Vector`. HTTP-only SQL;
+  a `FULL_TEXT` index retro-indexes rows that already exist.
+- **`Arcadic.Bulk`** — `ingest/3` (+ `!`): bulk-creates vertices and edges over
+  ArcadeDB's `POST /api/v1/batch/<db>` NDJSON endpoint, the heavy-ingest
+  sibling of `Arcadic.Import.database`. Create-only, atomic by default,
+  HTTP-only.
+- **`Arcadic.Vector.fuse/3`** now accepts heterogeneous neighbor specs — a bare
+  `{type, property, query_vector, k}` dense arm, a `{:sparse, type,
+  tokens_property, weights_property, tokens, weights, k}` arm, and/or a
+  `{:fulltext, type, property, query, k}` arm — fused in one hybrid-ranked
+  result set (see `Arcadic.Vector` above and Bulk loading below).
 
 ## Bulk loading
 
@@ -163,6 +179,23 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   the correct ordering is index-type-specific.
 - For batched **incremental** writes, wrap them in `transaction/3` (one commit for many
   statements) instead of auto-committing each `command/4`.
+- **Choosing a bulk-write path.** Three options, in order of what they optimize for:
+  - **`Arcadic.Bulk.ingest/3`** (`POST /api/v1/batch`) — records held client-side, one
+    atomic NDJSON POST. Vertices carry a structural `"@id"` temp key that edges
+    reference via `"@from"`/`"@to"`; the response's `id_mapping` maps each temp `"@id"`
+    to its assigned real RID. **Create-only** (no dedup) — a retry after a lost
+    response duplicates every record. Best for a graph you're building in one shot from
+    in-memory data.
+  - **`Arcadic.Import.database/3`** — server-side fetch of a CSV/JSON/GraphML/
+    Neo4j/OrientDB/ArcadeDB export. Best for large or already-serialized loads (the
+    server streams it, not the client).
+  - **The idempotent `UNWIND $rows` idiom** — for a bulk **upsert** (as opposed to
+    create-only), unwind a list-of-maps param through `MERGE`:
+    ```elixir
+    Arcadic.command(conn, "UNWIND $rows AS r MERGE (n:T {id: r.id}) SET n += r.props", %{"rows" => rows})
+    ```
+    Safe to replay — `MERGE` matches existing rows instead of duplicating them, unlike
+    `Arcadic.Bulk.ingest/3`.
 
 ## Non-negotiable rules
 
@@ -195,6 +228,16 @@ Arcadic.query(conn, "SELECT FROM User WHERE name = :name", %{"name" => n}, langu
 # Cypher (default language)
 Arcadic.query(conn, "MATCH (u:User {name: $name}) RETURN u", %{"name" => n})
 ```
+
+**Typed param-value wrappers (`Arcadic.Param`).** A param *value* that is a single-key
+`%{"$int8" => list}` or `%{"$bytes" => base64}` map is decoded server-side to a `byte[]`
+before the query runs — `Arcadic.Param.int8/1` / `bytes/1` build these. The statement
+still references the parameter by the normal placeholder (`:name`/`$name`). **HTTP-only**
+(inert over Bolt) and requires ArcadeDB ≥ 26.5.1. **Ambient single-key-collision caveat:**
+ArcadeDB decodes *any* single-key `{"$int8" => …}` / `{"$bytes" => …}` value it finds in
+`params`, whether or not it came from `Arcadic.Param` — a legitimate caller value that
+happens to be exactly a single-key map with one of those keys is reinterpreted as a
+`byte[]`; add a second key to a map you want left untouched.
 
 ## Options reference
 
@@ -238,9 +281,12 @@ failures, never echoing the offending value. `{:error, :invalid_identifier}`
 surface); `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`
 (`Arcadic.Server.set_server_setting/3` / `set_database_setting/3`);
 `{:error, :invalid_url}` (`Arcadic.Backup.backup/2`'s `:to` target and
-`restore/3`'s source URL); and `{:error, :invalid_user_spec}`
+`restore/3`'s source URL); `{:error, :invalid_user_spec}`
 (`Arcadic.Security.create_user/2` — an unencodable user spec, e.g. a non-UTF-8
-password).
+password); and, from `Arcadic.Bulk.ingest/3`, `{:error, :invalid_record}` (a
+record that fails to encode), `{:error, :not_supported}` (the transport has no
+batch endpoint, e.g. Bolt), and `{:error, :unexpected_response}` (a non-map 2xx
+body — off-contract).
 
 ## Telemetry
 
@@ -267,6 +313,8 @@ rides telemetry.
   `Arcadic.Security` / `Arcadic.Backup` call (metadata carries `:operation`,
   the atom naming the call, e.g. `:login`, `:set_database_setting`,
   `:restore`, plus `:reason` on `:stop`).
+- `[:arcadic, :bulk, :start | :stop | :exception]` — `Arcadic.Bulk.ingest/3`
+  (`:stop` carries `:row_count`, the sum of vertices + edges created).
 
 `:start` measurements are `:telemetry.span/3`'s standard `:system_time`/
 `:monotonic_time`; `:stop`/`:exception` carry `:duration`/`:monotonic_time`.

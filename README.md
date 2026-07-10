@@ -31,7 +31,16 @@ ArcadeDB").
 - **Vector search** — dense (`LSM_VECTOR`) and sparse (`LSM_SPARSE_VECTOR`) index
   DDL plus nearest-neighbour, sparse, and hybrid-fusion query builders
   (`Arcadic.Vector`) with a candidate-set `filter` and `group_by`/`group_size`
-  shaping, all params-only and value-free.
+  shaping, all params-only and value-free. `fuse/3` fuses heterogeneous dense,
+  sparse, **and full-text** neighbor specs into one ranked result set.
+- **Full-text search** — `Arcadic.FullText` builds `FULL_TEXT` (Lucene) index DDL
+  and `SEARCH_INDEX`/`SEARCH_FIELDS` query builders (BM25 `$score` on request);
+  a `FULL_TEXT` index retro-indexes rows that already exist.
+- **Bulk ingest & typed params** — `Arcadic.Bulk.ingest/3` bulk-creates vertices
+  and edges in one atomic NDJSON POST to ArcadeDB's `/batch` endpoint (edges wire
+  by a structural `"@id"` temp key, resolved to real RIDs in the response);
+  `Arcadic.Param.int8/1` / `bytes/1` wrap efficient `$int8`/`$bytes` typed param
+  values for compact embedding/byte-array ingest.
 - **Schema, import & export** — read-only schema introspection (`Arcadic.Schema` —
   types / properties / indexes / buckets / database engine-config, `@props`-stripped),
   server-side bulk load (`Arcadic.Import.database/3`, `IMPORT DATABASE`) behind a
@@ -395,6 +404,41 @@ positive `max_distance` filters nothing — choose thresholds per similarity). `
 rows are ranked by `score` (higher is better); `sparse_neighbors/8` rows carry `score`
 and no `distance`. The Ash-native data-layer surface remains a non-goal (owned by the
 sibling `ash_arcadic`).
+
+## GraphRAG quickstart
+
+`Arcadic.Bulk`, `Arcadic.FullText`, and `Vector.fuse/3`'s heterogeneous specs combine into a
+small graphRAG pipeline — bulk-load a graph, index it for full-text, then hybrid-retrieve
+across a dense embedding arm and a full-text arm in one fused, ranked result set:
+
+```elixir
+# 1. Bulk-create vertices + edges in one atomic POST — vertices carry a temporary "@id"
+#    that edges reference via "@from"/"@to"; the response maps each "@id" to its real RID.
+{:ok, counts} =
+  Arcadic.Bulk.ingest(conn, [
+    %{"@type" => "vertex", "@class" => "Doc", "@id" => "d1", "title" => "Graph databases 101"},
+    %{"@type" => "vertex", "@class" => "Doc", "@id" => "d2", "title" => "Vector search primer"},
+    %{"@type" => "edge", "@class" => "RELATED", "@from" => "d1", "@to" => "d2"}
+  ])
+
+counts.id_mapping #=> %{"d1" => "#12:0", "d2" => "#12:1"}
+
+# 2. Full-text index (retro-indexes the rows just created) + search
+:ok = Arcadic.FullText.create_index(conn, "Doc", "title")
+{:ok, hits} = Arcadic.FullText.search(conn, "Doc", "title", "graph", with_score: true)
+
+# 3. Hybrid fusion — a dense vector arm plus a full-text arm, fused by reciprocal-rank fusion
+{:ok, fused} =
+  Arcadic.Vector.fuse(conn, [
+    {"Doc", "embedding", query_vector, 10},
+    {:fulltext, "Doc", "title", "graph", 10}
+  ])
+```
+
+The [`notebooks/graphrag.livemd`](notebooks/graphrag.livemd) notebook walks the full
+surface end to end — bulk graph ingest, idempotent `UNWIND` upsert, dense + sparse vector
+indexes, full-text search, hybrid fusion, INT8-quantized vectors (`Arcadic.Param.int8/1`),
+and a Cypher multi-hop traversal.
 
 ## Schema introspection and bulk import
 
