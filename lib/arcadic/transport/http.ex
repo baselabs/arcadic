@@ -505,6 +505,62 @@ defmodule Arcadic.Transport.HTTP do
     conn |> post("/api/v1/server", %{command: command}, []) |> unwrap_body()
   end
 
+  # Inlines a map-guarded success branch (NOT the shared unwrap_body/1, whose 2xx clause returns
+  # {:ok, term()}) so the success type stays the monomorphic {:ok, map()} the @callback declares.
+  @impl true
+  def server_get(%Conn{} = conn, path) do
+    case raw_get(conn, path) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 and is_map(body) ->
+        {:ok, body}
+
+      {:ok, %Req.Response{status: status, body: body}} when is_map(body) ->
+        {:error, Error.from_response(status, body)}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+      {:error, %{reason: reason}} ->
+        {:error, %TransportError{reason: reason}}
+
+      {:error, _} ->
+        {:error, %TransportError{reason: :unknown}}
+    end
+  end
+
+  @impl true
+  def health?(%Conn{} = conn) do
+    case raw_get(conn, "/api/v1/health") do
+      {:ok, %Req.Response{status: 204}} -> {:ok, true}
+      {:ok, %Req.Response{}} -> {:ok, false}
+      {:error, %{reason: reason}} -> {:error, %TransportError{reason: reason}}
+      {:error, _} -> {:error, %TransportError{reason: :unknown}}
+    end
+  end
+
+  @impl true
+  def login(%Conn{} = conn) do
+    case post(conn, "/api/v1/login", nil, []) do
+      {:ok, %Req.Response{status: status, body: %{"token" => token}}}
+      when status in 200..299 and is_binary(token) ->
+        {:ok, token}
+
+      {:ok, %Req.Response{status: status, body: body}} when is_map(body) ->
+        {:error, Error.from_response(status, body)}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
+
+      {:error, %{reason: reason}} ->
+        {:error, %TransportError{reason: reason}}
+
+      {:error, _} ->
+        {:error, %TransportError{reason: :unknown}}
+    end
+  end
+
+  @impl true
+  def logout(%Conn{} = conn), do: handle_status_only(post(conn, "/api/v1/logout", nil))
+
   @impl true
   def list_databases(%Conn{} = conn) do
     case get(conn, "/api/v1/databases") do

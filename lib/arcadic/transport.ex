@@ -34,6 +34,19 @@ defmodule Arcadic.Transport do
   @callback server_command(Conn.t(), command :: String.t()) ::
               {:ok, map()} | {:error, Error.t() | TransportError.t()}
 
+  @doc "Authenticated admin GET returning a decoded JSON map (HTTP-only admin surface)."
+  @callback server_get(Conn.t(), path :: String.t()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+
+  @doc "Liveness probe (`GET /api/v1/health` → 204)."
+  @callback health?(Conn.t()) :: {:ok, boolean()} | {:error, TransportError.t()}
+
+  @doc "Mint a session token from the conn's credentials (`POST /api/v1/login`)."
+  @callback login(Conn.t()) :: {:ok, String.t()} | {:error, Error.t() | TransportError.t()}
+
+  @doc "Revoke the current session (`POST /api/v1/logout`)."
+  @callback logout(Conn.t()) :: :ok | {:error, Error.t() | TransportError.t()}
+
   @doc "List all database names (`GET /api/v1/databases`)."
   @callback list_databases(Conn.t()) ::
               {:ok, [String.t()]} | {:error, Error.t() | TransportError.t()}
@@ -49,6 +62,10 @@ defmodule Arcadic.Transport do
                       commit: 1,
                       rollback: 1,
                       server_command: 2,
+                      server_get: 2,
+                      health?: 1,
+                      login: 1,
+                      logout: 1,
                       list_databases: 1,
                       database_exists?: 2,
                       ready?: 1
