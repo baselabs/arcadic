@@ -404,6 +404,7 @@ defmodule Arcadic.Transport.HTTP do
     |> put_if(opts[:limit], :limit, opts[:limit])
     |> put_if(opts[:serializer], :serializer, opts[:serializer])
     |> put_if(opts[:retries], :retries, opts[:retries])
+    |> put_if(not is_nil(opts[:auto_commit]), :autoCommit, opts[:auto_commit])
   end
 
   defp put_if(map, condition, key, value),

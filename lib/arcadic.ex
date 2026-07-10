@@ -26,7 +26,7 @@ defmodule Arcadic do
   alias Arcadic.{Conn, Opts, Telemetry}
 
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
-  @command_opts ~w(language limit serializer timeout retries)a
+  @command_opts ~w(language limit serializer timeout retries auto_commit)a
   @query_opts ~w(language limit serializer timeout)a
   @query_stream_opts ~w(chunk_size timeout language order_key)a
   # explain/profile take only :language + :timeout. retries is EXCLUDED — PROFILE executes, so a
@@ -59,6 +59,11 @@ defmodule Arcadic do
   @doc """
   Run a write statement (`POST /api/v1/command`). Returns `{:ok, rows}` or
   `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
+
+  `:auto_commit` (boolean) is forwarded as-is to ArcadeDB's `autoCommit` body
+  param — a faithful passthrough, not arcadic-interpreted. `auto_commit: false`
+  outside an explicit `transaction/3` means the write is not auto-committed
+  (the server's semantic, not arcadic's).
   """
   @spec command(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t()}
