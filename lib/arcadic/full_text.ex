@@ -41,6 +41,7 @@ defmodule Arcadic.FullText do
           :ok | {:error, atom() | Exception.t()}
   def create_index(%Conn{} = conn, type, property_or_properties, opts \\ []) do
     Opts.validate_keys!(opts, @create_opts)
+    require_props!(property_or_properties)
 
     with {:ok, ident_list} <- validate_type_and_props(type, property_or_properties) do
       guard = if Keyword.get(opts, :if_not_exists, true), do: " IF NOT EXISTS", else: ""
@@ -59,6 +60,8 @@ defmodule Arcadic.FullText do
   @spec drop_index(Conn.t(), String.t(), String.t() | [String.t()]) ::
           :ok | {:error, atom() | Exception.t()}
   def drop_index(%Conn{} = conn, type, property_or_properties) do
+    require_props!(property_or_properties)
+
     with {:ok, ref} <- index_ref(type, property_or_properties) do
       command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
     end
@@ -78,6 +81,7 @@ defmodule Arcadic.FullText do
           {:ok, [map()]} | {:error, atom() | Exception.t()}
   def search(%Conn{} = conn, type, property_or_properties, query, opts \\ []) do
     Opts.validate_keys!(opts, @search_opts)
+    require_props!(property_or_properties)
 
     with {:ok, ref} <- index_ref(type, property_or_properties) do
       {proj, meta} = score_fragments(opts)
@@ -102,6 +106,7 @@ defmodule Arcadic.FullText do
 
   def search_fields(%Conn{} = conn, type, properties, query, opts) when is_list(properties) do
     Opts.validate_keys!(opts, @search_opts)
+    require_props!(properties)
 
     with :ok <- Identifier.validate(type),
          {:ok, props} <- validate_each(properties) do
@@ -134,6 +139,17 @@ defmodule Arcadic.FullText do
   end
 
   # --- private ---
+
+  # A FULL_TEXT index needs at least one property: an empty list emits `ON T ()` (create), `T[]`
+  # (index ref for drop/search), or `SEARCH_FIELDS([])` — all server-rejected statements. Reject it
+  # client-side, value-free (an empty list carries no caller value to leak), BEFORE building any
+  # statement. Mirrors `Arcadic.Vector.validate_rids!`'s empty-list rejection.
+  defp require_props!(property_or_properties) do
+    case List.wrap(property_or_properties) do
+      [] -> raise ArgumentError, "at least one property is required"
+      props -> props
+    end
+  end
 
   # Returns {:ok, [validated property identifiers]} (type validated separately, reused for the `ON type` clause).
   defp validate_type_and_props(type, property_or_properties) do

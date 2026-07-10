@@ -158,4 +158,41 @@ defmodule Arcadic.FullTextTest do
       refute err.message =~ "SEKRIT-ft-query-xyz"
     end
   end
+
+  describe "empty property list is rejected value-free (no invalid statement emitted)" do
+    # An empty property list would emit `ON T ()` / `T[]` / `SEARCH_FIELDS([])` — all
+    # server-rejected. Each construction path must reject it client-side before building any
+    # statement (parallel-constructor invariant symmetry).
+    test "create_index rejects [] value-free" do
+      assert_raise ArgumentError, ~r/at least one property/, fn ->
+        FullText.create_index(conn(), "Article", [])
+      end
+    end
+
+    test "drop_index rejects [] value-free" do
+      assert_raise ArgumentError, ~r/at least one property/, fn ->
+        FullText.drop_index(conn(), "Article", [])
+      end
+    end
+
+    test "search rejects [] value-free (query never emitted)" do
+      capture()
+
+      assert_raise ArgumentError, ~r/at least one property/, fn ->
+        FullText.search(conn(), "Article", [], "q")
+      end
+
+      refute_received {:body, _}
+    end
+
+    test "search_fields rejects [] value-free (no SEARCH_FIELDS([]) statement)" do
+      capture()
+
+      assert_raise ArgumentError, ~r/at least one property/, fn ->
+        FullText.search_fields(conn(), "Article", [], "q")
+      end
+
+      refute_received {:body, _}
+    end
+  end
 end
