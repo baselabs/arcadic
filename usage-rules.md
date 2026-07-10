@@ -90,13 +90,15 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   store (`verify_peer`) unless the caller passes `ssl_opts: [verify: :verify_none]` — an explicit
   opt-in that accepts any certificate (documents the MITM exposure; only use it against a trusted
   network path, e.g. local dev). Omitting `:scheme` stays on the plaintext `bolt` scheme.
-  **Operator note (upstream, older builds only):** on older ArcadeDB builds, with the Bolt-TLS
-  listener enabled, a single untrusted-cert handshake failure could wedge the server's shared Bolt
-  listener (~100% CPU, no ServerHello for any client) until ArcadeDB restarts — an ArcadeDB **server**
-  defect, not arcadic's (client-side TLS is unaffected). **Re-verified FIXED on 26.8.1-SNAPSHOT
-  (2026-07-09):** the listener survives a `verify_peer` `unknown_ca` rejection (ServerHello + idle CPU
-  for subsequent clients). Still observed on `latest` as of 2026-07-06, so treat older builds as
-  affected. Tracked at [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
+  **Operator note (upstream, fixed 2026-07-08 → ships in 26.7.2):** on ArcadeDB builds predating
+  the fix, the Bolt-TLS listener ran every TLS handshake on its single shared accept thread — one
+  early-closed connection pinned it in a tight loop (~100% CPU), and a stalled or untrusted-cert
+  handshake blocked every other client (no ServerHello) until restart — an ArcadeDB **server**
+  defect, not arcadic's (client-side TLS is unaffected). Fixed upstream (per-connection handshake
+  threads + read timeout). If your server build predates the fix, treat the hazard as present —
+  it is condition-dependent (early-close/stall trigger it; a clean `unknown_ca` alert exchange
+  does not), so a clean probe proves nothing — and upgrade. Tracked at
+  [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.

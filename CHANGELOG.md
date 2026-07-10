@@ -77,14 +77,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Documented an upstream ArcadeDB **server** hazard for operators running Bolt over TLS (older
-  builds): a single untrusted-cert TLS handshake failure could wedge ArcadeDB's shared Bolt listener
-  (~100% CPU, no ServerHello for any client) until the server restarts. arcadic's client-side TLS is
-  unaffected. **Re-verified FIXED on ArcadeDB 26.8.1-SNAPSHOT (2026-07-09):** after a `verify_peer`
-  `unknown_ca` rejection the listener kept answering ServerHello for all subsequent clients at idle
-  CPU (throwaway-container probe). The operator note is version-qualified, not removed (older builds
-  are still affected — observed on `latest` as of 2026-07-06). Tracked upstream at
-  [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
+- Documented an upstream ArcadeDB **server** hazard for operators running Bolt over TLS: the
+  listener performed TLS handshakes on its single shared accept thread, so one early-closed,
+  stalled, or untrusted-cert handshake could wedge Bolt for every client (~100% CPU tight loop or
+  no ServerHello) until restart. arcadic's client-side TLS is unaffected. Reported by arcadic;
+  root-caused and fixed upstream on `main` 2026-07-08 (per-connection handshake threads + read
+  timeout), shipping in 26.7.2 —
+  [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106). Builds predating
+  the fix remain affected; the wedge is condition-dependent (a cleanly-delivered `unknown_ca`
+  alert does not trigger it — early-close/stall do), so a clean probe on a pre-fix build proves
+  nothing.
 
 ## [0.3.0] - 2026-07-05
 

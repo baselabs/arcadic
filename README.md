@@ -387,17 +387,20 @@ default** (verifies the server certificate against the OS trust store); pass
 `ssl_opts: [verify: :verify_none]` to opt out (documents the MITM exposure — only for a trusted
 network path, e.g. local dev).
 
-> **Operator note — upstream ArcadeDB Bolt-TLS hazard (older builds only).** On older ArcadeDB
-> builds, with the Bolt-TLS listener enabled, a single untrusted-cert TLS handshake failure could
-> wedge the server's **shared** Bolt listener: it pinned a core at ~100% CPU and stopped answering
-> (no ServerHello) for every subsequent client until ArcadeDB was restarted. This is an ArcadeDB
-> **server** defect, not an arcadic one — arcadic's client-side TLS (secure-by-default `verify_peer`,
-> fail-closed on an untrusted cert) is unaffected. **Re-verified FIXED on ArcadeDB 26.8.1-SNAPSHOT
-> (build `5cc625613`, 2026-07-09):** after a `verify_peer` `unknown_ca` rejection the listener kept
-> answering ServerHello for all subsequent clients with idle CPU (probed on a throwaway container).
-> The hazard was still observed on the `latest` image as of 2026-07-06, so if you run an older
-> ArcadeDB build, treat it as present and upgrade. Tracked upstream at
-> [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
+> **Operator note — upstream ArcadeDB Bolt-TLS hazard (fixed upstream 2026-07-08; ships in
+> 26.7.2).** On ArcadeDB builds predating the fix, the Bolt-TLS listener performed every TLS
+> handshake on its single shared accept thread, so one bad handshake could deny Bolt to all
+> clients: an early-closed connection sent the accept thread into a tight loop (~100% CPU), and a
+> stalled or untrusted-cert handshake blocked every subsequent client (no ServerHello) until
+> ArcadeDB was restarted. This is an ArcadeDB **server** defect, not an arcadic one — arcadic's
+> client-side TLS (secure-by-default `verify_peer`, fail-closed on an untrusted cert) is
+> unaffected. Root-caused and fixed upstream on `main` 2026-07-08 (per-connection handshake
+> threads + read timeout) — see
+> [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106). If your server
+> build predates the fix (including `26.8.1-SNAPSHOT` images built before 2026-07-08), treat the
+> hazard as present and upgrade: the wedge is condition-dependent (early-close/stalled handshakes
+> trigger it; a cleanly-delivered `unknown_ca` alert does not), so a clean probe on a pre-fix
+> build proves nothing.
 
 ## Bolt transport (optional)
 
