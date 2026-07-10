@@ -40,7 +40,7 @@ defmodule Arcadic.Backup do
   @spec restore(Conn.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, atom() | Exception.t()}
   def restore(%Conn{} = conn, name, url) do
-    with :ok <- valid_name(name), :ok <- valid_url(url) do
+    with :ok <- Identifier.validate(name), :ok <- valid_url(url) do
       Admin.span(:restore, fn -> Admin.command(conn, "restore database #{name} #{url}") end)
     end
   end
@@ -59,13 +59,6 @@ defmodule Arcadic.Backup do
     case Identifier.validate_url(url) do
       :ok -> :ok
       {:error, _} -> {:error, :invalid_url}
-    end
-  end
-
-  defp valid_name(name) do
-    case Identifier.validate(name) do
-      :ok -> :ok
-      {:error, _} = e -> e
     end
   end
 

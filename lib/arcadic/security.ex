@@ -55,7 +55,7 @@ defmodule Arcadic.Security do
   @spec create_user(Conn.t(), map()) :: :ok | {:error, atom() | Exception.t()}
   def create_user(%Conn{} = conn, %{name: name, password: password} = spec)
       when is_binary(name) and is_binary(password) do
-    with :ok <- valid_name(name),
+    with :ok <- Identifier.validate(name),
          {:ok, json} <- encode_user(name, password, Map.get(spec, :databases, %{})) do
       Admin.span(:create_user, fn -> Admin.to_ok(Admin.command(conn, "create user " <> json)) end)
     end
@@ -69,7 +69,7 @@ defmodule Arcadic.Security do
   @doc "Drop a server user. Validates `name`."
   @spec drop_user(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def drop_user(%Conn{} = conn, name) do
-    with :ok <- valid_name(name),
+    with :ok <- Identifier.validate(name),
          do:
            Admin.span(:drop_user, fn -> Admin.to_ok(Admin.command(conn, "drop user #{name}")) end)
   end
@@ -91,13 +91,6 @@ defmodule Arcadic.Security do
   def create_user!(%Conn{} = conn, spec), do: bang(create_user(conn, spec))
   @spec drop_user!(Conn.t(), String.t()) :: :ok
   def drop_user!(%Conn{} = conn, name), do: bang(drop_user(conn, name))
-
-  defp valid_name(name) do
-    case Identifier.validate(name) do
-      :ok -> :ok
-      {:error, _} = e -> e
-    end
-  end
 
   # `Jason.encode` (NOT `encode!`): a non-UTF8 binary password passes the `is_binary` guard but makes
   # `encode!` RAISE a `Jason.EncodeError` whose message renders the raw password bytes — a Rule-3 leak.
