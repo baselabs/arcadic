@@ -73,7 +73,8 @@ defmodule Arcadic.Server do
 
   @doc "Liveness probe (`GET /api/v1/health` → 204)."
   @spec health?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
-  def health?(%Conn{} = conn), do: Admin.call(conn, :health?)
+  def health?(%Conn{} = conn),
+    do: Admin.span(:health?, fn -> Admin.call(conn, :health?) end)
 
   @doc ~S|Server event log map (`%{"events" => [...], "files" => [...]}`).|
   @spec events(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}

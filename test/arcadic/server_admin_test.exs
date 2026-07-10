@@ -263,6 +263,14 @@ defmodule Arcadic.ServerAdminTest do
     :telemetry.detach(ref)
   end
 
+  test "health? emits a [:arcadic, :admin] span (operation :health?) and keeps its {:ok, bool} return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Plug.Conn.send_resp(c, 204, "") end)
+    assert {:ok, true} = Server.health?(conn())
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :health?}}
+    :telemetry.detach(ref)
+  end
+
   describe "bang variants for the new Server functions (spec requires bangs for each new fn)" do
     test "all 11 new bangs are exported with the right arity" do
       Code.ensure_loaded!(Server)
