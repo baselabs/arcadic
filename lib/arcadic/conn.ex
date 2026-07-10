@@ -79,6 +79,10 @@ defmodule Arcadic.Conn do
   def with_bearer(%__MODULE__{} = conn, token) when is_binary(token),
     do: %{conn | auth: {:bearer, token}, session_id: nil}
 
+  # A non-binary token would otherwise FunctionClauseError, echoing the token in the blame (Rule 3).
+  def with_bearer(%__MODULE__{}, _token),
+    do: raise(ArgumentError, "bearer token must be a string")
+
   defp validate_identifier!(database) do
     case Identifier.validate(database) do
       :ok -> :ok

@@ -110,5 +110,15 @@ defmodule Arcadic.ConnTest do
       e = assert_raise ArgumentError, fn -> Conn.with_bearer(bolt_conn, "AU-secret") end
       refute Exception.message(e) =~ "AU-secret"
     end
+
+    test "with_bearer/2 rejects a non-binary token value-free (no FunctionClauseError blame echo)" do
+      # The classic footgun: a charlist token instead of a binary. Without a fallback clause this
+      # FunctionClauseErrors, echoing the token in the blame (a Rule-3 secret leak). Must raise a
+      # value-free ArgumentError instead.
+      conn = Conn.new("http://a.invalid", "db", auth: {"root", "x"})
+      e = assert_raise ArgumentError, fn -> Conn.with_bearer(conn, ~c"AU-secret-tok") end
+      refute Exception.message(e) =~ "AU-secret-tok"
+      refute Exception.message(e) =~ "secret"
+    end
   end
 end
