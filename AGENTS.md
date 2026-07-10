@@ -108,7 +108,11 @@ The client surface and the Phase-1 completion design (S1–S6) are shipped and
 closed. Current work is **Phase 2 — gap closure (S7–S12)**: see the local working
 docs `docs/superpowers/ROADMAP.md` (detail) and `docs/superpowers/BACKLOG.md`
 (status). S7 (correctness + docs currency) shipped; **S8 (admin & operations —
-G2–G7, G15, G18 + new `Arcadic.Security`/`Arcadic.Backup`) is EXECUTED** (14 code
-tasks, all gates green), with the closeout review (`/review-autopilot`) pending.
-Next: run the S8 closeout review, then `/brainstorm-autopilot` S9 against the
-verified contract above.
+G2–G7, G15, G18 + new `Arcadic.Security`/`Arcadic.Backup`) is EXECUTED +
+CLOSED** — closeout `/review-autopilot --fix` complete 2026-07-10 at **100/100**
+(closeout fixes on top of exec; final unit 361/0, dialyzer 0, credo 609/0). The
+closeout added the 11 spec-required `Server.*!` bang variants, closed a Rule-3
+`create_user`/`with_bearer` `FunctionClauseError` secret-leak (value-free
+fallbacks), and relaxed the setting-value guard to allow non-ASCII printable.
+Next: `/brainstorm-autopilot` S9 (batch/full-text/hybrid-fuse/`$bytes`) against
+the verified contract above.
