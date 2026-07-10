@@ -42,7 +42,7 @@ you launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_BOLT_HOST`, `ARCADIC_BOLT_PORT
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.4"},
+  {:arcadic, "~> 0.5"},
   {:boltx, "~> 0.0.6"},
   {:kino, "~> 0.14"}
 ])
@@ -130,11 +130,7 @@ Arcadic.query!(conn, "SELECT name, role FROM Person ORDER BY name", %{}, languag
 
 ## Inspecting the plan (EXPLAIN)
 
-> **Requires arcadic ≥ 0.5.** `explain/4`/`profile/4` are not yet in a published release, so
-> this cell raises `UndefinedFunctionError` under the `{:arcadic, "~> 0.4"}` pin above. To run
-> it today, point the install at the repo instead —
-> `{:arcadic, github: "baselabs/arcadic"}` (or a local `path:` dep). Once 0.5 publishes, the
-> `~> 0.4` pin resolves to it and this note no longer applies.
+> **Requires arcadic ≥ 0.5** (satisfied by the `~> 0.5` pin above).
 
 `Arcadic.explain!/4` prepends `EXPLAIN` and returns the query plan **without running
 the statement** — handy for checking how ArcadeDB will resolve a query (by type scan,

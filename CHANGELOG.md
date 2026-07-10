@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-10
+
 ### Added
 
 - `Arcadic.explain/4` + `Arcadic.profile/4` (+ `!`) — surface the ArcadeDB EXPLAIN/PROFILE plan
@@ -65,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Docs: SQL `:name` vs Cypher `$name` parameter binding is now documented; the Bolt-streaming
   example uses `Arcadic.Transport.Bolt.setup/1` (the prior `transport_options: [bolt: …]` form
-  returned `:not_supported` for streaming); `~> 0.4` install pins; hexdoc module groups.
+  returned `:not_supported` for streaming); `~> 0.5` install pins; hexdoc module groups.
 
 ### Notes
 

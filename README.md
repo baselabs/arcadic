@@ -616,7 +616,7 @@ Add `arcadic` from [Hex](https://hex.pm/packages/arcadic):
 ```elixir
 def deps do
   [
-    {:arcadic, "~> 0.4"},
+    {:arcadic, "~> 0.5"},
     # optional, for the Bolt transport:
     {:boltx, "~> 0.0.6"}
   ]
