@@ -1,0 +1,309 @@
+# GraphRAG with Arcadic
+
+## Setup
+
+**GraphRAG** augments retrieval-augmented generation with a knowledge graph: entities
+and their relationships give a retriever a second axis (multi-hop traversal) alongside
+similarity search. This notebook builds a tiny graph — people, documents, and the edges
+between them — then walks every retrieval primitive `Arcadic` ships: bulk graph ingest,
+idempotent upsert, dense and sparse vector indexes, full-text search, hybrid fusion,
+INT8-quantized vectors, and a Cypher traversal.
+
+This notebook needs a running **ArcadeDB**. The quickest way is Docker:
+
+```
+docker run -d --name arcadic-graphrag \
+  -p 2480:2480 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  arcadedata/arcadedb:latest
+```
+
+Only the HTTP port (**2480**) is needed — every operation below (`Bulk`, `FullText`,
+`Vector`, `Param`) is HTTP-only; none of it runs over Bolt.
+
+Every connection value can be overridden with an environment variable set before you
+launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_PASSWORD`); otherwise the defaults match
+the `docker run` above.
+
+> **Re-running cells.** Most cells re-run cleanly: the raw `CREATE VERTEX/EDGE TYPE` and
+> `CREATE PROPERTY` statements carry `IF NOT EXISTS` guards, the dense-vector and full-text
+> index helpers emit `IF NOT EXISTS` internally, and the upsert, search, fuse, and traversal
+> cells are idempotent or read-only. **Two cells are not re-run-safe.** The **"Build a small
+> knowledge graph"** cell (Section 1) has guarded type-creates but then calls create-only
+> `Arcadic.Bulk.ingest/3`, so re-running it adds a *second copy* of every vertex and edge.
+> The **"Dense + sparse vector indexes"** cell (Section 3) raises `already exists` on re-run,
+> because the `LSM_SPARSE_VECTOR` index has no `IF NOT EXISTS` form (`create_sparse_index!`
+> takes no such flag). To redo either, run the **Cleanup** cell at the bottom, then run all
+> cells top to bottom.
+
+## Install
+
+> **Requires arcadic ≥ 0.5.** `Bulk`, `FullText`, `Vector.fuse/3`, and `Param` are not
+> yet in a published release, so this notebook errors under a `~> 0.4` pin. To run it
+> today, point the install at the repo instead — `{:arcadic, github: "baselabs/arcadic"}`
+> (or a local `path:` dep). Once 0.5 publishes, the `~> 0.5` pin below resolves to it and
+> this note no longer applies.
+
+```elixir
+Mix.install([
+  {:arcadic, "~> 0.5"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## Connect
+
+We create a throwaway `graphrag_quickstart` database to play in (only if it does not
+already exist, so this cell is safe to re-run).
+
+```elixir
+http_url = System.get_env("ARCADIC_HTTP_URL", "http://localhost:2480")
+password = System.get_env("ARCADIC_PASSWORD", "playwithdata")
+database = "graphrag_quickstart"
+
+admin = Arcadic.connect(http_url, database, auth: {"root", password})
+{:ok, true} = Arcadic.Server.ready?(admin)
+
+unless match?({:ok, true}, Arcadic.Server.database_exists?(admin, database)) do
+  Arcadic.Server.create_database!(admin, database)
+end
+
+conn = Arcadic.connect(http_url, database, auth: {"root", password})
+```
+
+## 1. Build a small knowledge graph
+
+`Arcadic.Bulk.ingest/3` bulk-creates vertices and edges in one POST to ArcadeDB's batch
+endpoint — structured record ingest, not statement text, so it is injection-inert. It
+does not create schema, so the vertex/edge types must already exist.
+
+Each **vertex** record carries an `"@id"` — a string that is only a *temporary handle*
+for wiring edges within this one batch; it is never persisted as a property. Each
+**edge** record's `"@from"`/`"@to"` reference those `"@id"` values. Because `"@id"` isn't
+persisted, we also give each vertex a real `"id"` property — the stable business key
+we'll `MATCH`/`MERGE` on in later cells, after the batch handles are long gone. The
+`200` response's `id_mapping` maps every temporary `"@id"` to the real RID ArcadeDB
+assigned it.
+
+```elixir
+Arcadic.command!(conn, "CREATE VERTEX TYPE Person IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE VERTEX TYPE Document IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE EDGE TYPE KNOWS IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE EDGE TYPE WROTE IF NOT EXISTS", %{}, language: "sql")
+
+{:ok, counts} =
+  Arcadic.Bulk.ingest(conn, [
+    %{
+      "@type" => "vertex",
+      "@class" => "Person",
+      "@id" => "alice",
+      "id" => "alice",
+      "name" => "Alice",
+      "role" => "engineer"
+    },
+    %{
+      "@type" => "vertex",
+      "@class" => "Person",
+      "@id" => "bob",
+      "id" => "bob",
+      "name" => "Bob",
+      "role" => "researcher"
+    },
+    %{
+      "@type" => "vertex",
+      "@class" => "Document",
+      "@id" => "doc1",
+      "id" => "doc1",
+      "title" => "Graph databases 101",
+      "body" => "A graph database models data as nodes and edges for fast multi-hop traversal."
+    },
+    %{
+      "@type" => "vertex",
+      "@class" => "Document",
+      "@id" => "doc2",
+      "id" => "doc2",
+      "title" => "Vector search primer",
+      "body" => "Vector search finds nearest neighbors in embedding space for semantic retrieval."
+    },
+    %{
+      "@type" => "vertex",
+      "@class" => "Document",
+      "@id" => "doc3",
+      "id" => "doc3",
+      "title" => "Fraud detection with graphs",
+      "body" => "Fraud rings can be uncovered by traversing the graph of transactions."
+    },
+    %{"@type" => "edge", "@class" => "KNOWS", "@from" => "alice", "@to" => "bob"},
+    %{"@type" => "edge", "@class" => "WROTE", "@from" => "alice", "@to" => "doc1"},
+    %{"@type" => "edge", "@class" => "WROTE", "@from" => "alice", "@to" => "doc3"},
+    %{"@type" => "edge", "@class" => "WROTE", "@from" => "bob", "@to" => "doc2"}
+  ])
+
+{counts.vertices_created, counts.edges_created}
+```
+
+```elixir
+counts.id_mapping
+|> Enum.map(fn {temp_id, rid} -> %{"temp_id" => temp_id, "rid" => rid} end)
+|> Kino.DataTable.new()
+```
+
+## 2. Batched upsert (UNWIND)
+
+`Bulk.ingest` is fast but **create-only** — a retry after a lost response duplicates
+every record. For an *idempotent* batch write, use the `UNWIND $rows` idiom over
+`Arcadic.command/4` instead: one `MERGE` per unwound row, matched on the real `id`
+property (not a batch-scoped `"@id"`). This updates Alice's role and adds a new person,
+Carol, who was not part of the original bulk load.
+
+```elixir
+rows = [
+  %{"id" => "alice", "props" => %{"role" => "staff engineer"}},
+  %{"id" => "carol", "props" => %{"name" => "Carol", "role" => "PM"}}
+]
+
+merge = "UNWIND $rows AS r MERGE (p:Person {id: r.id}) SET p += r.props RETURN count(p) AS c"
+
+{:ok, [%{"c" => 2}]} = Arcadic.command(conn, merge, %{"rows" => rows})
+
+# Replay the identical batch — MERGE matches the existing people instead of duplicating
+# them, which is exactly what Bulk.ingest above would NOT have done.
+{:ok, [%{"c" => 2}]} = Arcadic.command(conn, merge, %{"rows" => rows})
+
+Arcadic.query!(conn, "MATCH (p:Person) RETURN count(p) AS total", %{})
+```
+
+## 3. Dense + sparse vector indexes
+
+`Arcadic.Vector.create_dense_index!/5` builds an `LSM_VECTOR` index for nearest-neighbor
+search over a float embedding. `create_sparse_index!/5` builds an `LSM_SPARSE_VECTOR`
+index over a `(tokens, weights)` pair for a learned-sparse / BM25-style search.
+
+**Ordering matters for the sparse index**: unlike dense (and unlike `FullText`, next
+section), a sparse index does **not** retro-index rows that already exist — only rows
+written *after* the index is created become searchable. We create both indexes before
+setting any vector data on the `Document` rows the bulk step above already created.
+
+```elixir
+Arcadic.command!(conn, "CREATE PROPERTY Document.embedding IF NOT EXISTS ARRAY_OF_FLOATS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE PROPERTY Document.tokens IF NOT EXISTS ARRAY_OF_INTEGERS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE PROPERTY Document.weights IF NOT EXISTS ARRAY_OF_FLOATS", %{}, language: "sql")
+
+:ok = Arcadic.Vector.create_dense_index!(conn, "Document", "embedding", 3, similarity: :cosine)
+
+# create-before-load — see the caveat above.
+:ok = Arcadic.Vector.create_sparse_index!(conn, "Document", "tokens", "weights")
+
+doc_vectors = [
+  %{
+    "id" => "doc1",
+    "embedding" => [1.0, 0.0, 0.0],
+    "tokens" => [10, 11, 12],
+    "weights" => [0.9, 0.5, 0.2]
+  },
+  %{
+    "id" => "doc2",
+    "embedding" => [0.0, 0.0, 1.0],
+    "tokens" => [20, 21, 22],
+    "weights" => [0.7, 0.4, 0.3]
+  },
+  %{
+    "id" => "doc3",
+    "embedding" => [0.9, 0.1, 0.0],
+    "tokens" => [10, 13, 14],
+    "weights" => [0.6, 0.5, 0.4]
+  }
+]
+
+Arcadic.command!(
+  conn,
+  "UNWIND $rows AS r MATCH (d:Document {id: r.id}) " <>
+    "SET d.embedding = r.embedding, d.tokens = r.tokens, d.weights = r.weights",
+  %{"rows" => doc_vectors}
+)
+```
+
+## 4. Full-text index + search
+
+`Arcadic.FullText.create_index/4` builds a Lucene-backed `FULL_TEXT` index. Unlike the
+sparse vector index above, `FULL_TEXT` **does** retro-index existing rows — the three
+`Document`s the bulk step created are searchable immediately, no reload required.
+
+`search/5` with `with_score: true` projects the BM25 relevance score alongside each row.
+
+```elixir
+Arcadic.command!(conn, "CREATE PROPERTY Document.body IF NOT EXISTS STRING", %{}, language: "sql")
+
+:ok = Arcadic.FullText.create_index(conn, "Document", "body")
+
+{:ok, rows} =
+  Arcadic.FullText.search(conn, "Document", "body", "graph", with_score: true, limit: 5)
+
+Kino.DataTable.new(rows)
+```
+
+## 5. Hybrid retrieval (fuse)
+
+`Arcadic.Vector.fuse/3` runs several heterogeneous neighbor subqueries — dense, sparse,
+and/or full-text — and returns one fused, re-ranked list (reciprocal-rank fusion by
+default). Here we combine all three modalities: a dense arm (nearest to `doc1`'s embedding
+direction), a sparse arm (nearest to `doc1`'s learned-sparse `(tokens, weights)`
+signature, using the values loaded in Section 3), and a full-text arm (`"graph"`). `doc1`
+and `doc3` match all three signals and rank highest; `doc2` matches only the dense arm and
+trails.
+
+```elixir
+{:ok, rows} =
+  Arcadic.Vector.fuse(conn, [
+    {"Document", "embedding", [1.0, 0.0, 0.0], 3},
+    {:sparse, "Document", "tokens", "weights", [10, 11, 12], [0.9, 0.5, 0.2], 3},
+    {:fulltext, "Document", "body", "graph", 5}
+  ])
+
+Kino.DataTable.new(rows)
+```
+
+## 6. INT8-quantized ingest
+
+`Arcadic.Param.int8/1` wraps a list of signed bytes (`-128..127`) as ArcadeDB's `$int8`
+typed-param marker, decoded server-side into a `BINARY` property — a compact way to
+store a quantized embedding signature. **Requires ArcadeDB ≥ 26.5.1; HTTP-only** (the
+decode lives in ArcadeDB's HTTP command handler — inert over Bolt).
+
+```elixir
+Arcadic.command!(conn, "CREATE PROPERTY Document.signature IF NOT EXISTS BINARY", %{}, language: "sql")
+
+Arcadic.command!(
+  conn,
+  "UPDATE Document SET signature = :sig WHERE id = :id",
+  %{"sig" => Arcadic.Param.int8([0, 64, 127, -1, -128]), "id" => "doc1"},
+  language: "sql"
+)
+
+Arcadic.query!(conn, "SELECT signature FROM Document WHERE id = :id", %{"id" => "doc1"},
+  language: "sql"
+)
+```
+
+## 7. Graph traversal (multi-hop retrieval)
+
+The graph half of graphRAG: instead of (or alongside) similarity search, hop across
+relationships to pull in context. Starting from Alice, follow `KNOWS` to a contact, then
+`WROTE` to that contact's documents — "documents written by people Alice knows."
+
+```elixir
+Arcadic.query!(
+  conn,
+  "MATCH (a:Person {id: $start})-[:KNOWS]->(friend:Person)-[:WROTE]->(d:Document) " <>
+    "RETURN friend.name AS author, d.title AS title",
+  %{"start" => "alice"}
+)
+```
+
+## Cleanup
+
+Drop the throwaway database when you are done (or before a fresh top-to-bottom run).
+
+```elixir
+Arcadic.Server.drop_database(admin, database)
+```
