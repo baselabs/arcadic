@@ -65,6 +65,7 @@ defmodule Arcadic.Bulk do
     end
 
     Opts.validate_keys!(opts, @ingest_opts)
+    validate_opt_values!(opts)
 
     with {:ok, ndjson} <- encode_ndjson(records) do
       Telemetry.span(:bulk, %{operation: :ingest, mode: :write}, fn ->
@@ -85,6 +86,32 @@ defmodule Arcadic.Bulk do
   end
 
   # --- private ---
+
+  # `Opts.validate_keys!` guards only KEYS; the option VALUES flow to the wire otherwise unchecked.
+  # `:commit_every`/`:timeout` must be positive integers, `:light_edges` a boolean. Value-free (house
+  # style): the static message names the option, never the offending value.
+  defp validate_opt_values!(opts) do
+    require_pos_int_opt!(opts, :commit_every)
+    require_pos_int_opt!(opts, :timeout)
+    require_boolean_opt!(opts, :light_edges)
+    :ok
+  end
+
+  defp require_pos_int_opt!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, v} when is_integer(v) and v > 0 -> :ok
+      {:ok, _} -> raise ArgumentError, "#{key} must be a positive integer"
+    end
+  end
+
+  defp require_boolean_opt!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, v} when is_boolean(v) -> :ok
+      {:ok, _} -> raise ArgumentError, "#{key} must be a boolean"
+    end
+  end
 
   defp encode_ndjson(records) do
     records
@@ -109,21 +136,34 @@ defmodule Arcadic.Bulk do
   defp reduce_record(_record, {:ok, _acc}),
     do: {:halt, {:raise, "each bulk record must be a map"}}
 
-  # An empty batch never hits the wire — POSTing empty NDJSON is a pointless round-trip. Return the
-  # zero-count success the endpoint would produce for no work; it flows through shape/stop_meta so the
-  # span still fires (row_count: 0). `ndjson == []` iff `records == []` (any record yields a non-empty
-  # line), so matching the encoded form here needs no extra flag.
-  defp dispatch(_conn, [], _opts), do: {:ok, %{}}
-
+  # Capability is checked BEFORE the empty short-circuit: a transport with no batch endpoint is
+  # :not_supported regardless of payload (else Bolt + [] would spuriously succeed while Bolt + [record]
+  # is :not_supported — inconsistent). A supported transport + empty NDJSON never hits the wire — POSTing
+  # empty NDJSON is a pointless round-trip — so return the server-shaped zero-count success the endpoint
+  # would produce for no work; it carries `verticesCreated` so shape/stop_meta's count-key guard passes
+  # and the span still fires (row_count: 0). `ndjson == []` iff `records == []` (any record yields a
+  # non-empty line), so matching the encoded form here needs no extra flag.
   defp dispatch(%Conn{transport: transport} = conn, ndjson, opts) do
-    if Code.ensure_loaded?(transport) and function_exported?(transport, :batch_ingest, 3) do
-      transport.batch_ingest(conn, ndjson, opts)
-    else
-      {:error, %Error{reason: :not_supported, message: "transport does not support bulk ingest"}}
+    cond do
+      not (Code.ensure_loaded?(transport) and function_exported?(transport, :batch_ingest, 3)) ->
+        {:error,
+         %Error{reason: :not_supported, message: "transport does not support bulk ingest"}}
+
+      ndjson == [] ->
+        {:ok,
+         %{"verticesCreated" => 0, "edgesCreated" => 0, "elapsedMs" => 0, "idMapping" => %{}}}
+
+      true ->
+        transport.batch_ingest(conn, ndjson, opts)
     end
   end
 
-  defp shape({:ok, body}) when is_map(body) do
+  # Require the count key: a malformed 2xx map that is MISSING `verticesCreated` must NOT default
+  # to zero counts — a caller reading `{:ok, %{vertices_created: 0}}` from a body that actually
+  # committed writes could retry a non-idempotent batch and duplicate. Absence of the key reads as
+  # off-contract (same typed error as a non-map 2xx). `elapsedMs`/`idMapping` still default (not the
+  # retry hazard). The empty-batch short-circuit feeds a server-shaped zero map so this guard passes.
+  defp shape({:ok, body}) when is_map(body) and is_map_key(body, "verticesCreated") do
     {:ok,
      %{
        vertices_created: Map.get(body, "verticesCreated", 0),
@@ -133,13 +173,14 @@ defmodule Arcadic.Bulk do
      }}
   end
 
-  # The batch endpoint contract is a counts OBJECT; `Transport.HTTP.unwrap_body/1` returns {:ok, body}
-  # for ANY 2xx body (no is_map guard), so a non-map 2xx (empty/list/scalar) is genuinely off-contract
-  # — a total fallback returns a typed error instead of a FunctionClauseError inside the span callback.
+  # The batch endpoint contract is a counts OBJECT carrying `verticesCreated`; `Transport.HTTP.unwrap_body/1`
+  # returns {:ok, body} for ANY 2xx body (no is_map guard), so a non-map 2xx (empty/list/scalar) OR a map
+  # missing the counts is genuinely off-contract — a total fallback returns a typed error instead of a
+  # FunctionClauseError inside the span callback (or a duplicate-inducing zero-count success).
   defp shape({:ok, _}), do: {:error, :unexpected_response}
   defp shape({:error, _} = err), do: err
 
-  defp stop_meta({:ok, body}) when is_map(body),
+  defp stop_meta({:ok, body}) when is_map(body) and is_map_key(body, "verticesCreated"),
     do: %{
       reason: :ok,
       row_count: Map.get(body, "verticesCreated", 0) + Map.get(body, "edgesCreated", 0)

@@ -90,6 +90,26 @@ defmodule Arcadic.BulkTest do
     assert_raise ArgumentError, fn -> Bulk.ingest(conn(), [%{"@type" => "vertex"}], nope: 1) end
   end
 
+  test "commit_every / timeout / light_edges option VALUES are validated value-free" do
+    # Opts.validate_keys! guards only KEYS; a bad value (non-pos-int commit_every/timeout, or a
+    # non-boolean light_edges) would otherwise flow to the wire unchecked. Value-free: a sentinel
+    # value must never surface in the blame.
+    for opts <- [
+          [commit_every: 0],
+          [commit_every: "SEKRIT-opt"],
+          [timeout: 0],
+          [timeout: "SEKRIT-opt"],
+          [light_edges: "SEKRIT-opt"]
+        ] do
+      err =
+        assert_raise ArgumentError, fn ->
+          Bulk.ingest(conn(), [%{"@type" => "vertex"}], opts)
+        end
+
+      refute err.message =~ "SEKRIT-opt"
+    end
+  end
+
   test "a non-list records arg is rejected value-free (record never echoed in blame)" do
     err =
       assert_raise ArgumentError, fn ->
@@ -109,7 +129,7 @@ defmodule Arcadic.BulkTest do
   test "emits a value-free [:arcadic, :bulk, :stop] span with the created row_count" do
     stub_ok()
     ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :bulk, :stop]])
-    Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "id" => 1}])
+    Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
     # row_count rides METADATA (pos 4), not measurements — Telemetry.span folds stop_meta into
     # :telemetry.span's metadata; stop measurements are fixed to %{duration, monotonic_time}.
     assert_received {[:arcadic, :bulk, :stop], ^ref, _measurements,
@@ -122,17 +142,34 @@ defmodule Arcadic.BulkTest do
     Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, []) end)
 
     assert {:error, :unexpected_response} =
-             Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "id" => 1}])
+             Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
+  end
+
+  test "a 2xx map missing verticesCreated is {:error, :unexpected_response} (retry-hazard guard)" do
+    # A malformed 2xx body missing the counts must NOT default to zero counts — a caller could
+    # then retry a non-idempotent write and duplicate. It reads as off-contract, same as a non-map.
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"elapsedMs" => 3}) end)
+
+    assert {:error, :unexpected_response} =
+             Bulk.ingest(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
   end
 
   test "an empty records list is a no-op zero-count success (no wire call)" do
     stub_ok()
 
-    assert {:ok, %{vertices_created: 0, edges_created: 0, elapsed_ms: 0}} =
+    assert {:ok, %{vertices_created: 0, edges_created: 0, elapsed_ms: 0, id_mapping: %{}}} =
              Bulk.ingest(conn(), [])
 
     # stub_ok's send/2 fires only on a real request — an empty batch must not POST.
     refute_received {:body, _}
+  end
+
+  test "a Bolt conn + [] is {:error, :not_supported} (capability checked before the empty short-circuit)" do
+    # Consistency: Bolt + [record] is :not_supported, so Bolt + [] must be too — the capability
+    # check runs BEFORE the empty short-circuit, not after.
+    bolt = %{conn() | transport: Arcadic.Transport.Bolt}
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} = Bulk.ingest(bolt, [])
   end
 
   test "span row_count is the additive vertices + edges count" do
@@ -151,7 +188,7 @@ defmodule Arcadic.BulkTest do
     stub_ok()
 
     assert %{vertices_created: 2, edges_created: 0, elapsed_ms: 3} =
-             Bulk.ingest!(conn(), [%{"@type" => "vertex", "@class" => "P", "id" => 1}])
+             Bulk.ingest!(conn(), [%{"@type" => "vertex", "@class" => "P", "@id" => "t1"}])
   end
 
   test "ingest!/3 re-raises the underlying Arcadic.Error on an error result" do
