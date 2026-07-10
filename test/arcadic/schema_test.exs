@@ -9,6 +9,9 @@ defmodule Arcadic.SchemaTest do
         transport_options: [plug: {Req.Test, __MODULE__}]
       )
 
+  # Stub the transport with a per-request handler function.
+  defp stub(fun) when is_function(fun, 1), do: Req.Test.stub(__MODULE__, fun)
+
   # Stub the transport: capture the request body, reply with `result`.
   defp stub(result) do
     Req.Test.stub(__MODULE__, fn c ->
@@ -149,5 +152,56 @@ defmodule Arcadic.SchemaTest do
   test "database!/1 unwraps to the config map" do
     stub([%{"name" => "db"}])
     assert %{"name" => "db"} = Arcadic.Schema.database!(conn())
+  end
+
+  test "stats/1 & dictionary/1 return a single @props-stripped map; materialized_views/1 a list" do
+    stub(fn c ->
+      cmd = Jason.decode!(Req.Test.raw_body(c))["command"]
+
+      body =
+        cond do
+          cmd == "SELECT FROM schema:stats" ->
+            [%{"writeTx" => 1, "@props" => "writeTx:3"}]
+
+          cmd == "SELECT FROM schema:dictionary" ->
+            [%{"totalEntries" => 0, "entries" => %{}, "@props" => "entries:10"}]
+
+          cmd == "SELECT FROM schema:materializedviews" ->
+            []
+        end
+
+      Req.Test.json(c, %{"result" => body})
+    end)
+
+    assert {:ok, %{"writeTx" => 1} = s} = Schema.stats(conn())
+    refute Map.has_key?(s, "@props")
+    assert {:ok, %{"totalEntries" => 0} = d} = Schema.dictionary(conn())
+    refute Map.has_key?(d, "@props")
+    assert {:ok, []} = Schema.materialized_views(conn())
+  end
+
+  test "stats/1 returns {:ok, %{}} when schema:stats yields no row" do
+    stub([])
+    assert {:ok, %{}} = Schema.stats(conn())
+  end
+
+  test "dictionary/1 returns {:ok, %{}} when schema:dictionary yields no row" do
+    stub([])
+    assert {:ok, %{}} = Schema.dictionary(conn())
+  end
+
+  test "stats!/1 returns the bare stats map" do
+    stub([%{"writeTx" => 1, "@props" => "writeTx:3"}])
+    assert %{"writeTx" => 1} = Schema.stats!(conn())
+  end
+
+  test "dictionary!/1 returns the bare dictionary map" do
+    stub([%{"totalEntries" => 0, "@props" => "entries:10"}])
+    assert %{"totalEntries" => 0} = Schema.dictionary!(conn())
+  end
+
+  test "materialized_views!/1 returns the bare list" do
+    stub([%{"name" => "mv1", "@props" => "x:1"}])
+    assert [%{"name" => "mv1"}] = Schema.materialized_views!(conn())
   end
 end

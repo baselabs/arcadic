@@ -103,6 +103,35 @@ defmodule Arcadic.Schema do
   @spec indexes!(Conn.t(), keyword()) :: [map()]
   def indexes!(%Conn{} = conn, opts \\ []), do: bang(indexes(conn, opts))
 
+  @doc "Per-database operation counters (`schema:stats`), `@props`-stripped. Returns the single stats map."
+  @spec stats(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
+  def stats(%Conn{} = conn), do: single(query(conn, "SELECT FROM schema:stats"))
+
+  @doc "Returns the single stats map, or raises."
+  @spec stats!(Conn.t()) :: map()
+  def stats!(%Conn{} = conn), do: bang(stats(conn))
+
+  @doc "The record dictionary (`schema:dictionary`), `@props`-stripped. Returns the single dictionary map."
+  @spec dictionary(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
+  def dictionary(%Conn{} = conn), do: single(query(conn, "SELECT FROM schema:dictionary"))
+
+  @doc "Returns the single dictionary map, or raises."
+  @spec dictionary!(Conn.t()) :: map()
+  def dictionary!(%Conn{} = conn), do: bang(dictionary(conn))
+
+  @doc "Lists materialized views (`schema:materializedviews`), each `@props`-stripped."
+  @spec materialized_views(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
+  def materialized_views(%Conn{} = conn), do: query(conn, "SELECT FROM schema:materializedviews")
+
+  @doc "Lists materialized views, or raises."
+  @spec materialized_views!(Conn.t()) :: [map()]
+  def materialized_views!(%Conn{} = conn), do: bang(materialized_views(conn))
+
+  # Single-row selectors (stats/dictionary): return the first row, or an empty map when absent.
+  defp single({:ok, [row | _]}), do: {:ok, row}
+  defp single({:ok, []}), do: {:ok, %{}}
+  defp single({:error, _} = e), do: e
+
   # Runs a fixed schema:* SELECT (SQL-only) and deep-strips @props from every returned row.
   defp query(%Conn{} = conn, statement, params \\ %{}) do
     case Arcadic.query(conn, statement, params, language: "sql") do
