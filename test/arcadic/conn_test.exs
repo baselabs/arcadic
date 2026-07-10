@@ -1,7 +1,7 @@
 defmodule Arcadic.ConnTest do
   use ExUnit.Case, async: true
   doctest Arcadic.Conn
-  alias Arcadic.Conn
+  alias Arcadic.{Conn, Transport}
 
   describe "new/3" do
     test "builds a conn with defaults and a trimmed base_url" do
@@ -66,6 +66,49 @@ defmodule Arcadic.ConnTest do
       refute rendered =~ "sekret"
       refute rendered =~ "AS-secret"
       assert rendered =~ "[REDACTED]"
+    end
+  end
+
+  describe "bearer auth (G7)" do
+    test "auth {:bearer, token} + HTTP transport is accepted; with_bearer derives it" do
+      conn = Conn.new("http://a.invalid", "db", auth: {"root", "x"})
+      bearer = Conn.with_bearer(conn, "AU-tok")
+      assert bearer.auth == {:bearer, "AU-tok"}
+      assert bearer.session_id == nil
+    end
+
+    test "headers/1 emits Bearer for a bearer conn and Basic for a tuple conn (bearer-first)" do
+      bearer = Conn.new("http://a.invalid", "db", auth: {:bearer, "AU-tok"})
+      assert {"authorization", "Bearer AU-tok"} in Transport.HTTP.headers(bearer)
+      basic = Conn.new("http://a.invalid", "db", auth: {"root", "x"})
+
+      assert {"authorization", "Basic " <> _} =
+               List.keyfind(Transport.HTTP.headers(basic), "authorization", 0)
+    end
+
+    test "Inspect redacts a bearer token" do
+      refute inspect(Conn.new("http://a.invalid", "db", auth: {:bearer, "AU-secret"})) =~
+               "AU-secret"
+    end
+
+    test "bearer auth is rejected value-free for the Bolt transport (new/3 and with_bearer/2)" do
+      assert_raise ArgumentError, ~r/bearer auth requires the HTTP transport/, fn ->
+        Conn.new("http://a.invalid", "db",
+          auth: {:bearer, "AU-tok"},
+          transport: Arcadic.Transport.Bolt
+        )
+      end
+
+      bolt_conn =
+        Conn.new("http://a.invalid", "db", auth: {"root", "x"}, transport: Arcadic.Transport.Bolt)
+
+      assert_raise ArgumentError, ~r/bearer auth requires the HTTP transport/, fn ->
+        Conn.with_bearer(bolt_conn, "AU-tok")
+      end
+
+      # Rule 3: the raised message never echoes the token
+      e = assert_raise ArgumentError, fn -> Conn.with_bearer(bolt_conn, "AU-secret") end
+      refute Exception.message(e) =~ "AU-secret"
     end
   end
 end

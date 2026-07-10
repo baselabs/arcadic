@@ -435,6 +435,11 @@ defmodule Arcadic.Transport.HTTP do
 
   @doc false
   @spec headers(Conn.t()) :: [{String.t(), String.t()}]
+  def headers(%Conn{auth: {:bearer, token}, session_id: session_id}) do
+    base = [{"authorization", "Bearer " <> token}]
+    if session_id, do: [{"arcadedb-session-id", session_id} | base], else: base
+  end
+
   def headers(%Conn{auth: {user, pass}, session_id: session_id}) do
     base = [{"authorization", "Basic " <> Base.encode64("#{user}:#{pass}")}]
     if session_id, do: [{"arcadedb-session-id", session_id} | base], else: base

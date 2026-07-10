@@ -13,7 +13,7 @@ defmodule Arcadic.Conn do
   @type t :: %__MODULE__{
           base_url: String.t(),
           database: String.t(),
-          auth: {String.t(), String.t()},
+          auth: {String.t(), String.t()} | {:bearer, String.t()},
           session_id: String.t() | nil,
           transport: module(),
           transport_options: keyword(),
@@ -49,14 +49,16 @@ defmodule Arcadic.Conn do
   @spec new(String.t(), String.t(), keyword()) :: t()
   def new(base_url, database, opts \\ []) when is_binary(base_url) and is_binary(database) do
     auth = opts[:auth] || raise ArgumentError, "Arcadic.connect/3 requires :auth {user, pass}"
+    transport = Keyword.get(opts, :transport, Arcadic.Transport.HTTP)
     validate_identifier!(database)
+    validate_auth!(auth, transport)
 
     %__MODULE__{
       base_url: String.trim_trailing(base_url, "/"),
       database: database,
       auth: auth,
       session_id: nil,
-      transport: Keyword.get(opts, :transport, Arcadic.Transport.HTTP),
+      transport: transport,
       transport_options: Keyword.get(opts, :transport_options, []),
       timeout: Keyword.get(opts, :timeout)
     }
@@ -69,12 +71,27 @@ defmodule Arcadic.Conn do
     %{conn | database: database, session_id: nil}
   end
 
+  @doc "Derive a Bearer-auth handle from a Basic one (typically after `Arcadic.Security.login/1`)."
+  @spec with_bearer(t(), String.t()) :: t()
+  def with_bearer(%__MODULE__{transport: Arcadic.Transport.Bolt}, _token),
+    do: raise(ArgumentError, "bearer auth requires the HTTP transport")
+
+  def with_bearer(%__MODULE__{} = conn, token) when is_binary(token),
+    do: %{conn | auth: {:bearer, token}, session_id: nil}
+
   defp validate_identifier!(database) do
     case Identifier.validate(database) do
       :ok -> :ok
       {:error, :invalid_identifier} -> raise ArgumentError, "invalid database identifier"
     end
   end
+
+  # Bolt authenticates from transport_options (:username/:password), never conn.auth, so a
+  # {:bearer, _} conn on Bolt would silently ignore the token — reject value-free at construction.
+  defp validate_auth!({:bearer, _}, Arcadic.Transport.Bolt),
+    do: raise(ArgumentError, "bearer auth requires the HTTP transport")
+
+  defp validate_auth!(_auth, _transport), do: :ok
 
   defimpl Inspect do
     import Inspect.Algebra
