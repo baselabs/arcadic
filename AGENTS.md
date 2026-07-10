@@ -107,5 +107,8 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 The client surface and the Phase-1 completion design (S1–S6) are shipped and
 closed. Current work is **Phase 2 — gap closure (S7–S12)**: see the local working
 docs `docs/superpowers/ROADMAP.md` (detail) and `docs/superpowers/BACKLOG.md`
-(status). Next: `/brainstorm-autopilot` S7 (correctness + docs currency), then
-plan → exec → review against the verified contract above.
+(status). S7 (correctness + docs currency) shipped; **S8 (admin & operations —
+G2–G7, G15, G18 + new `Arcadic.Security`/`Arcadic.Backup`) is EXECUTED** (14 code
+tasks, all gates green), with the closeout review (`/review-autopilot`) pending.
+Next: run the S8 closeout review, then `/brainstorm-autopilot` S9 against the
+verified contract above.
