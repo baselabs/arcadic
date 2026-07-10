@@ -61,6 +61,11 @@ defmodule Arcadic.Security do
     end
   end
 
+  # Value-free fallback: a non-binary name/password, or a spec missing :name/:password, must NOT fall
+  # through to a FunctionClauseError — its blame echoes the whole spec map (password included, a Rule-3
+  # leak). Reject value-free instead, mirroring drop_user's total-on-input posture.
+  def create_user(%Conn{} = _conn, _spec), do: {:error, :invalid_user_spec}
+
   @doc "Drop a server user. Validates `name`."
   @spec drop_user(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def drop_user(%Conn{} = conn, name) do

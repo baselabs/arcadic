@@ -51,15 +51,18 @@ defmodule Arcadic.SecurityTest do
              Security.create_user(conn(), %{name: "bad name", password: "hunter2xyz"})
   end
 
-  test "create_user/2 NEVER echoes the password in a raised error (Rule 3)" do
-    # a server error (e.g. duplicate) is name-only; even a bang raise must not carry the password.
+  test "create_user/2 NEVER echoes the password in a raised error, even when the server body carries it (Rule 3)" do
+    # Red-capable: the fixture body deliberately EMBEDS the attempted password in both `error` and
+    # `detail`, simulating a hypothetical leaky server. arcadic's Error must quarantine both from
+    # message/1 and inspect/1 — an Error.message/1 that exposed `detail`/`message` would turn this red
+    # (the earlier password-FREE fixture could not catch that regression).
     # Produce a REAL 403 (the pipe form — put_status + json compose; a bare `&&` discards the status).
     Req.Test.stub(__MODULE__, fn c ->
       c
       |> Plug.Conn.put_status(403)
       |> Req.Test.json(%{
-        "error" => "Security error",
-        "detail" => "User 'x' already exists",
+        "error" => "Security error creating user (password SUPERSECRET_pw)",
+        "detail" => "rejected password SUPERSECRET_pw for user 'x'",
         "exception" => "java.lang.SecurityException"
       })
     end)
@@ -71,6 +74,29 @@ defmodule Arcadic.SecurityTest do
 
     refute Exception.message(e) =~ "SUPERSECRET_pw"
     refute inspect(e) =~ "SUPERSECRET_pw"
+  end
+
+  test "create_user/2 with a malformed spec never raises FunctionClauseError (which would echo the password) — value-free {:error, :invalid_user_spec}, no wire (Rule 3)" do
+    # The is_binary head guard has a value-free fallback: a non-binary name/password, or a spec
+    # missing :name/:password, must NOT reach the head-clause failure (whose FunctionClauseError blame
+    # echoes the full spec map — password included). All map to {:error, :invalid_user_spec} value-free.
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), :wire)
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    # non-binary name alongside a real password
+    r1 = Security.create_user(conn(), %{name: 999, password: "SUPERSECRET_pw"})
+    # the classic footgun: `password: 'secret'` is a charlist, is_binary/1 false
+    r2 = Security.create_user(conn(), %{name: "alice", password: ~c"SUPERSECRET_pw"})
+    # spec missing :password
+    r3 = Security.create_user(conn(), %{name: "alice"})
+
+    assert r1 == {:error, :invalid_user_spec}
+    assert r2 == {:error, :invalid_user_spec}
+    assert r3 == {:error, :invalid_user_spec}
+    refute_received :wire
+    refute inspect({r1, r2, r3}) =~ "SUPERSECRET_pw"
   end
 
   test "create_user/2 with a non-UTF8 binary password → value-free {:error, :invalid_user_spec}, no wire, no bytes (Rule 3)" do
