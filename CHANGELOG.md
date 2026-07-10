@@ -14,6 +14,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **`profile` executes the statement** (a write mutates). Works over HTTP and Bolt (Cypher-only).
 - `query`/`command`/`query_stream` now return `{:error, %Arcadic.Error{reason: :use_explain}}` on a
   bare EXPLAIN/PROFILE (was a silent `{:ok, []}`).
+- `Arcadic.Server` — server administration, expanded beyond database lifecycle: `info/2`
+  (server info/metrics, `mode: :basic | :default | :cluster`), `metrics/1`, `health?/1`,
+  `events/1`, `set_server_setting/3` / `set_database_setting/3` (key + value both
+  allowlist-validated value-free), `open_database/2` / `close_database/2`, `align_database/2`
+  (cluster-only — a single-server node returns a server error), `check_database/2`
+  (`fix: true` runs `CHECK DATABASE FIX`, returns the integrity map), `profiler/2`, and
+  `shutdown/1` (a successful shutdown typically surfaces as a transport-closed error, since
+  the server stops responding mid-request), alongside the existing `create_database/2` /
+  `drop_database/2` / `database_exists?/2` / `list_databases/1` / `ready?/1`. HTTP-only,
+  tenant-blind.
+- `Arcadic.Security` — server security & auth admin (HTTP-only): `login/1` / `logout/1`
+  (session tokens), `sessions/1`, `users/1`, `groups/1`, `api_tokens/1`, `create_user/2`,
+  and `drop_user/2` (all + `!`). `create_user/2`'s password is JSON-encoded into the server
+  command and never echoed — an unencodable spec (e.g. a non-UTF-8 password) is rejected
+  value-free as `{:error, :invalid_user_spec}` before any wire call.
+- `Arcadic.Backup` — backup and restore (HTTP-only): `backup/2` (`BACKUP DATABASE`, optional
+  `:to` target URL), `list/1`, and `restore/3` (all + `!`). A `:to` target and the restore
+  URL are allowlist-validated via `Arcadic.Identifier.validate_url/1` before interpolation
+  (neither command can bind a URL param), value-free on rejection (`{:error, :invalid_url}`).
+- `Arcadic.Conn.with_bearer/2` — derive a Bearer-token-authenticated connection from a
+  session token (typically `Arcadic.Security.login/1`'s); HTTP-only.
+- `Arcadic.Schema` — `stats/1` (`schema:stats`, per-database operation counters),
+  `dictionary/1` (`schema:dictionary`), and `materialized_views/1` (`schema:materializedviews`)
+  (all + `!`), `@props`-stripped like the rest of the module.
+- Every `Arcadic.Server` / `Arcadic.Security` / `Arcadic.Backup` call emits a value-free
+  `[:arcadic, :admin, :start | :stop | :exception]` telemetry span (metadata: `:operation`,
+  `:reason` — no database name, setting key/value, URL, or credential).
+- `Arcadic.command/4` / `command_async/4` accept an `:auto_commit` boolean opt, forwarded
+  as-is to ArcadeDB's `autoCommit` body param.
 
 ### Fixed
 

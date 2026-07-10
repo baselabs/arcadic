@@ -41,6 +41,16 @@ defmodule Arcadic.Error do
     capability (e.g. `explain/4` against a transport without it, HTTP streaming
     inside a transaction, Bolt's admin-only calls, async writes without
     `execute_async/3`).
+
+  A separate, non-`Arcadic.Error` convention: several admin validators reject
+  bad input as a **bare atom** tuple, never this struct, and never echoing the
+  offending value — `{:error, :invalid_identifier}` (`Arcadic.Identifier.validate/1`,
+  e.g. a bad database/type name), `{:error, :invalid_setting_key}` /
+  `{:error, :invalid_setting_value}` (`Arcadic.Server.set_server_setting/3` and
+  `set_database_setting/3`), `{:error, :invalid_url}`
+  (`Arcadic.Backup.backup/2`'s `:to` target and `restore/3`'s source URL, via
+  `Arcadic.Identifier.validate_url/1`), and `{:error, :invalid_user_spec}`
+  (`Arcadic.Security.create_user/2` — an unencodable user spec, e.g. a non-UTF-8 password).
   """
 
   defexception [:reason, :http_status, :exception, :message, :detail]

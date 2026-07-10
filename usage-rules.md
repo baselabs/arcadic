@@ -12,7 +12,11 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 ## Public surface
 
 - **`Arcadic`** — `connect/3`, `with_database/2`; `query/4` + `query!/4`
-  (idempotent read endpoint), `command/4` + `command!/4` (write endpoint),
+  (idempotent read endpoint), `command/4` + `command!/4` (write endpoint —
+  accepts an `:auto_commit` boolean opt, forwarded as-is to ArcadeDB's
+  `autoCommit` body param, not arcadic-interpreted; `auto_commit: false`
+  outside `transaction/3` means ArcadeDB itself does not auto-commit the
+  write),
   `command_async/4` (fire-and-forget, returns `:ok` on 202); `explain/4` + `explain!/4`
   (execution plan, **does NOT run** the statement) and `profile/4` + `profile!/4`
   (**EXECUTES** the statement — a write mutates — plan annotated with runtime
@@ -26,9 +30,44 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `EXPLAIN`/`PROFILE` prefix return `{:error, %Arcadic.Error{reason: :use_explain}}`
   — call `explain/4`/`profile/4` instead.
 - **`Arcadic.Conn`** — a pure-data connection handle (no process). Its `Inspect`
-  redacts auth and session id.
-- **`Arcadic.Server`** — server admin: `create_database/2` (+ `!`),
-  `drop_database/2` (+ `!`), `database_exists?/2`, `list_databases/1`, `ready?/1`.
+  redacts auth and session id. `with_database/2` derives a same-pool handle on
+  another database (clears the session); `with_bearer/2` derives a
+  Bearer-authenticated handle from a Basic one (typically fed
+  `Arcadic.Security.login/1`'s token) — **HTTP-only**, raises `ArgumentError`
+  on a Bolt conn (Bolt authenticates from `transport_options`, never
+  `conn.auth`).
+- **`Arcadic.Server`** — server/database admin, HTTP-only, not delegated from
+  the `Arcadic` facade: `create_database/2` (+ `!`), `drop_database/2` (+ `!`),
+  `database_exists?/2`, `list_databases/1`, `ready?/1`, `open_database/2`,
+  `close_database/2`, `align_database/2` (**cluster-only** — a single-server
+  node returns `{:error, %Arcadic.Error{reason: :server_error}}`),
+  `check_database/2` (`fix: true` → `CHECK DATABASE FIX`, returns the
+  integrity map), `info/2` (`mode: :basic | :default | :cluster`),
+  `metrics/1`, `health?/1`, `events/1`, `set_server_setting/3` /
+  `set_database_setting/3` (key + value both validated value-free — see
+  Errors below), and `profiler/2` (`action` ∈ `:results | :start | :stop |
+  :reset`). `shutdown/1` halts the server; a **successful** shutdown typically
+  surfaces as `{:error, %Arcadic.TransportError{reason: :closed}}` (the server
+  stops responding mid-request) rather than `:ok` — treat that as success, not
+  a retryable fault.
+- **`Arcadic.Security`** — session/identity admin, HTTP-only: `login/1` mints
+  a session token (`POST /api/v1/login`) — feed it to `Arcadic.Conn.with_bearer/2`
+  for subsequent Bearer-authenticated calls; `logout/1` revokes the current
+  session; `sessions/1`, `users/1`, `groups/1`, `api_tokens/1` list the
+  corresponding admin resources; `create_user/2` takes `%{name:, password:,
+  databases: %{db => [roles]}}` (`databases` optional) — the password is
+  JSON-encoded into the server command and **never echoed** in an error, log,
+  or telemetry line (an unencodable spec is rejected value-free as
+  `{:error, :invalid_user_spec}`); `drop_user/2` removes a user by name.
+- **`Arcadic.Backup`** — backup/restore, HTTP-only: `backup/2` (`BACKUP
+  DATABASE` on `conn.database`, optional `:to` target URL), `list/1` (backups
+  for `conn.database`), `restore/3` (`restore database <name> <url>`). A
+  `:to` target and a `restore/3` URL are both `Arcadic.Identifier.validate_url/1`-
+  validated before interpolation (neither command can bind a URL param) — a
+  bad one returns `{:error, :invalid_url}`. **SSRF note:** whether the server
+  blocks a private/loopback restore source is server-config-dependent —
+  `restore/3`'s URL is trusted operator input, never pass it caller-supplied
+  values.
 - **Migrations** — `Arcadic.Migration` (behaviour: `version/0`, `up/1`, `down/1`),
   `Arcadic.MigrationRegistry` (`use` + `migrations [...]`), `Arcadic.Migrator`
   (`migrate/2`, `status/2`, `rollback/3`, `reset/2`, `pending_migrations/2`),
@@ -46,8 +85,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   indexes **before** loading rows — they do not retro-index existing data (a
   `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you do).
 - **`Arcadic.Schema`** — read-only schema introspection: `types/1`, `properties/2`,
-  `indexes/2` (with a `:type` filter), `buckets/1`, and `database/1` (the engine config,
-  `schema:database`) (all + `!`). SQL-only `SELECT FROM
+  `indexes/2` (with a `:type` filter), `buckets/1`, `database/1` (the engine config,
+  `schema:database`), `stats/1` (`schema:stats` per-database operation counters, a single
+  map), `dictionary/1` (`schema:dictionary`, a single map), and `materialized_views/1`
+  (`schema:materializedviews`, a list) (all + `!`). SQL-only `SELECT FROM
   schema:*`; a caller type name binds as a SQL `:name` param (never `$name` — see
   Parameter binding below) and is `Identifier`-shape-guarded;
   ArcadeDB's `@props` serializer noise is deep-stripped at every depth. `indexes/2` returns
@@ -165,6 +206,7 @@ Which options each function accepts (an unknown key is rejected value-free):
 | `:limit` | yes | yes | no | no |
 | `:serializer` | yes | yes | no | no |
 | `:retries` | no | yes | no | no |
+| `:auto_commit` | no | yes | no | no |
 | `:timeout` | yes | yes | yes | yes |
 | `:chunk_size` | no | no | yes | no |
 | `:order_key` | no | no | yes (Cypher only) | no |
@@ -189,16 +231,24 @@ Bolt, `:timeout` (a RUN/PULL receive timeout), `:bolt_protocol_error`,
 `:transaction_error`, `:cursor_open`/`:cursor_already_open` (the stream
 interleaving guard), a `boltx` error code, or `:unknown`.
 
-A separate, non-`Arcadic.Error` convention: an invalid identifier (e.g. a bad type
-name to `Arcadic.Schema.properties/2`) returns the bare `{:error,
-:invalid_identifier}`, never echoing the offending string.
+A separate, non-`Arcadic.Error` convention: value-free bare-atom validation
+failures, never echoing the offending value. `{:error, :invalid_identifier}`
+(`Arcadic.Identifier.validate/1` — e.g. a bad type name to
+`Arcadic.Schema.properties/2`, or a bad database/user name on the admin
+surface); `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`
+(`Arcadic.Server.set_server_setting/3` / `set_database_setting/3`);
+`{:error, :invalid_url}` (`Arcadic.Backup.backup/2`'s `:to` target and
+`restore/3`'s source URL); and `{:error, :invalid_user_spec}`
+(`Arcadic.Security.create_user/2` — an unencodable user spec, e.g. a non-UTF-8
+password).
 
 ## Telemetry
 
 Value-free `:telemetry.span/3` spans; metadata is validated against the fixed
 allowlist in `Arcadic.Telemetry.allowed_meta_keys/0`: `:language`, `:mode`,
 `:http_status`, `:reason`, `:row_count`, `:in_transaction?`, `:isolation`,
-`:async?`. No statement, params, values, or database name ever rides telemetry.
+`:async?`, `:operation`. No statement, params, values, or database name ever
+rides telemetry.
 
 - `[:arcadic, :query, :start | :stop | :exception]` — `query/4`.
 - `[:arcadic, :command, :start | :stop | :exception]` — `command/4` and
@@ -213,6 +263,10 @@ allowlist in `Arcadic.Telemetry.allowed_meta_keys/0`: `:language`, `:mode`,
 - `[:arcadic, :transaction, :start | :stop | :exception]` — `transaction/3`
   (metadata carries `:isolation`).
 - `[:arcadic, :vector, :sparse_index_preexisting]` — see `Arcadic.Vector` above.
+- `[:arcadic, :admin, :start | :stop | :exception]` — every `Arcadic.Server` /
+  `Arcadic.Security` / `Arcadic.Backup` call (metadata carries `:operation`,
+  the atom naming the call, e.g. `:login`, `:set_database_setting`,
+  `:restore`, plus `:reason` on `:stop`).
 
 `:start` measurements are `:telemetry.span/3`'s standard `:system_time`/
 `:monotonic_time`; `:stop`/`:exception` carry `:duration`/`:monotonic_time`.
@@ -231,8 +285,9 @@ its return value straight through as `transport_options`. Do NOT hand-build
 `transport_options: [bolt: pool]` alone (`start_link/1`'s bare return) — it omits
 `:bolt_opts` and makes `query_stream/4` return `{:error, %Arcadic.Error{reason:
 :not_supported}}`.
-**Server admin (create/drop/list database) is HTTP-only** — use an HTTP conn for
-admin even when queries run over Bolt. **Vector search is HTTP-only too** —
+**Admin (`Arcadic.Server`, `Arcadic.Security`, `Arcadic.Backup`) is HTTP-only** —
+use an HTTP conn for admin even when queries run over Bolt (`with_bearer/2` also
+raises on a Bolt conn). **Vector search is HTTP-only too** —
 `Arcadic.Vector` (`LSM_VECTOR` / `LSM_SPARSE_VECTOR`) runs SQL, and Bolt is
 Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt `RUN` carries no
 SQL-language selector), so keep vector queries on the HTTP transport.

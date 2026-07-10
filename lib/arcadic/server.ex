@@ -81,7 +81,7 @@ defmodule Arcadic.Server do
     do: Admin.span(:events, fn -> Admin.result(Admin.command(conn, "get server events")) end)
 
   @doc """
-  Set a server-level setting (`set server setting \`k\` \`v\``). `key` is allowlist-validated
+  Set a server-level setting (`` set server setting `k` `v` ``). `key` is allowlist-validated
   (dotted), `value` must be printable ASCII without a backtick or backslash (the backtick-quoting
   context) — both rejected value-free (`{:error, :invalid_setting_key | :invalid_setting_value}`).
   """
@@ -95,7 +95,7 @@ defmodule Arcadic.Server do
     end
   end
 
-  @doc "Set a setting on `conn.database` (`set database setting <db> \`k\` \`v\``). Guards as `set_server_setting/3`."
+  @doc "Set a setting on `conn.database` (`` set database setting <db> `k` `v` ``). Guards as `set_server_setting/3`."
   @spec set_database_setting(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
   def set_database_setting(%Conn{} = conn, key, value) do

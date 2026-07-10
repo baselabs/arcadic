@@ -98,7 +98,8 @@ defmodule Arcadic.MixProject do
         Transport: [Arcadic.Transport, Arcadic.Transport.HTTP, Arcadic.Transport.Bolt],
         "Schema & data": [Arcadic.Schema, Arcadic.Import, Arcadic.Export, Arcadic.Vector],
         Migrations: [Arcadic.Migration, Arcadic.MigrationRegistry, Arcadic.Migrator],
-        Transactions: [Arcadic.Transaction, Arcadic.Server]
+        "Admin & operations": [Arcadic.Server, Arcadic.Security, Arcadic.Backup],
+        Transactions: [Arcadic.Transaction]
       ]
     ]
   end
