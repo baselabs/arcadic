@@ -7,7 +7,7 @@ defmodule Arcadic.Server do
   Not delegated from the `Arcadic` facade: destructive admin stays namespaced.
   """
 
-  alias Arcadic.{Conn, Identifier}
+  alias Arcadic.{Admin, Conn, Identifier}
 
   @doc "Create a database. Validates `name`."
   @spec create_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -40,6 +40,31 @@ defmodule Arcadic.Server do
   @doc "Server readiness."
   @spec ready?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
   def ready?(%Conn{} = conn), do: conn.transport.ready?(conn)
+
+  @modes ~w(basic default cluster)a
+
+  @doc "Server info map. `:mode` ∈ #{inspect(@modes)} (default `:basic`); `:default`/`:cluster` add metrics/settings."
+  @spec info(Conn.t(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
+  def info(%Conn{} = conn, opts \\ []) do
+    mode = Keyword.get(opts, :mode, :basic)
+    unless mode in @modes, do: raise(ArgumentError, "mode must be one of #{inspect(@modes)}")
+    Admin.span(:info, fn -> Admin.get(conn, "/api/v1/server?mode=#{mode}") end)
+  end
+
+  @doc "The server metrics map (`info(conn, mode: :default)[\"metrics\"]`)."
+  @spec metrics(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
+  def metrics(%Conn{} = conn) do
+    with {:ok, info} <- info(conn, mode: :default), do: {:ok, Map.get(info, "metrics", %{})}
+  end
+
+  @doc "Liveness probe (`GET /api/v1/health` → 204)."
+  @spec health?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
+  def health?(%Conn{} = conn), do: Admin.call(conn, :health?)
+
+  @doc ~S|Server event log map (`%{"events" => [...], "files" => [...]}`).|
+  @spec events(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
+  def events(%Conn{} = conn),
+    do: Admin.span(:events, fn -> Admin.result(Admin.command(conn, "get server events")) end)
 
   defp command_ok(conn, command) do
     case conn.transport.server_command(conn, command) do

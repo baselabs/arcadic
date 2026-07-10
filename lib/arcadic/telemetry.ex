@@ -7,7 +7,7 @@ defmodule Arcadic.Telemetry do
   Mirrors `ash_age`'s R7 allowlist pattern.
   """
 
-  @allowed_meta_keys ~w(language mode http_status reason row_count in_transaction? isolation async?)a
+  @allowed_meta_keys ~w(language mode http_status reason row_count in_transaction? isolation async? operation)a
 
   @doc "The permitted span metadata keys."
   @spec allowed_meta_keys() :: [atom()]
