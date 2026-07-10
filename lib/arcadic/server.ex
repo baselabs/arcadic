@@ -12,7 +12,12 @@ defmodule Arcadic.Server do
   @doc "Create a database. Validates `name`."
   @spec create_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def create_database(%Conn{} = conn, name),
-    do: with_valid(name, fn -> command_ok(conn, "create database #{name}") end)
+    do:
+      with_valid(name, fn ->
+        Admin.span(:create_database, fn ->
+          Admin.to_ok(Admin.command(conn, "create database #{name}"))
+        end)
+      end)
 
   @doc "Create a database, raising on error."
   @spec create_database!(Conn.t(), String.t()) :: :ok
@@ -21,7 +26,12 @@ defmodule Arcadic.Server do
   @doc "Drop a database. Validates `name`."
   @spec drop_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def drop_database(%Conn{} = conn, name),
-    do: with_valid(name, fn -> command_ok(conn, "drop database #{name}") end)
+    do:
+      with_valid(name, fn ->
+        Admin.span(:drop_database, fn ->
+          Admin.to_ok(Admin.command(conn, "drop database #{name}"))
+        end)
+      end)
 
   @doc "Drop a database, raising on error."
   @spec drop_database!(Conn.t(), String.t()) :: :ok
@@ -31,15 +41,19 @@ defmodule Arcadic.Server do
   @spec database_exists?(Conn.t(), String.t()) ::
           {:ok, boolean()} | {:error, atom() | Exception.t()}
   def database_exists?(%Conn{} = conn, name),
-    do: with_valid(name, fn -> conn.transport.database_exists?(conn, name) end)
+    do:
+      with_valid(name, fn ->
+        Admin.span(:database_exists?, fn -> conn.transport.database_exists?(conn, name) end)
+      end)
 
   @doc "List all databases."
   @spec list_databases(Conn.t()) :: {:ok, [String.t()]} | {:error, Exception.t()}
-  def list_databases(%Conn{} = conn), do: conn.transport.list_databases(conn)
+  def list_databases(%Conn{} = conn),
+    do: Admin.span(:list_databases, fn -> conn.transport.list_databases(conn) end)
 
   @doc "Server readiness."
   @spec ready?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
-  def ready?(%Conn{} = conn), do: conn.transport.ready?(conn)
+  def ready?(%Conn{} = conn), do: Admin.span(:ready?, fn -> conn.transport.ready?(conn) end)
 
   @modes ~w(basic default cluster)a
 
@@ -156,13 +170,6 @@ defmodule Arcadic.Server do
   @spec shutdown(Conn.t()) :: :ok | {:error, Exception.t()}
   def shutdown(%Conn{} = conn),
     do: Admin.span(:shutdown, fn -> Admin.to_ok(Admin.command(conn, "shutdown")) end)
-
-  defp command_ok(conn, command) do
-    case conn.transport.server_command(conn, command) do
-      {:ok, _} -> :ok
-      {:error, error} -> {:error, error}
-    end
-  end
 
   defp with_valid(name, fun) do
     case Identifier.validate(name) do

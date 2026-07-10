@@ -207,4 +207,46 @@ defmodule Arcadic.ServerAdminTest do
       Server.check_database(conn(), bogus: 1)
     end
   end
+
+  test "create_database emits a [:arcadic, :admin] span (operation :create_database) and keeps its :ok return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => "ok"}) end)
+    assert :ok = Server.create_database(conn(), "newdb")
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :create_database}}
+    :telemetry.detach(ref)
+  end
+
+  test "drop_database emits a [:arcadic, :admin] span (operation :drop_database) and keeps its :ok return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => "ok"}) end)
+    assert :ok = Server.drop_database(conn(), "newdb")
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :drop_database}}
+    :telemetry.detach(ref)
+  end
+
+  test "list_databases emits a [:arcadic, :admin] span (operation :list_databases) and keeps its {:ok, list} return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => ["db", "otherdb"]}) end)
+    assert {:ok, ["db", "otherdb"]} = Server.list_databases(conn())
+
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :list_databases} = meta}
+    refute Map.has_key?(meta, :database)
+    :telemetry.detach(ref)
+  end
+
+  test "database_exists? emits a [:arcadic, :admin] span (operation :database_exists?) and keeps its {:ok, bool} return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => ["db", "otherdb"]}) end)
+    assert {:ok, true} = Server.database_exists?(conn(), "otherdb")
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :database_exists?}}
+    :telemetry.detach(ref)
+  end
+
+  test "ready? emits a [:arcadic, :admin] span (operation :ready?) and keeps its {:ok, bool} return" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:arcadic, :admin, :stop]])
+    Req.Test.stub(__MODULE__, fn c -> Plug.Conn.send_resp(c, 204, "") end)
+    assert {:ok, true} = Server.ready?(conn())
+    assert_received {[:arcadic, :admin, :stop], ^ref, _m, %{operation: :ready?}}
+    :telemetry.detach(ref)
+  end
 end
