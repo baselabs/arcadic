@@ -66,6 +66,34 @@ defmodule Arcadic.Server do
   def events(%Conn{} = conn),
     do: Admin.span(:events, fn -> Admin.result(Admin.command(conn, "get server events")) end)
 
+  @doc """
+  Set a server-level setting (`set server setting \`k\` \`v\``). `key` is allowlist-validated
+  (dotted), `value` must be printable ASCII without a backtick or backslash (the backtick-quoting
+  context) — both rejected value-free (`{:error, :invalid_setting_key | :invalid_setting_value}`).
+  """
+  @spec set_server_setting(Conn.t(), String.t(), String.t()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def set_server_setting(%Conn{} = conn, key, value) do
+    with :ok <- valid_setting_key(key), :ok <- valid_setting_value(value) do
+      Admin.span(:set_server_setting, fn ->
+        Admin.to_ok(Admin.command(conn, "set server setting `#{key}` `#{value}`"))
+      end)
+    end
+  end
+
+  @doc "Set a setting on `conn.database` (`set database setting <db> \`k\` \`v\``). Guards as `set_server_setting/3`."
+  @spec set_database_setting(Conn.t(), String.t(), String.t()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def set_database_setting(%Conn{} = conn, key, value) do
+    with :ok <- valid_setting_key(key), :ok <- valid_setting_value(value) do
+      Admin.span(:set_database_setting, fn ->
+        Admin.to_ok(
+          Admin.command(conn, "set database setting #{conn.database} `#{key}` `#{value}`")
+        )
+      end)
+    end
+  end
+
   defp command_ok(conn, command) do
     case conn.transport.server_command(conn, command) do
       {:ok, _} -> :ok
@@ -79,6 +107,25 @@ defmodule Arcadic.Server do
       {:error, :invalid_identifier} = err -> err
     end
   end
+
+  defp valid_setting_key(key) do
+    case Identifier.validate_setting_key(key) do
+      :ok -> :ok
+      {:error, _} -> {:error, :invalid_setting_key}
+    end
+  end
+
+  # Positive posture: printable ASCII (0x20-0x7E) MINUS backtick + backslash (mirrors Import's
+  # single-quote-literal exclusion of `'`/`\`). Rejects control/newline/non-ASCII too. Value-free.
+  defp valid_setting_value(v) when is_binary(v) do
+    cond do
+      not Regex.match?(~r/\A[ -~]*\z/, v) -> {:error, :invalid_setting_value}
+      String.contains?(v, "`") or String.contains?(v, "\\") -> {:error, :invalid_setting_value}
+      true -> :ok
+    end
+  end
+
+  defp valid_setting_value(_), do: {:error, :invalid_setting_value}
 
   defp bang(:ok), do: :ok
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)

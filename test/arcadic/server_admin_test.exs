@@ -53,4 +53,52 @@ defmodule Arcadic.ServerAdminTest do
     c = %{conn() | transport: Arcadic.Transport.Bolt}
     assert {:error, %Arcadic.Error{reason: :not_supported}} = Server.info(c, mode: :basic)
   end
+
+  test "set_server_setting/3 emits the backtick command and returns :ok" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert :ok = Server.set_server_setting(conn(), "arcadedb.serverMetrics", "true")
+    assert_received {:cmd, "set server setting `arcadedb.serverMetrics` `true`"}
+  end
+
+  test "set_database_setting/3 targets conn.database" do
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), {:cmd, Jason.decode!(Req.Test.raw_body(c))["command"]})
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    assert :ok = Server.set_database_setting(conn(), "arcadedb.flushOnly", "false")
+    assert_received {:cmd, "set database setting db `arcadedb.flushOnly` `false`"}
+  end
+
+  test "setting key/value guards reject value-free (no wire call) — both setters, symmetric" do
+    # value-free: a stub that flunks if ANY request reaches the wire
+    Req.Test.stub(__MODULE__, fn c ->
+      send(self(), :wire)
+      Req.Test.json(c, %{"result" => "ok"})
+    end)
+
+    # backtick (breakout), backslash (escape), newline (second-statement), DEL (control) — REJECTED.
+    # A plain space is ALLOWED (inert inside the backtick-quoted value; the live server accepts it) —
+    # covered by the happy-path test above, NOT asserted here (it would reach the wire).
+    for bad_val <- ["ev`il", "ev\\il", "a\nb", "a\x7Fb"] do
+      assert {:error, :invalid_setting_value} = Server.set_server_setting(conn(), "k.ok", bad_val)
+    end
+
+    # Non-binary value → graceful {:error,_}, never a FunctionClauseError (locks the fallback clause).
+    assert {:error, :invalid_setting_value} = Server.set_server_setting(conn(), "k.ok", 123)
+
+    assert {:error, :invalid_setting_key} = Server.set_server_setting(conn(), "bad`key", "v")
+    assert {:error, :invalid_setting_key} = Server.set_server_setting(conn(), "bad key", "v")
+
+    # Parallel-constructor symmetry: set_database_setting/3 shares the guards — feed it a bad value
+    # AND a bad key so a future drop of its `with` guard prefix ships red, not silent.
+    assert {:error, :invalid_setting_value} = Server.set_database_setting(conn(), "k.ok", "ev`il")
+    assert {:error, :invalid_setting_key} = Server.set_database_setting(conn(), "bad`key", "v")
+
+    refute_received :wire
+  end
 end
