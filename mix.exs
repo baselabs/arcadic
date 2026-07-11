@@ -47,9 +47,12 @@ defmodule Arcadic.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:boltx, "~> 0.0.6", optional: true},
+      {:mint_web_socket, "~> 1.0", optional: true},
 
       # Dev/Test
       {:plug, "~> 1.0", only: :test},
+      {:bandit, "~> 1.0", only: :test},
+      {:websock_adapter, "~> 0.5", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -108,6 +111,13 @@ defmodule Arcadic.MixProject do
         ],
         Migrations: [Arcadic.Migration, Arcadic.MigrationRegistry, Arcadic.Migrator],
         "Admin & operations": [Arcadic.Server, Arcadic.Security, Arcadic.Backup],
+        "Events & programmability": [
+          Arcadic.Changes,
+          Arcadic.Function,
+          Arcadic.Trigger,
+          Arcadic.MaterializedView,
+          Arcadic.Geo
+        ],
         Transactions: [Arcadic.Transaction]
       ]
     ]
