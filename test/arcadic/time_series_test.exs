@@ -1159,6 +1159,51 @@ defmodule Arcadic.TimeSeriesTest do
                )
     end
 
+    test "an alias colliding with another request's server-DEFAULT column name is rejected value-free" do
+      # Live-reproduced (S13 closeout round 2): the server names an un-aliased request
+      # "#{field}_#{downcased type}" ("v" + :avg -> "v_avg"), so an explicit alias "v_avg"
+      # on ANOTHER request yields aggregations: ["v_avg", "v_avg"] — indistinguishable columns.
+      err =
+        assert_raise ArgumentError, ~r/duplicate aggregation output/, fn ->
+          TimeSeries.query(conn(), "cpu",
+            aggregation: [
+              %{field: "v", type: :avg},
+              %{field: "other", type: :avg, alias: "v_avg"}
+            ],
+            bucket_interval: 1
+          )
+        end
+
+      # Value-free (Rule 3): neither the alias nor the field names appear in the raise.
+      refute Exception.message(err) =~ "v_avg"
+      refute Exception.message(err) =~ "other"
+    end
+
+    test "two DISTINCT aliases on one field+type pass" do
+      stub_ts_query(
+        %{
+          "type" => "cpu",
+          "aggregation" => %{
+            "bucketInterval" => 1,
+            "requests" => [
+              %{"field" => "u", "type" => "AVG", "alias" => "a1"},
+              %{"field" => "u", "type" => "AVG", "alias" => "a2"}
+            ]
+          }
+        },
+        %{"type" => "cpu", "aggregations" => ["a1", "a2"], "buckets" => [], "count" => 0}
+      )
+
+      assert {:ok, %{count: 0}} =
+               TimeSeries.query(conn(), "cpu",
+                 aggregation: [
+                   %{field: "u", type: :avg, alias: "a1"},
+                   %{field: "u", type: :avg, alias: "a2"}
+                 ],
+                 bucket_interval: 1
+               )
+    end
+
     test "latest tag values: empty rejects value-free; a colon-bearing value PASSES (probed: the server splits key:value on the FIRST colon and matches exactly)" do
       assert_raise ArgumentError, ~r/non-empty/, fn ->
         TimeSeries.latest(conn(), "cpu", tag: {"host", ""})

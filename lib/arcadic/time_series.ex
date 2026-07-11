@@ -973,14 +973,22 @@ defmodule Arcadic.TimeSeries do
   defp aggregation_object(_, _),
     do: raise(ArgumentError, "aggregation must be a non-empty list of request maps")
 
-  # Effective output identity: the alias when present, else the {field, type} pair — the server's
-  # default column name incorporates BOTH (e.g. "u_avg"), so avg+max on one un-aliased field is
-  # NOT a collision. Colliding outputs would produce indistinguishable response columns.
+  # Effective output identity: the alias when present, else the server's DEFAULT column name —
+  # live-pinned as "#{field}_#{downcased type}" (e.g. "u_avg"), computed UNIFORMLY so an alias
+  # colliding with another request's default name is caught too (live-reproduced: an un-aliased
+  # {v, :avg} plus alias: "v_avg" returned aggregations ["v_avg", "v_avg"]). avg+max on one
+  # un-aliased field is still NOT a collision. The interpolation is safe: every wire reaching
+  # this check already passed agg_request/1 (field Identifier-validated, type allowlist-mapped),
+  # and the raise is static (value-free, Rule 3).
   defp assert_unique_outputs!(wires) do
-    keys = Enum.map(wires, fn wire -> Map.get(wire, "alias") || {wire["field"], wire["type"]} end)
+    keys =
+      Enum.map(wires, fn wire ->
+        Map.get(wire, "alias") || "#{wire["field"]}_#{String.downcase(wire["type"])}"
+      end)
 
     if Enum.uniq(keys) != keys do
-      raise ArgumentError, "duplicate aggregation output (alias or un-aliased field+type pair)"
+      raise ArgumentError,
+            "duplicate aggregation output (alias or server-default field_type column name)"
     end
 
     :ok
