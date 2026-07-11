@@ -120,8 +120,9 @@ defmodule Arcadic.Changes do
   @backoff_cap 5_000
 
   # Bound the synchronous TCP connect so it cannot wedge a caller's `subscribe`/`unsubscribe`
-  # `GenServer.call` (5s default) against an unreachable host.
-  @connect_timeout 5_000
+  # `GenServer.call` against an unreachable host. Deliberately BELOW the 5s `GenServer.call`
+  # default so the process frees up (times out the connect) before a queued call would.
+  @connect_timeout 4_000
   # Bound the WHOLE establishment (connect → 101 upgrade); a peer that accepts TCP but never
   # completes the handshake would otherwise leave the process stuck in `:upgrading` forever.
   @establish_timeout 10_000
@@ -171,7 +172,8 @@ defmodule Arcadic.Changes do
              | :invalid_conn
              | :invalid_auth
              | :invalid_url_scheme
-             | :invalid_max_buffer}
+             | :invalid_max_buffer
+             | :invalid_establish_timeout}
   def start_link(opts) when is_list(opts) do
     with :ok <- ensure_mint_web_socket(),
          :ok <- validate_start_opts(opts) do
@@ -190,8 +192,9 @@ defmodule Arcadic.Changes do
   # malformed input returns a typed `{:error, _}` instead of (a) crash-looping under `:transient`
   # restart or (b) leaking the value through a FunctionClauseError / `Access` blame (Rule 3).
   defp validate_start_opts(opts) do
-    with :ok <- validate_conn(Keyword.get(opts, :conn)) do
-      validate_max_buffer(Keyword.get(opts, :max_buffer, @default_max_buffer))
+    with :ok <- validate_conn(Keyword.get(opts, :conn)),
+         :ok <- validate_max_buffer(Keyword.get(opts, :max_buffer, @default_max_buffer)) do
+      validate_establish_timeout(Keyword.get(opts, :establish_timeout, @establish_timeout))
     end
   end
 
@@ -222,6 +225,11 @@ defmodule Arcadic.Changes do
   defp validate_max_buffer(n) when is_integer(n) and n >= 1, do: :ok
   defp validate_max_buffer(_), do: {:error, :invalid_max_buffer}
 
+  # `:establish_timeout` is an advanced/tuning seam fed to `Process.send_after/3`; a non-positive-int
+  # would crash `do_connect` and (under `restart: :transient`) restart-loop. Reject value-free.
+  defp validate_establish_timeout(n) when is_integer(n) and n >= 1, do: :ok
+  defp validate_establish_timeout(_), do: {:error, :invalid_establish_timeout}
+
   @doc """
   Subscribe `client` to change events on `database`.
 
@@ -237,13 +245,20 @@ defmodule Arcadic.Changes do
   """
   @spec subscribe(GenServer.server(), String.t(), keyword()) ::
           :ok | {:error, :subscriber_conflict}
-  def subscribe(client, database, opts \\ []) when is_binary(database) do
+  def subscribe(client, database, opts \\ [])
+
+  def subscribe(client, database, opts) when is_binary(database) do
     Opts.validate_keys!(opts, [:type, :change_types, :subscriber])
     subscriber = validate_subscriber(Keyword.get(opts, :subscriber, self()))
     type = validate_type(Keyword.get(opts, :type))
     change_types = normalize_change_types(Keyword.get(opts, :change_types))
     GenServer.call(client, {:subscribe, database, type, change_types, subscriber})
   end
+
+  # Total fallback: a non-binary `database` would FunctionClauseError BEFORE the guards above run and
+  # blame-echo the `type`/`subscriber` opts (Rule 3). Reject value-free.
+  def subscribe(_client, _database, _opts),
+    do: raise(ArgumentError, "database must be a string")
 
   # Value-free (Rule 3): a non-pid subscriber or non-binary type would otherwise crash-echo the
   # caller value — the subscriber via `Process.monitor/1`, the type via `Jason.encode!` in the
@@ -260,6 +275,9 @@ defmodule Arcadic.Changes do
   def unsubscribe(client, database) when is_binary(database) do
     GenServer.call(client, {:unsubscribe, database})
   end
+
+  def unsubscribe(_client, _database),
+    do: raise(ArgumentError, "database must be a string")
 
   defp normalize_change_types(nil), do: :all
 
@@ -278,14 +296,23 @@ defmodule Arcadic.Changes do
 
   @impl true
   def init(opts) do
-    state = %__MODULE__{
-      conn: Keyword.fetch!(opts, :conn),
-      max_buffer: Keyword.get(opts, :max_buffer, @default_max_buffer),
-      establish_timeout: Keyword.get(opts, :establish_timeout, @establish_timeout),
-      buffer: :queue.new()
-    }
+    # Backstop: the public `start_link/1` already validated these, but re-check so a DIRECT
+    # `GenServer.start_link(__MODULE__, opts)` (bypassing our wrapper) still fails closed instead of
+    # crash-downgrading (a bad scheme → plaintext + Basic auth in the clear; a bad auth → creds echo).
+    case validate_start_opts(opts) do
+      :ok ->
+        state = %__MODULE__{
+          conn: Keyword.fetch!(opts, :conn),
+          max_buffer: Keyword.get(opts, :max_buffer, @default_max_buffer),
+          establish_timeout: Keyword.get(opts, :establish_timeout, @establish_timeout),
+          buffer: :queue.new()
+        }
 
-    {:ok, state, {:continue, :connect}}
+        {:ok, state, {:continue, :connect}}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 
   @impl true

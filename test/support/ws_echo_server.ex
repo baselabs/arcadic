@@ -218,11 +218,13 @@ defmodule WsEchoServer do
           send_resp(conn, entry.reject_next?, "")
 
         entry.hang_next? ->
-          # Accept the TCP/HTTP request but withhold the 101 long enough for the client's
-          # establishment deadline to fire (tests use a ~150ms deadline). Kept short so it does not
-          # block server teardown; the client has already reconnected on a fresh connection by then.
+          # Accept the TCP/HTTP request but withhold the 101 PAST the test's assert window, so ONLY
+          # the client's establishment deadline (not this eventual 504, which would otherwise self-heal
+          # via the generic non-101 reconnect branch) can recover the subscribe within the window. This
+          # is what makes the F9 establishment-timeout test red-capable. The stall also gates teardown,
+          # so keep it as short as the window allows.
           :ok = WsEchoServer.clear_hang(ref)
-          Process.sleep(600)
+          Process.sleep(2_000)
           send_resp(conn, 504, "")
 
         true ->

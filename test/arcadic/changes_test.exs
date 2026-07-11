@@ -214,6 +214,41 @@ defmodule Arcadic.ChangesTest do
         Changes.subscribe(self(), "db", change_type: [:create])
       end
     end
+
+    test "subscribe/unsubscribe with a non-binary database raise a clean ArgumentError (no opt blame-echo)" do
+      # A total fallback clause: without it a non-binary database FunctionClauseErrors BEFORE the opt
+      # guards, and the blame report echoes the :type/:subscriber opts. The fallback raises a fixed
+      # ArgumentError (not FunctionClauseError), so no args are ever blame-formatted.
+      assert_raise ArgumentError, "database must be a string", fn ->
+        Changes.subscribe(self(), 12_345, type: "s3cret_type_val", subscriber: self())
+      end
+
+      assert_raise ArgumentError, "database must be a string", fn ->
+        Changes.unsubscribe(self(), 12_345)
+      end
+    end
+
+    test "start_link rejects a non-positive / non-integer establish_timeout" do
+      conn = Arcadic.connect("ws://127.0.0.1:1", "testdb", auth: {"u", "p"})
+
+      assert Changes.start_link(conn: conn, establish_timeout: 0) ==
+               {:error, :invalid_establish_timeout}
+
+      assert Changes.start_link(conn: conn, establish_timeout: "x") ==
+               {:error, :invalid_establish_timeout}
+    end
+
+    test "init backstops a DIRECT GenServer.start_link that bypasses the public wrapper" do
+      # A bad-scheme conn reaches init via a raw GenServer.start_link (bypassing the public
+      # start_link/1, which short-circuits before spawning). The init backstop fails closed with
+      # `{:stop, reason}` — no silent plaintext downgrade. Under a link that abnormal stop also
+      # signals the linked caller, so we trap exits to observe the returned error.
+      conn = Arcadic.connect("htps://127.0.0.1:2480", "testdb", auth: {"u", "p"})
+      Process.flag(:trap_exit, true)
+      assert GenServer.start_link(Changes, conn: conn) == {:error, :invalid_url_scheme}
+    after
+      Process.flag(:trap_exit, false)
+    end
   end
 
   test "10: under a caller's Supervisor a terminal 401 stays dead (transient, not restarted)" do
@@ -315,14 +350,19 @@ defmodule Arcadic.ChangesTest do
 
   test "15: a stalled upgrade (TCP accepted, no 101) hits the establishment timeout and reconnects" do
     {:ok, port} = WsEchoServer.start(self())
-    # The FIRST handshake stalls (no 101); a short establish_timeout must break the stall.
+
+    # The FIRST handshake stalls for 2000ms (WsEchoServer hang mode); a 150ms establish_timeout must
+    # break the stall well inside the 1200ms assert window below. The window is BELOW the 2000ms
+    # stall on purpose: only the establishment timer can recover in time — the harness's eventual
+    # 504 (which would self-heal via the generic non-101 reconnect) lands after the window, so this
+    # test goes RED if the establishment timer is removed (gate non-vacuity, verified by tamper).
     WsEchoServer.hang_next_handshake(port)
     {:ok, pid} = Changes.start_link(conn: connect(port), establish_timeout: 150)
     :ok = Changes.subscribe(pid, "testdb")
 
     # Recovery proof: the deadline fired, the client reconnected, and the SECOND (non-stalling)
-    # handshake succeeded → the deferred subscribe frame lands. Without the timeout it hangs forever.
-    assert_receive {:ws_echo, "subscribe", %{"database" => "testdb"}}, 3000
+    # handshake succeeded → the deferred subscribe frame lands within the window.
+    assert_receive {:ws_echo, "subscribe", %{"database" => "testdb"}}, 1200
     assert Process.alive?(pid)
   end
 
