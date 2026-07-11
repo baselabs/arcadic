@@ -458,6 +458,12 @@ defmodule Arcadic.TimeSeriesTest do
       assert err.message == "time-series operation failed: :invalid_identifier"
       refute err.message =~ "bad name"
     end
+
+    test "bang/1 on a NON-atom error reason raises the static message (value-free, Rule 3)" do
+      err = assert_raise ArgumentError, fn -> TimeSeries.bang({:error, {:tuple, "leak"}}) end
+      assert err.message == "time-series operation failed"
+      refute err.message =~ "leak"
+    end
   end
 
   describe "continuous aggregates" do
@@ -770,6 +776,24 @@ defmodule Arcadic.TimeSeriesTest do
                ])
     end
 
+    test "unknown point keys are rejected value-free (a typo'd key would silently drop its clause)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{type: "t", fields: %{v: 1}, timestmap: 5}])
+        end
+
+      assert err.message == "point keys must be atoms among [:fields, :tags, :timestamp, :type]"
+      refute Exception.message(err) =~ "timestmap"
+
+      # String-keyed maps reject the SAME way (not the misleading "requires at least one field").
+      err2 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{"type" => "t", "fields" => %{"v" => 1}}])
+        end
+
+      assert err2.message == err.message
+    end
+
     test "empty points list returns :ok without hitting the wire" do
       Req.Test.stub(__MODULE__, fn _c -> flunk("no wire call expected") end)
       assert :ok = TimeSeries.write(conn(), [])
@@ -1032,6 +1056,15 @@ defmodule Arcadic.TimeSeriesTest do
       assert {:error, %Error{reason: :not_supported}} = TimeSeries.latest(bolt_conn, "cpu")
     end
 
+    test "an empty :tags map is treated as ABSENT (no \"tags\" key in the body)" do
+      stub_ts_query(
+        %{"type" => "cpu"},
+        %{"type" => "cpu", "columns" => [], "rows" => [], "count" => 0}
+      )
+
+      assert {:ok, %{count: 0}} = TimeSeries.query(conn(), "cpu", tags: %{})
+    end
+
     test "query tags: an atom key colliding with its string twin is rejected (write-path parity)" do
       assert_raise ArgumentError, ~r/duplicate/, fn ->
         TimeSeries.query(conn(), "cpu", tags: %{:host => "a", "host" => "b"})
@@ -1126,18 +1159,18 @@ defmodule Arcadic.TimeSeriesTest do
                )
     end
 
-    test "latest tag values: empty and colon-bearing values are rejected value-free (unprobed key:value micro-format)" do
+    test "latest tag values: empty rejects value-free; a colon-bearing value PASSES (probed: the server splits key:value on the FIRST colon and matches exactly)" do
       assert_raise ArgumentError, ~r/non-empty/, fn ->
         TimeSeries.latest(conn(), "cpu", tag: {"host", ""})
       end
 
-      err =
-        assert_raise ArgumentError, fn ->
-          TimeSeries.latest(conn(), "cpu", tag: {"host", "secret:leak"})
-        end
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == "/api/v1/ts/tsdb/latest"
+        assert URI.decode_query(c.query_string) == %{"type" => "cpu", "tag" => "host:a:b"}
+        Req.Test.json(c, %{"type" => "cpu", "columns" => ["ts", "v"], "latest" => [1, 2.0]})
+      end)
 
-      refute Exception.message(err) =~ "secret"
-      assert err.message =~ "colon"
+      assert {:ok, %{latest: [1, 2.0]}} = TimeSeries.latest(conn(), "cpu", tag: {"host", "a:b"})
     end
 
     test "query emits the :timeseries read span with row_count" do
@@ -1221,6 +1254,19 @@ defmodule Arcadic.TimeSeriesTest do
       assert_raise ArgumentError, ~r/label/, fn ->
         TimeSeries.prom_label_values(conn(), "bad-label!")
       end
+
+      # Length bound: 128 total (Identifier parity) passes to the wire; 129 rejects value-free.
+      ok_label = "L" <> String.duplicate("x", 127)
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/label/#{ok_label}/values", %{}, [])
+      assert {:ok, []} = TimeSeries.prom_label_values(conn(), ok_label)
+
+      long_label = "L" <> String.duplicate("x", 128)
+
+      err_long =
+        assert_raise ArgumentError, fn -> TimeSeries.prom_label_values(conn(), long_label) end
+
+      assert err_long.message =~ "label"
+      refute Exception.message(err_long) =~ "xxxx"
 
       Req.Test.stub(__MODULE__, fn c ->
         assert c.request_path == "/api/v1/ts/tsdb/prom/api/v1/series"

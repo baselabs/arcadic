@@ -209,8 +209,16 @@ defmodule Arcadic.TimeSeries do
   @precision_units %{ns: :nanosecond, us: :microsecond, ms: :millisecond, s: :second}
   # Control bytes (incl. newline) split the line-protocol record — the wire has no in-string
   # escape for them (probed: a raw \n inside a quoted field parses the remainder as a NEW
-  # measurement). Reject value-free wherever a caller string lands in a line.
+  # measurement). Reject value-free wherever a caller string lands in a line. C1 controls
+  # (U+0080–U+009F) are DELIBERATELY allowed: multi-byte in UTF-8, they cannot split a record —
+  # the codebase's three rejection classes each serve their own embedding context (this line
+  # protocol; server.ex setting values; ddl_body.ex statement text).
   @control_bytes ~r/[\x00-\x1F\x7F]/
+
+  # The point-map contract: any OTHER key (a typo like :timestmap, or string keys) would be
+  # SILENTLY ignored, dropping its clause from the line — reject value-free (Opts.validate_keys!
+  # posture), naming only the allowed set.
+  @point_keys [:fields, :tags, :timestamp, :type]
 
   # Java Long: an out-of-range integer field value or timestamp is a 204 + SILENT line drop on
   # the server (probed both signs on 26.7.2) — guard client-side, value-free, both positions.
@@ -269,17 +277,23 @@ defmodule Arcadic.TimeSeries do
     # otherwise crash inside the HTTP client's own :erlang.iolist_size with the ENTIRE batch
     # (caller PII) echoed in the blame (Rule 3). The computed size doubles as the
     # empty-equivalent short-circuit ([""], [[]] never hit the wire, like [] and "").
+    # NOT `reraise` (credo's default suggestion): the original ArgumentError carries the value.
     size =
-      try do
-        :erlang.iolist_size(lines)
-      rescue
-        ArgumentError -> raise ArgumentError, "lines must be valid iodata"
+      case iodata_size(lines) do
+        {:ok, n} -> n
+        :error -> raise ArgumentError, "lines must be valid iodata"
       end
 
     Opts.validate_keys!(opts, @write_opts)
 
     lines = if size == 0, do: "", else: lines
     dispatch_write(conn, :write_lines, nil, lines, wire_precision!(opts), opts)
+  end
+
+  defp iodata_size(lines) do
+    {:ok, :erlang.iolist_size(lines)}
+  rescue
+    ArgumentError -> :error
   end
 
   @doc "Writes raw line protocol, raising on error."
@@ -325,8 +339,9 @@ defmodule Arcadic.TimeSeries do
   @doc """
   Newest point (`GET /api/v1/ts/<db>/latest`). `opts`: `:tag` — a SINGLE `{key, value}` pair
   (the substrate applies only the first tag filter; a multi-entry map is rejected — probed);
-  the value must be non-empty and colon-free (the wire `key:value` delimiter is unescapable),
-  `:timeout`. Returns `{:ok, %{columns, latest}}`.
+  the value must be non-empty (colon-bearing values are fine: the server splits the wire
+  `key:value` on the FIRST colon and matches the remainder exactly — probed), `:timeout`.
+  Returns `{:ok, %{columns, latest}}`.
   """
   @spec latest(Conn.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, atom() | Exception.t()}
@@ -351,8 +366,9 @@ defmodule Arcadic.TimeSeries do
   @timeout_only [:timeout]
   # The Prometheus label-name grammar (a leading underscore is legal — `__name__` is the
   # canonical metric label; `Arcadic.Identifier` would reject it). URL-path-safe by construction;
-  # the transport additionally URL-encodes the path segment.
-  @prom_label_re ~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/
+  # the transport additionally URL-encodes the path segment. The repetition is bounded to 127
+  # (128 chars total, Arcadic.Identifier parity) so an unbounded label can't ride the URL path.
+  @prom_label_re ~r/\A[a-zA-Z_][a-zA-Z0-9_]{0,127}\z/
 
   @doc """
   PromQL instant query (`GET …/prom/api/v1/query`). The PromQL text rides as a URL-encoded query
@@ -498,11 +514,17 @@ defmodule Arcadic.TimeSeries do
   # An improper list ([elem | :tail]) satisfies is_list/1 but crashes any Enum walk with a
   # FunctionClauseError whose blame echoes the tail (Rule 3 — the list may carry PII).
   # length/1 probes properness value-free; `role` is always a static string, never the value.
+  # The raise sits OUTSIDE the rescue (a `reraise` would preserve the value-bearing original).
   defp assert_proper_list!(list, role) do
-    _ = length(list)
+    proper_list?(list) || raise(ArgumentError, "#{role} must be a proper list")
     :ok
+  end
+
+  defp proper_list?(list) do
+    _ = length(list)
+    true
   rescue
-    ArgumentError -> raise ArgumentError, "#{role} must be a proper list"
+    ArgumentError -> false
   end
 
   # Validates every column name (identifier) and its TYPE token (positive allowlist — the token
@@ -648,19 +670,20 @@ defmodule Arcadic.TimeSeries do
   # every other bad shape raises a STATIC message (a point may carry PII — never echo it).
   defp build_lines(points, ts_unit) do
     points
-    |> Enum.reduce_while({:ok, []}, fn point, {:ok, acc} ->
-      case build_line(point, ts_unit) do
-        {:ok, line} -> {:cont, {:ok, [line | acc]}}
+    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn point, {:ok, acc, seen} ->
+      case build_line(point, ts_unit, seen) do
+        {:ok, line, seen} -> {:cont, {:ok, [line | acc], seen}}
         {:error, _} = err -> {:halt, err}
       end
     end)
     |> case do
-      {:ok, lines} -> {:ok, lines |> Enum.reverse() |> Enum.intersperse("\n")}
+      {:ok, lines, _seen} -> {:ok, lines |> Enum.reverse() |> Enum.intersperse("\n")}
       {:error, _} = err -> err
     end
   end
 
-  defp build_line(point, ts_unit) when is_map(point) do
+  defp build_line(point, ts_unit, seen) when is_map(point) do
+    validate_point_keys!(point)
     type = Map.get(point, :type)
     fields = Map.get(point, :fields)
     tags = Map.get(point, :tags, %{})
@@ -672,43 +695,58 @@ defmodule Arcadic.TimeSeries do
 
     unless is_map(tags), do: raise(ArgumentError, "tags must be a map")
 
-    with {:ok, type_name} <- normalize_name(type),
-         {:ok, tag_part} <- tag_fragment(tags),
-         {:ok, field_part} <- field_fragment(fields) do
-      {:ok, [type_name, tag_part, " ", field_part, ts_fragment(timestamp, ts_unit)]}
+    with {:ok, type_name, seen} <- normalize_name(type, seen),
+         {:ok, tag_part, seen} <- tag_fragment(tags, seen),
+         {:ok, field_part, seen} <- field_fragment(fields, seen) do
+      {:ok, [type_name, tag_part, " ", field_part, ts_fragment(timestamp, ts_unit)], seen}
     end
   end
 
-  defp build_line(_point, _ts_unit), do: raise(ArgumentError, "each point must be a map")
+  defp build_line(_point, _ts_unit, _seen), do: raise(ArgumentError, "each point must be a map")
+
+  # A key outside @point_keys is a silent no-op (the typo'd clause just vanishes from the line);
+  # string-keyed maps are the same hazard. Static message naming only the allowed set (Rule 3).
+  defp validate_point_keys!(point) do
+    case Map.keys(point) -- @point_keys do
+      [] -> :ok
+      _unknown -> raise ArgumentError, "point keys must be atoms among #{inspect(@point_keys)}"
+    end
+  end
 
   # Names normalize to VALIDATED binaries before any sort/interpolation: a bare `to_string/1`
   # on a non-String.Chars key (tuple/map/pid — composite keys can embed PII) crashes with a
   # Protocol.UndefinedError instead of the value-free {:error, :invalid_identifier} contract.
-  defp normalize_name(name) when is_binary(name) do
-    case Identifier.validate(name) do
-      :ok -> {:ok, name}
-      {:error, _} = err -> err
+  # `seen` threads the batch's already-validated names (identifier validity is name-intrinsic),
+  # so each distinct type/tag/field name validates ONCE per batch (~55% on the write bench).
+  defp normalize_name(name, seen) when is_binary(name) do
+    if MapSet.member?(seen, name) do
+      {:ok, name, seen}
+    else
+      case Identifier.validate(name) do
+        :ok -> {:ok, name, MapSet.put(seen, name)}
+        {:error, _} = err -> err
+      end
     end
   end
 
-  defp normalize_name(name) when is_atom(name) and not is_nil(name),
-    do: normalize_name(Atom.to_string(name))
+  defp normalize_name(name, seen) when is_atom(name) and not is_nil(name),
+    do: normalize_name(Atom.to_string(name), seen)
 
-  defp normalize_name(_), do: {:error, :invalid_identifier}
+  defp normalize_name(_, _seen), do: {:error, :invalid_identifier}
 
-  # Validates + normalizes every key FIRST (see normalize_name/1), then sorts, then rejects a
+  # Validates + normalizes every key FIRST (see normalize_name/2), then sorts, then rejects a
   # post-normalization duplicate (an atom key and its string twin would emit the name twice —
   # a silently malformed line). Static raise: a duplicate NAME is already identifier-validated.
-  defp normalized_pairs(map) do
+  defp normalized_pairs(map, seen) do
     map
-    |> Enum.reduce_while({:ok, []}, fn {k, v}, {:ok, acc} ->
-      case normalize_name(k) do
-        {:ok, name} -> {:cont, {:ok, [{name, v} | acc]}}
+    |> Enum.reduce_while({:ok, [], seen}, fn {k, v}, {:ok, acc, seen} ->
+      case normalize_name(k, seen) do
+        {:ok, name, seen} -> {:cont, {:ok, [{name, v} | acc], seen}}
         {:error, _} = err -> {:halt, err}
       end
     end)
     |> case do
-      {:ok, pairs} -> {:ok, sorted_unique!(pairs)}
+      {:ok, pairs, seen} -> {:ok, sorted_unique!(pairs), seen}
       {:error, _} = err -> err
     end
   end
@@ -723,17 +761,17 @@ defmodule Arcadic.TimeSeries do
     sorted
   end
 
-  defp tag_fragment(tags) when map_size(tags) == 0, do: {:ok, ""}
+  defp tag_fragment(tags, seen) when map_size(tags) == 0, do: {:ok, "", seen}
 
-  defp tag_fragment(tags) do
-    with {:ok, pairs} <- normalized_pairs(tags) do
-      {:ok, Enum.map_join(pairs, fn {k, v} -> ",#{k}=#{escape_tag_value!(v)}" end)}
+  defp tag_fragment(tags, seen) do
+    with {:ok, pairs, seen} <- normalized_pairs(tags, seen) do
+      {:ok, Enum.map_join(pairs, fn {k, v} -> ",#{k}=#{escape_tag_value!(v)}" end), seen}
     end
   end
 
-  defp field_fragment(fields) do
-    with {:ok, pairs} <- normalized_pairs(fields) do
-      {:ok, Enum.map_join(pairs, ",", fn {k, v} -> "#{k}=#{field_value!(v)}" end)}
+  defp field_fragment(fields, seen) do
+    with {:ok, pairs, seen} <- normalized_pairs(fields, seen) do
+      {:ok, Enum.map_join(pairs, ",", fn {k, v} -> "#{k}=#{field_value!(v)}" end), seen}
     end
   end
 
@@ -867,6 +905,10 @@ defmodule Arcadic.TimeSeries do
 
   defp query_tags(nil), do: {:ok, nil}
 
+  # An empty tags map is ABSENT (omit "tags" from the body entirely), not an empty filter —
+  # `tags: %{}` and no `:tags` opt mean the same thing to the caller.
+  defp query_tags(tags) when is_map(tags) and map_size(tags) == 0, do: {:ok, nil}
+
   # Post-normalization duplicate keys (an atom key and its string twin) reject, mirroring the
   # write path's sorted_unique!/1 — a silent last-wins would be iteration-order-dependent.
   defp query_tags(tags) when is_map(tags) do
@@ -989,8 +1031,12 @@ defmodule Arcadic.TimeSeries do
 
   defp latest_tag_params(nil), do: {:ok, []}
 
-  # The tag rides an UNPROBED "key:value" micro-format: an empty value ("host:") or a
-  # colon-bearing value ("host:a:b") would be a silently wrong filter — reject both, value-free.
+  # The tag rides a "key:value" micro-format. PROBED (26.7.2, S13 closeout A4): the server
+  # splits on the FIRST colon and matches the remainder EXACTLY — writing host="a:b" then
+  # `tag=host:a:b` returns that point, while `tag=host:a` matches only host="a" — so
+  # colon-bearing VALUES are allowed (the key is Identifier-validated, colon-free by grammar,
+  # making the first-colon split unambiguous). An empty value ("host:") stays rejected,
+  # value-free: it would be a silently wrong filter.
   defp latest_tag_params({k, v}) do
     key = name_string!(k)
 
@@ -998,7 +1044,6 @@ defmodule Arcadic.TimeSeries do
       Identifier.validate(key) != :ok -> {:error, :invalid_identifier}
       not is_binary(v) -> raise ArgumentError, "the tag value must be a string"
       v == "" -> raise ArgumentError, "the tag value must be a non-empty string"
-      String.contains?(v, ":") -> raise ArgumentError, "the tag value must not contain a colon"
       true -> {:ok, [{"tag", "#{key}:#{v}"}]}
     end
   end
@@ -1066,6 +1111,9 @@ defmodule Arcadic.TimeSeries do
   def bang({:ok, value}), do: value
   def bang({:error, %{__exception__: true} = error}), do: raise(error)
 
-  def bang({:error, reason}),
+  def bang({:error, reason}) when is_atom(reason),
     do: raise(ArgumentError, "time-series operation failed: #{inspect(reason)}")
+
+  # A non-atom reason may carry caller data — static message only, never inspect it (Rule 3).
+  def bang({:error, _reason}), do: raise(ArgumentError, "time-series operation failed")
 end
