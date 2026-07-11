@@ -302,7 +302,10 @@ defmodule Arcadic.TransactionTest do
 
             c
             |> Plug.Conn.put_status(500)
-            |> Req.Test.json(%{"error" => "t", "exception" => "com.arcadedb.exception.TimeoutException"})
+            |> Req.Test.json(%{
+              "error" => "t",
+              "exception" => "com.arcadedb.exception.TimeoutException"
+            })
 
           true ->
             Req.Test.json(c, %{"result" => [%{"ok" => true}]})
@@ -640,14 +643,12 @@ defmodule Arcadic.TransactionTest do
 
     test "tx begin does NOT fail over on a non-rejection begin error (e.g. :parse_error) — returns it" do
       Req.Test.stub(__MODULE__.BadBegin, fn c ->
-        cond do
-          c.host == "h1.invalid" and String.contains?(c.request_path, "/begin/") ->
-            c
-            |> Plug.Conn.put_status(400)
-            |> Req.Test.json(%{"error" => "x", "exception" => "com.x.CommandParsingException"})
-
-          true ->
-            Req.Test.json(c, %{"result" => [%{"host" => c.host}]})
+        if c.host == "h1.invalid" and String.contains?(c.request_path, "/begin/") do
+          c
+          |> Plug.Conn.put_status(400)
+          |> Req.Test.json(%{"error" => "x", "exception" => "com.x.CommandParsingException"})
+        else
+          Req.Test.json(c, %{"result" => [%{"host" => c.host}]})
         end
       end)
 

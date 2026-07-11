@@ -639,7 +639,9 @@ if Code.ensure_loaded?(Boltx) do
     # A deliberate rollback/2 abort is tagged so Arcadic.Transaction's retry loop treats it as
     # terminal (D7), symmetric with the HTTP runner; Arcadic.Transaction.transaction/3 unwraps
     # the tag to the public {:error, reason}.
-    def map_transaction_outcome({:error, {:arcadic_rollback, reason}}), do: {:__rollback__, reason}
+    def map_transaction_outcome({:error, {:arcadic_rollback, reason}}),
+      do: {:__rollback__, reason}
+
     def map_transaction_outcome({:error, %Boltx.Error{} = e}), do: {:error, bolt_error(e)}
 
     def map_transaction_outcome({:error, :rollback}),
