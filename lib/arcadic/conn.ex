@@ -10,6 +10,8 @@ defmodule Arcadic.Conn do
 
   alias Arcadic.Identifier
 
+  @type consistency :: :eventual | :read_your_writes | :linearizable
+
   @type t :: %__MODULE__{
           base_url: String.t(),
           database: String.t(),
@@ -17,7 +19,10 @@ defmodule Arcadic.Conn do
           session_id: String.t() | nil,
           transport: module(),
           transport_options: keyword(),
-          timeout: pos_integer() | nil
+          timeout: pos_integer() | nil,
+          consistency: consistency(),
+          read_after: integer() | nil,
+          hosts: [String.t()]
         }
 
   @enforce_keys [:base_url, :database, :auth]
@@ -27,9 +32,14 @@ defmodule Arcadic.Conn do
     :auth,
     :session_id,
     :timeout,
+    :read_after,
     transport: Arcadic.Transport.HTTP,
-    transport_options: []
+    transport_options: [],
+    consistency: :eventual,
+    hosts: []
   ]
+
+  @consistency_levels [:eventual, :read_your_writes, :linearizable]
 
   @doc """
   Build a connection handle.
@@ -53,6 +63,11 @@ defmodule Arcadic.Conn do
     validate_identifier!(database)
     validate_auth!(auth, transport)
 
+    consistency = Keyword.get(opts, :consistency, :eventual)
+    hosts = Keyword.get(opts, :hosts, [])
+    validate_consistency!(consistency, transport)
+    validate_hosts!(hosts, transport)
+
     %__MODULE__{
       base_url: String.trim_trailing(base_url, "/"),
       database: database,
@@ -60,7 +75,10 @@ defmodule Arcadic.Conn do
       session_id: nil,
       transport: transport,
       transport_options: Keyword.get(opts, :transport_options, []),
-      timeout: Keyword.get(opts, :timeout)
+      timeout: Keyword.get(opts, :timeout),
+      consistency: consistency,
+      read_after: nil,
+      hosts: Enum.map(hosts, &String.trim_trailing(&1, "/"))
     }
   end
 
@@ -83,6 +101,17 @@ defmodule Arcadic.Conn do
   def with_bearer(%__MODULE__{}, _token),
     do: raise(ArgumentError, "bearer token must be a string")
 
+  @doc "Derive a handle with a read-consistency level; validates and clears the session. HTTP-only."
+  @spec with_consistency(t(), consistency()) :: t()
+  def with_consistency(%__MODULE__{transport: Arcadic.Transport.Bolt}, level)
+      when level != :eventual,
+      do: raise(ArgumentError, "read-consistency requires the HTTP transport")
+
+  def with_consistency(%__MODULE__{} = conn, level) do
+    validate_consistency!(level, conn.transport)
+    %{conn | consistency: level, session_id: nil}
+  end
+
   defp validate_identifier!(database) do
     case Identifier.validate(database) do
       :ok -> :ok
@@ -96,6 +125,50 @@ defmodule Arcadic.Conn do
     do: raise(ArgumentError, "bearer auth requires the HTTP transport")
 
   defp validate_auth!(_auth, _transport), do: :ok
+
+  # Consistency is an HTTP request header; a non-default level on Bolt would be a silent
+  # no-op, so reject it value-free (mirrors with_bearer/2's Bolt rejection). Echo the
+  # allowed set, never the offending value (Rule 3).
+  defp validate_consistency!(:eventual, _transport), do: :ok
+
+  defp validate_consistency!(level, Arcadic.Transport.Bolt) when level in @consistency_levels,
+    do: raise(ArgumentError, "read-consistency requires the HTTP transport")
+
+  defp validate_consistency!(level, _transport) when level in @consistency_levels, do: :ok
+
+  defp validate_consistency!(_level, _transport),
+    do:
+      raise(
+        ArgumentError,
+        "unknown consistency; allowed: #{inspect(@consistency_levels)}"
+      )
+
+  # hosts are additional base URLs the failover fold replays the conn's credential to,
+  # so they must be same-trust http(s) replicas — validate the SHAPE value-free at
+  # construction (never echo the value). Multi-host is HTTP-only.
+  defp validate_hosts!([], _transport), do: :ok
+
+  defp validate_hosts!(_hosts, Arcadic.Transport.Bolt),
+    do: raise(ArgumentError, "multi-host failover requires the HTTP transport")
+
+  defp validate_hosts!(hosts, _transport) when is_list(hosts) do
+    Enum.each(hosts, &validate_host_url!/1)
+  end
+
+  defp validate_hosts!(_hosts, _transport),
+    do: raise(ArgumentError, "hosts must be a list of http(s) base URLs")
+
+  defp validate_host_url!(url) when is_binary(url) do
+    case URI.new(url) do
+      {:ok, %URI{scheme: s, host: h}} when s in ["http", "https"] and is_binary(h) and h != "" ->
+        :ok
+
+      _ ->
+        raise ArgumentError, "each host must be an http(s) base URL"
+    end
+  end
+
+  defp validate_host_url!(_), do: raise(ArgumentError, "each host must be an http(s) base URL")
 
   defimpl Inspect do
     import Inspect.Algebra

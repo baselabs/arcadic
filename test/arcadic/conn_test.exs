@@ -121,4 +121,86 @@ defmodule Arcadic.ConnTest do
       refute Exception.message(e) =~ "secret"
     end
   end
+
+  describe "read-consistency + hosts (S10 G14)" do
+    test "defaults: consistency :eventual, read_after nil, hosts []" do
+      conn = Conn.new("http://a.invalid", "db", auth: {"root", "x"})
+      assert conn.consistency == :eventual
+      assert conn.read_after == nil
+      assert conn.hosts == []
+    end
+
+    test "connect accepts :consistency and :hosts" do
+      conn =
+        Conn.new("http://a.invalid", "db",
+          auth: {"root", "x"},
+          consistency: :read_your_writes,
+          hosts: ["http://b.invalid", "http://c.invalid/"]
+        )
+
+      assert conn.consistency == :read_your_writes
+      assert conn.hosts == ["http://b.invalid", "http://c.invalid"]
+    end
+
+    test "with_consistency/2 derives a level and clears the session, value-free on a bad level" do
+      conn = %{Conn.new("http://a.invalid", "db", auth: {"root", "x"}) | session_id: "AS-1"}
+      lin = Conn.with_consistency(conn, :linearizable)
+      assert lin.consistency == :linearizable
+      assert lin.session_id == nil
+
+      e = assert_raise ArgumentError, fn -> Conn.with_consistency(conn, :bogus) end
+      # value-free: the offending level is never echoed, but the allowed set is
+      refute Exception.message(e) =~ "bogus"
+      assert Exception.message(e) =~ "read_your_writes"
+    end
+
+    test "invalid :consistency at connect raises value-free" do
+      e =
+        assert_raise ArgumentError, fn ->
+          Conn.new("http://a.invalid", "db", auth: {"root", "x"}, consistency: :nope)
+        end
+
+      assert Exception.message(e) =~ "eventual"
+    end
+
+    test "malformed :hosts entries are rejected value-free at construction" do
+      assert_raise ArgumentError, ~r/host/, fn ->
+        Conn.new("http://a.invalid", "db", auth: {"root", "x"}, hosts: ["not-a-url"])
+      end
+
+      assert_raise ArgumentError, ~r/host/, fn ->
+        Conn.new("http://a.invalid", "db", auth: {"root", "x"}, hosts: [:notabinary])
+      end
+    end
+
+    test "Bolt rejects a non-default consistency and a non-empty hosts list value-free" do
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.new("http://a.invalid", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.Bolt,
+          consistency: :linearizable
+        )
+      end
+
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.new("http://a.invalid", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.Bolt,
+          hosts: ["http://b.invalid"]
+        )
+      end
+
+      ok =
+        Conn.new("http://a.invalid", "db", auth: {"root", "x"}, transport: Arcadic.Transport.Bolt)
+
+      assert ok.consistency == :eventual
+
+      bolt =
+        Conn.new("http://a.invalid", "db", auth: {"root", "x"}, transport: Arcadic.Transport.Bolt)
+
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.with_consistency(bolt, :linearizable)
+      end
+    end
+  end
 end
