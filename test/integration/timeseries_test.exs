@@ -284,6 +284,53 @@ defmodule Arcadic.Integration.TimeSeriesTest do
     assert is_list(cols)
   end
 
+  test "unknown tag KEY fails open on query and latest (filter ignored, not rejected)",
+       %{conn: conn} do
+    # Server behavior probed 2026-07-11 on 26.7.2: a tag filter naming a key that is not on the
+    # type is IGNORED server-side (fail-open), never rejected. Both asserts pin the :ok+row shape
+    # HARD: a server that starts REJECTING unknown tag keys (an {:error, _} contract change)
+    # must red this test — that change must be seen, not absorbed.
+    t0 = now_ms()
+
+    :ok =
+      TimeSeries.write(
+        conn,
+        [
+          %{
+            type: "cpu",
+            tags: %{"host" => "failopen", "region" => "x"},
+            fields: %{"usage" => 4.0, "n" => 1, "msg" => "f", "ok" => true},
+            timestamp: t0
+          }
+        ],
+        precision: :ms
+      )
+
+    # (a) query/3: the unknown-key filter matches NOTHING if applied — the written row coming
+    # back proves the filter was dropped. Time-scoped to this test's window; the row is found
+    # BY NAME (other tests' ~now windows may overlap, so no bare count assert).
+    assert {:ok, %{columns: columns, rows: rows, count: count}} =
+             TimeSeries.query(conn, "cpu",
+               from: t0 - 1_000,
+               to: t0 + 1_000,
+               tags: %{"nosuchkey" => "zzz"}
+             )
+
+    assert count >= 1
+    row_maps = Enum.map(rows, fn row -> columns |> Enum.zip(row) |> Map.new() end)
+    assert Enum.any?(row_maps, &(&1["host"] == "failopen")), "unknown-tag-key filter was applied"
+
+    # (b) latest/3: same fail-open — ANY non-empty newest row proves the unknown-key filter was
+    # ignored (applied, it matches nothing; a silent fail-CLOSED would normalize to latest: []).
+    # Shape-tolerant on WHICH row: the agg test's bucket-interior timestamps can sit ahead of
+    # this test's ~now under some seed orders.
+    assert {:ok, %{columns: lcols, latest: latest}} =
+             TimeSeries.latest(conn, "cpu", tag: {"nosuchkey", "zzz"})
+
+    assert latest != []
+    assert length(lcols) == length(latest)
+  end
+
   test "PromQL family: instant, range, labels, label values, series", %{conn: conn} do
     t0 = now_ms()
 
