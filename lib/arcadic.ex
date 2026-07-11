@@ -100,6 +100,13 @@ defmodule Arcadic do
   `conn'` into the next call to observe your own writes. HTTP-only (`:not_supported`
   otherwise). On a single-server the index is absent → the bookmark is unchanged.
 
+  **The conn must be built with `consistency: :read_your_writes`** (via
+  `connect(consistency: :read_your_writes)` or `Arcadic.Conn.with_consistency/2`) for the
+  bookmark to be SENT: the `X-ArcadeDB-Read-After` request header rides only a
+  `:read_your_writes` conn. On the default `:eventual` conn the bookmark is still captured
+  into `conn'`, but it is never sent, so a lagging replica can serve a stale read and the
+  read-your-writes guarantee does NOT hold — set the level, or bookmarking is inert.
+
   Bookmarked calls target the primary host and do NOT participate in multi-host failover
   (the bookmark is host-relative); point `base_url` at a load balancer, or use the
   non-bookmarked `query/4`/`command/4` for availability failover.

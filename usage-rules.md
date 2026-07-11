@@ -236,7 +236,11 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   {:ok, rows} = Arcadic.query(conn2, "MATCH (u:User {id: $id}) RETURN u", %{"id" => "u1"})
   ```
   `conn2` carries the monotonically-advancing bookmark - thread it forward, don't
-  discard it. On a single-server deployment `:read_your_writes` is a harmless
+  discard it. The `:read_your_writes` level is REQUIRED for the guarantee: on a
+  plain `:eventual` conn the bookmark is still captured into `conn2` but never
+  SENT (the `X-ArcadeDB-Read-After` header rides only a `:read_your_writes` conn),
+  so a lagging replica can still serve a stale read - bookmarking is inert without
+  the level. On a single-server deployment `:read_your_writes` is a harmless
   no-op (there is no replica lag to guard against).
 - **Multi-host availability failover.** `connect(hosts: [url2, url3, ...])` adds
   failover targets. Reads fail over to the next host on any connection error;
