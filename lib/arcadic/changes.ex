@@ -30,7 +30,7 @@ end
 
 defmodule Arcadic.Changes do
   @moduledoc """
-  Live change-events client for ArcadeDB's `/ws` WebSocket feed (G8) — arcadic's
+  Live change-events client for ArcadeDB's `/ws` WebSocket feed — arcadic's
   one caller-supervised process.
 
   Start it under your own supervision tree, then `subscribe/3` a database. The

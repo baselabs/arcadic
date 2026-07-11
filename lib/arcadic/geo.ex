@@ -6,7 +6,8 @@ defmodule Arcadic.Geo do
   The type/property names are the only injection surfaces (interpolated behind
   `Arcadic.Identifier`, closed by construction) — `GEOSPATIAL` indexes take no query text, so there
   is no params-binding surface analogous to `FULL_TEXT`'s `SEARCH_INDEX`. Geospatial querying itself
-  (e.g. `ST_WITHIN`) rides ordinary `Arcadic.query/4` and is out of scope here.
+  (e.g. a `distance(...)` computation or the `geo.*` predicate family) rides ordinary
+  `Arcadic.query/4` and is out of scope here.
   """
   alias Arcadic.{Conn, Identifier, Opts}
 
@@ -57,7 +58,6 @@ defmodule Arcadic.Geo do
   end
 
   defp bang(:ok), do: :ok
-  defp bang({:ok, rows}), do: rows
   defp bang({:error, %{__exception__: true} = error}), do: raise(error)
 
   defp bang({:error, reason}),

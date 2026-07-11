@@ -62,7 +62,7 @@ defmodule Arcadic.Function do
   def define!(%Conn{} = conn, name, body, params \\ [], opts \\ []),
     do: bang(define(conn, name, body, params, opts))
 
-  @doc "Deletes a function `name` (a dotted `library.fn`); idempotent server-side. Value-free on a bad name."
+  @doc "Deletes a function `name` (a dotted `library.fn`); idempotent server-side once the library exists (deleting from a never-defined library errors). Value-free on a bad name."
   @spec delete(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def delete(%Conn{} = conn, name) do
     with {:ok, _} <- validate_name(name) do
