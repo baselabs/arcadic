@@ -172,5 +172,26 @@ defmodule Arcadic.QueryCommandTest do
       {[%{"ok" => true}], conn2} = Arcadic.command_bookmarked!(bm_conn("5"), "CREATE (n)")
       assert conn2.read_after == 100
     end
+
+    # A transport that implements only the required execute/4 (no optional execute_with_index/4) —
+    # mirrors Bolt and the ash_arcadic mock seam; the facade function_exported?-guards the callback.
+    defmodule NoBookmark do
+      @behaviour Arcadic.Transport
+      @impl true
+      def execute(_, _, _, _), do: {:ok, []}
+    end
+
+    test "query_bookmarked on a transport without execute_with_index/4 returns :not_supported" do
+      c = Conn.new("http://x.invalid", "db", auth: {"r", "p"}, transport: NoBookmark)
+
+      assert {:error, %Arcadic.Error{reason: :not_supported}} =
+               Arcadic.query_bookmarked(c, "SELECT 1", %{}, language: "sql")
+    end
+
+    test "command_bookmarked! on a transport without execute_with_index/4 raises the :not_supported hint" do
+      c = Conn.new("http://x.invalid", "db", auth: {"r", "p"}, transport: NoBookmark)
+
+      assert_raise Arcadic.Error, fn -> Arcadic.command_bookmarked!(c, "CREATE (n)") end
+    end
   end
 end
