@@ -123,4 +123,25 @@ defmodule Arcadic.Integration.ProgrammabilityTest do
     assert :ok = MaterializedView.create(conn, mv, "SELECT FROM Src")
     assert :ok = MaterializedView.drop(conn, mv)
   end
+
+  test "MaterializedView: a ;DROP embedded in the SELECT is non-breakout (single-statement backstop)",
+       %{conn: conn} do
+    # The MV SELECT is raw trailing SQL (deliberately NOT char-restricted); its ONLY injection
+    # defense is ArcadeDB's live-verified single-statement backstop — a `;`-separated second
+    # statement parse-errors the whole command. This exercises that backstop red-capably: if
+    # `/command` ever accepted the second statement, MvVictim would be dropped and this goes RED.
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE Src2", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE MvVictim", %{}, language: "sql")
+
+    assert {:error, %Arcadic.Error{}} =
+             MaterializedView.create(conn, "mvevil", "SELECT FROM Src2; DROP TYPE MvVictim")
+
+    assert {:ok, [%{"c" => 1}]} =
+             Arcadic.query(
+               conn,
+               "SELECT count(*) AS c FROM schema:types WHERE name = 'MvVictim'",
+               %{},
+               language: "sql"
+             )
+  end
 end

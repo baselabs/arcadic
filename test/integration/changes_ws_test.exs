@@ -120,6 +120,25 @@ defmodule Arcadic.Integration.ChangesWsTest do
     refute_receive {:arcadic_change, %Event{change_type: :update}}, 1500
   end
 
+  test "type filter: a change to a NON-subscribed type does not arrive (server-side :type filter is real)",
+       %{conn: conn, db: db} do
+    Arcadic.command!(conn, "CREATE VERTEX TYPE Gadget", %{}, language: "sql")
+    changes = start_and_open(conn)
+    :ok = Changes.subscribe(changes, db, type: "Widget")
+    settle()
+
+    w = writer(conn)
+    # A foreign-type (Gadget) write must NOT reach a Widget-scoped subscription...
+    Arcadic.command!(w, "INSERT INTO Gadget SET name = 'foreign'", %{}, language: "sql")
+    refute_receive {:arcadic_change, %Event{record: %{"name" => "foreign"}}}, 1500
+
+    # ...while a subscribed-type (Widget) write DOES — proving the refute is non-vacuous (the feed is
+    # live; the Gadget change was withheld by ArcadeDB's server-side `:type` filter). This makes the
+    # moduledoc's "a foreign type yields no frames" claim a real, red-capable gate.
+    Arcadic.command!(w, "INSERT INTO Widget SET name = 'kept'", %{}, language: "sql")
+    assert_receive {:arcadic_change, %Event{type: "Widget", record: %{"name" => "kept"}}}, 5000
+  end
+
   test "bearer /ws: a {:bearer, token} conn subscribes and receives a change (bearer supported)",
        %{conn: conn, db: db} do
     assert {:ok, token} = Security.login(conn)
