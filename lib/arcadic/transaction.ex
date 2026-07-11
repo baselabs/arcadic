@@ -13,6 +13,12 @@ defmodule Arcadic.Transaction do
 
   @rollback_throw :arcadic_rollback
 
+  # A RAISED Arcadic.Error is pre-commit (closure raised → tx rolled back → nothing applied): retry
+  # the fuller set incl. :timeout. A RETURNED {:error, %Error{}} is a begin/commit-phase failure
+  # where a commit-phase :timeout is post-commit-ambiguous → the commit set excludes it.
+  @retriable_precommit [:concurrent_modification, :not_leader, :timeout]
+  @retriable_commit [:concurrent_modification, :not_leader]
+
   @doc "Run `fun` inside a session transaction. Opts: `:isolation` (`:read_committed` | `:repeatable_read`)."
   @spec transaction(Conn.t(), (Conn.t() -> result), keyword()) ::
           {:ok, result} | {:error, Error.t() | TransportError.t() | term()}
@@ -26,23 +32,92 @@ defmodule Arcadic.Transaction do
   end
 
   def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
+    retry = parse_retry!(opts[:retry])
+
     Telemetry.span(:transaction, %{isolation: opts[:isolation]}, fn ->
       result =
-        if Code.ensure_loaded?(conn.transport) and
-             function_exported?(conn.transport, :transaction, 3) do
-          conn.transport.transaction(conn, fun, opts)
-        else
-          run(conn, fun, opts)
-        end
+        if retry, do: run_with_retry(conn, fun, opts, retry, 1), else: dispatch(conn, fun, opts)
 
       {result, %{reason: reason_tag(result)}}
     end)
   end
 
-  defp run(conn, fun, opts) do
-    with {:ok, session_id} <- conn.transport.begin(conn, opts) do
-      tx = %{conn | session_id: session_id}
+  # The default (no :retry) path — byte-identical to pre-S10: Bolt native transaction/3, else the
+  # HTTP session runner. Extracted so retry wraps it without perturbing the default stacktrace.
+  defp dispatch(conn, fun, opts) do
+    if Code.ensure_loaded?(conn.transport) and function_exported?(conn.transport, :transaction, 3),
+      do: conn.transport.transaction(conn, fun, opts),
+      else: run(conn, fun, opts)
+  end
 
+  # Managed retry. Each attempt runs inside ONE try/rescue (attempt_once/3) that returns a TAG; the
+  # loop recurses OUTSIDE the try so a raise from a later attempt is never caught by an earlier
+  # frame's rescue. A RAISED Arcadic.Error is pre-commit (the closure raised → tx rolled back →
+  # nothing applied) and retries the fuller set incl. :timeout; a RETURNED {:error, %Error{}} is a
+  # begin/commit-phase failure where a commit-phase :timeout is post-commit-ambiguous → the commit
+  # set excludes it. On exhaustion the captured `on_exhaust` closure re-raises (raised path,
+  # preserving today's reraise) or returns (returned path). A non-retriable raise propagates
+  # immediately from attempt_once; rollback/2 aborts and TransportError never match the retriable sets.
+  defp run_with_retry(conn, fun, opts, retry, attempt) do
+    case attempt_once(conn, fun, opts) do
+      {:done, result} ->
+        result
+
+      {:retriable, reason, on_exhaust} ->
+        if attempt < retry.max_attempts do
+          backoff(retry, attempt)
+          emit_retry(attempt, reason)
+          run_with_retry(conn, fun, opts, retry, attempt + 1)
+        else
+          on_exhaust.()
+        end
+    end
+  end
+
+  # Implicit try: the case is the function body; rescue catches a pre-commit raise from dispatch.
+  defp attempt_once(conn, fun, opts) do
+    case dispatch(conn, fun, opts) do
+      {:error, %Error{reason: r}} = err when r in @retriable_commit ->
+        {:retriable, r, fn -> err end}
+
+      other ->
+        {:done, other}
+    end
+  rescue
+    e in Arcadic.Error ->
+      st = __STACKTRACE__
+
+      if e.reason in @retriable_precommit,
+        do: {:retriable, e.reason, fn -> reraise e, st end},
+        else: reraise(e, st)
+  end
+
+  defp emit_retry(attempt, reason),
+    do: Telemetry.event([:arcadic, :transaction, :retry], %{attempt: attempt}, %{reason: reason})
+
+  # Exponential backoff with full jitter, capped. attempt is 1-based.
+  defp backoff(retry, attempt) do
+    ceiling = min(retry.max_backoff_ms, retry.base_backoff_ms * Integer.pow(2, attempt - 1))
+    Process.sleep(:rand.uniform(max(ceiling, 1)))
+  end
+
+  # :retry accepts nil (off), true (defaults), or a keyword; anything else is value-free-rejected.
+  defp parse_retry!(nil), do: nil
+  defp parse_retry!(true), do: %{max_attempts: 3, base_backoff_ms: 50, max_backoff_ms: 1000}
+
+  defp parse_retry!(opts) when is_list(opts) do
+    %{
+      max_attempts: Keyword.get(opts, :max_attempts, 3),
+      base_backoff_ms: Keyword.get(opts, :base_backoff_ms, 50),
+      max_backoff_ms: Keyword.get(opts, :max_backoff_ms, 1000)
+    }
+  end
+
+  defp parse_retry!(_),
+    do: raise(ArgumentError, "retry must be true or a keyword list of options")
+
+  defp run(conn, fun, opts) do
+    with {:ok, tx} <- begin_pinned(conn, [conn.base_url | conn.hosts], opts) do
       try do
         result = fun.(tx)
 
@@ -65,6 +140,29 @@ defmodule Arcadic.Transaction do
           _ = safe_rollback(tx)
           :erlang.raise(kind, value, __STACKTRACE__)
       end
+    end
+  end
+
+  # Try begin against each host in order; PIN the session conn to the first host that answers
+  # (the session id is host-local, so the tx must not fail over mid-flight). A begin that fails
+  # with a pre-send connect error rolls to the next host; any other begin error is returned. hosts
+  # is cleared on the pinned conn so no downstream fold re-selects mid-tx.
+  defp begin_pinned(_conn, [], _opts),
+    do: {:error, %TransportError{reason: :econnrefused}}
+
+  defp begin_pinned(conn, [url | rest], opts) do
+    host_conn = %{conn | base_url: url, hosts: []}
+
+    case conn.transport.begin(host_conn, opts) do
+      {:ok, session_id} ->
+        {:ok, %{host_conn | session_id: session_id}}
+
+      {:error, %TransportError{reason: reason}}
+      when reason in [:econnrefused, :nxdomain] and rest != [] ->
+        begin_pinned(conn, rest, opts)
+
+      {:error, _} = err ->
+        err
     end
   end
 
