@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.transaction/3` accepts an opt-in `:retry` option (`true` for defaults,
+  `max_attempts: 3, base_backoff_ms: 50, max_backoff_ms: 1000`, or a keyword
+  overriding any of those). Off by default (unchanged behavior). On a transient
+  server fault (`:concurrent_modification`, `:not_leader`, and a pre-commit
+  `:timeout`) it retries with jittered exponential backoff up to `:max_attempts`.
+  **The retried function must be idempotent** - it may run more than once.
+  Emits `[:arcadic, :transaction, :retry]` telemetry per attempt (`%{attempt}`
+  measurement, `%{reason}` metadata).
+- `Arcadic.Conn.with_consistency/2` and `connect(consistency: ...)`: a
+  read-consistency level for subsequent reads: `:eventual` (default, sends no
+  extra header), `:read_your_writes`, or `:linearizable`. HTTP-only; a
+  non-default level on a Bolt connection raises. On a single-server deployment,
+  `:read_your_writes` is a harmless no-op.
+- `Arcadic.query_bookmarked/4` / `command_bookmarked/4` (+ `!` variants), like
+  `query/4`/`command/4` but return `{:ok, rows, conn'}`, where `conn'` carries a
+  monotonically-advancing read-your-writes bookmark. Thread `conn'` into the next
+  call to observe your own writes. HTTP-only; bookmarked calls target the primary
+  host and do not participate in multi-host failover.
+- `connect(hosts: [...])`: additional base URLs for multi-host availability
+  failover. Reads fail over to the next host on any connection error; writes fail
+  over only on a pre-send connect error, never on an ambiguous post-send close. A
+  session (inside `transaction/3`) pins to whichever host answers first. This is
+  availability failover, not load balancing; front a cluster with a load
+  balancer if you want request distribution.
+- New `Arcadic.Error` reason `:not_leader`: the target node is not the cluster
+  leader and could not forward the write (`ServerIsNotTheLeaderException`).
+  Treated as retriable by managed retry and as failover-eligible by multi-host
+  failover (the write was rejected, nothing applied).
+
 ## [0.5.0] - 2026-07-10
 
 ### Added

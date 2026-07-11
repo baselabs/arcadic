@@ -23,19 +23,24 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   metrics), both returning `{:ok, %{plan: String.t(), plan_tree: map(), rows:
   [map()]}}` (`plan` the portable human string, `plan_tree` the raw
   transport-defined structure, `rows` empty for `explain/4`); `transaction/3` and
-  `rollback/2` for session transactions. Non-bang calls return `{:ok, rows}` or
-  `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`. Default language is
-  `"cypher"`; opt into `sql`/`gremlin`/`graphql`/`mongo`/`sqlscript` per call.
-  `query/4`/`command/4`/`query_stream/4` on a statement already carrying an
-  `EXPLAIN`/`PROFILE` prefix return `{:error, %Arcadic.Error{reason: :use_explain}}`
-  — call `explain/4`/`profile/4` instead.
+  `rollback/2` for session transactions (`transaction/3` accepts an opt-in
+  `:retry`, see Reliability below); `query_bookmarked/4` / `command_bookmarked/4`
+  (+ `!`) for read-your-writes bookmark threading. Non-bang calls return
+  `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.TransportError{}}`.
+  Default language is `"cypher"`; opt into `sql`/`gremlin`/`graphql`/`mongo`/
+  `sqlscript` per call. `query/4`/`command/4`/`query_stream/4` on a statement
+  already carrying an `EXPLAIN`/`PROFILE` prefix return
+  `{:error, %Arcadic.Error{reason: :use_explain}}` — call `explain/4`/`profile/4`
+  instead.
 - **`Arcadic.Conn`** — a pure-data connection handle (no process). Its `Inspect`
   redacts auth and session id. `with_database/2` derives a same-pool handle on
   another database (clears the session); `with_bearer/2` derives a
   Bearer-authenticated handle from a Basic one (typically fed
   `Arcadic.Security.login/1`'s token) — **HTTP-only**, raises `ArgumentError`
   on a Bolt conn (Bolt authenticates from `transport_options`, never
-  `conn.auth`).
+  `conn.auth`). `with_consistency/2` derives a handle at a given read-consistency
+  level, and `connect(hosts: [...])` adds multi-host failover targets, both
+  **HTTP-only**; see Reliability below.
 - **`Arcadic.Server`** — server/database admin, HTTP-only, not delegated from
   the `Arcadic` facade: `create_database/2` (+ `!`), `drop_database/2` (+ `!`),
   `database_exists?/2`, `list_databases/1`, `ready?/1`, `open_database/2`,
@@ -199,6 +204,52 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
     Safe to replay — `MERGE` matches existing rows instead of duplicating them, unlike
     `Arcadic.Bulk.ingest/3`.
 
+## Reliability: retry, consistency & multi-host
+
+- **Managed retry.** `transaction/3` accepts `retry: true` (defaults:
+  `max_attempts: 3, base_backoff_ms: 50, max_backoff_ms: 1000`) or a keyword
+  overriding any of those. Off by default (unchanged behavior). On a transient
+  server fault (`:concurrent_modification`, `:not_leader`, and a pre-commit
+  `:timeout`) it retries with jittered exponential backoff. **The retried
+  function MUST be idempotent** - it can run more than once before it succeeds
+  or the attempts are exhausted:
+  ```elixir
+  {:ok, _} =
+    Arcadic.transaction(
+      conn,
+      fn tx -> Arcadic.command!(tx, "MERGE (u:User {id: $id}) SET u.seen = $ts", %{"id" => "u1", "ts" => ts}) end,
+      retry: true
+    )
+  ```
+  A `MERGE`-based upsert body is retry-safe; a body with a side effect outside the
+  transaction (e.g. a non-idempotent external call) is not.
+- **Read consistency & bookmarks.** `Arcadic.connect(..., consistency: level)` or
+  `Arcadic.Conn.with_consistency(conn, level)` sets the read-consistency level for
+  subsequent reads: `:eventual` (default, sends no extra header),
+  `:read_your_writes`, or `:linearizable`. HTTP-only; a non-default level on a
+  Bolt conn raises `ArgumentError`. Pair `:read_your_writes` with the bookmarked
+  calls (`query_bookmarked/4` / `command_bookmarked/4`, same opts as
+  `query/4`/`command/4`) to guarantee a read observes your own prior write:
+  ```elixir
+  rw = Arcadic.Conn.with_consistency(conn, :read_your_writes)
+  {:ok, _rows, conn2} = Arcadic.command_bookmarked(rw, "CREATE (u:User {id: $id})", %{"id" => "u1"})
+  {:ok, rows} = Arcadic.query(conn2, "MATCH (u:User {id: $id}) RETURN u", %{"id" => "u1"})
+  ```
+  `conn2` carries the monotonically-advancing bookmark - thread it forward, don't
+  discard it. On a single-server deployment `:read_your_writes` is a harmless
+  no-op (there is no replica lag to guard against).
+- **Multi-host availability failover.** `connect(hosts: [url2, url3, ...])` adds
+  failover targets. Reads fail over to the next host on any connection error;
+  writes fail over only on a pre-send connect error (never on an ambiguous
+  post-send close, so a write is never blindly resent to a second host after it
+  may already have landed on the first). A session (`transaction/3`) pins to
+  whichever host answers first. This is **availability failover, not load
+  balancing**; front a cluster with a load-balancer VIP if you want request
+  distribution across hosts. Bookmarked calls (`query_bookmarked/4` /
+  `command_bookmarked/4`) target the primary host and do **not** participate in
+  failover (the bookmark is host-relative); point `base_url` at a load balancer,
+  or use non-bookmarked `query/4`/`command/4` when you need failover.
+
 ## Non-negotiable rules
 
 - **Parameters only.** Every dynamic value goes into the request `params` map and
@@ -206,7 +257,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   for SQL** (see Parameter binding below; never interpolate a value into a
   Cypher/SQL string — that is a query-injection defect). This holds for
   `query/4`, `command/4`, `command_async/4`, `query_stream/4`, `explain/4`,
-  `profile/4`, and inside `transaction/3`.
+  `profile/4`, `query_bookmarked/4`, `command_bookmarked/4`, and inside
+  `transaction/3`.
 - **Redact at the boundary.** Errors and logs carry structure only.
   `Arcadic.Error` exposes a typed `reason`, `http_status`, and `exception` class;
   its `detail` field is quarantined (absent from `message/1` and `inspect/1`).
@@ -263,7 +315,10 @@ Which options each function accepts (an unknown key is rejected value-free):
 `:database_not_found`, `:transaction_error` (server fault, or client-side session
 misuse), `:concurrent_modification`, `:duplicate_key`, `:timeout` (server-side
 statement timeout — distinct from the client-side `TransportError` below),
-`:invalid_begin_body` (bad `:isolation` on `transaction/3`), `:server_error`
+`:not_leader` (the target node is not the cluster leader and could not forward
+the write; a managed-retry `transaction/3` and multi-host failover both treat
+it as retriable, since nothing was applied), `:invalid_begin_body` (bad
+`:isolation` on `transaction/3`), `:server_error`
 (generic fallback), `:use_explain` (call `explain/4`/`profile/4` instead), and
 `:not_supported` (the transport lacks the called capability, e.g. `explain/4`
 without a transport impl, HTTP streaming in a transaction, Bolt database admin —
@@ -310,6 +365,9 @@ rides telemetry.
   `:row_count` measurement.
 - `[:arcadic, :transaction, :start | :stop | :exception]` — `transaction/3`
   (metadata carries `:isolation`).
+- `[:arcadic, :transaction, :retry]` - one per managed-retry attempt on
+  `transaction/3` (`retry:` opt); `:attempt` measurement, `:reason` metadata
+  (the retriable error reason that triggered the attempt).
 - `[:arcadic, :vector, :sparse_index_preexisting]` — see `Arcadic.Vector` above.
 - `[:arcadic, :admin, :start | :stop | :exception]` — every `Arcadic.Server` /
   `Arcadic.Security` / `Arcadic.Backup` call (metadata carries `:operation`,

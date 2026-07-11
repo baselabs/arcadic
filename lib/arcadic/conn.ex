@@ -49,6 +49,10 @@ defmodule Arcadic.Conn do
     * `:transport` — transport module (default `Arcadic.Transport.HTTP`).
     * `:transport_options` — keyword passed to the transport (`:finch`, `:plug`, `:timeout`, pool knobs).
     * `:timeout` — default per-call receive timeout (ms).
+    * `:consistency` - read-consistency level: `:eventual` (default) | `:read_your_writes` |
+      `:linearizable`. HTTP-only; a non-default level on a Bolt conn raises.
+    * `:hosts` - additional `http(s)` base URLs for multi-host availability failover
+      (default `[]`). HTTP-only; a non-empty list on a Bolt conn raises.
 
   ## Examples
 

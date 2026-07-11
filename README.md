@@ -126,6 +126,49 @@ Calling `query/4`, `command/4`, or `query_stream/4` on a statement that already 
 an `EXPLAIN`/`PROFILE` prefix now returns `{:error, %Arcadic.Error{reason: :use_explain}}`
 (previously a silent `{:ok, []}`) — use `explain/4`/`profile/4` instead.
 
+## Reliability: retry, read consistency & multi-host
+
+`Arcadic.transaction/3` accepts an opt-in `:retry` option. Off by default (unchanged
+behavior); `retry: true` uses the defaults (`max_attempts: 3, base_backoff_ms: 50,
+max_backoff_ms: 1000`), or pass a keyword to override any of those. On a transient
+server fault (`:concurrent_modification`, `:not_leader`, and a pre-commit `:timeout`)
+it retries with jittered exponential backoff. **The retried function must be
+idempotent** - it can run more than once before it succeeds or the attempts are
+exhausted:
+
+```elixir
+{:ok, _} =
+  Arcadic.transaction(
+    conn,
+    fn tx -> Arcadic.command!(tx, "MERGE (u:User {id: $id}) SET u.seen = $ts", %{"id" => "u1", "ts" => ts}) end,
+    retry: true
+  )
+```
+
+`Arcadic.Conn.with_consistency/2` (or `connect(consistency: ...)`) sets the
+read-consistency level for subsequent reads: `:eventual` (default, sends no extra
+header), `:read_your_writes`, or `:linearizable`. HTTP-only; a non-default level on a
+Bolt conn raises. Pair `:read_your_writes` with `query_bookmarked/4` /
+`command_bookmarked/4` (+ `!`, same opts as `query/4`/`command/4`) to guarantee a read
+observes your own prior write. These return `{:ok, rows, conn'}` where `conn'`
+carries a monotonically-advancing bookmark:
+
+```elixir
+rw = Arcadic.Conn.with_consistency(conn, :read_your_writes)
+{:ok, _rows, conn2} = Arcadic.command_bookmarked(rw, "CREATE (u:User {id: $id})", %{"id" => "u1"})
+{:ok, rows} = Arcadic.query(conn2, "MATCH (u:User {id: $id}) RETURN u", %{"id" => "u1"})
+```
+
+Thread `conn2` forward - don't discard it. On a single-server deployment
+`:read_your_writes` is a harmless no-op.
+
+`connect(hosts: [url2, url3, ...])` adds multi-host **availability** failover, not
+load balancing (front a cluster with a load-balancer VIP for request distribution).
+Reads fail over to the next host on any connection error; writes fail over only on a
+pre-send connect error, never on an ambiguous post-send close. A session
+(`transaction/3`) pins to whichever host answers first. Bookmarked calls target the
+primary host and do not participate in failover (the bookmark is host-relative).
+
 ## Options reference
 
 Which options each function accepts (an unknown key is rejected value-free):
@@ -157,6 +200,9 @@ Non-bang calls return `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.Tra
 - `:duplicate_key`
 - `:timeout` — a server-side statement timeout (distinct from
   `%Arcadic.TransportError{reason: :timeout}`, the client-side connection timeout)
+- `:not_leader` - the target node is not the cluster leader and could not forward
+  the write; a managed-retry `transaction/3` and multi-host failover both treat it
+  as retriable (the write was rejected, nothing applied)
 - `:invalid_begin_body` — an invalid `:isolation` value on `transaction/3`
 - `:server_error` — the generic fallback for an unmatched or absent ArcadeDB exception
 - `:use_explain` — `query/4`/`command/4`/`query_stream/4` called on a statement that
@@ -206,8 +252,9 @@ fixed allowlist (`Arcadic.Telemetry.allowed_meta_keys/0`): `:language`, `:mode`,
   `:row_count` measurement.
 
 arcadic also emits `[:arcadic, :transaction, :start | :stop | :exception]`
-(`transaction/3`, metadata carrying `:isolation`) and the standalone
-`[:arcadic, :vector, :sparse_index_preexisting]` event (see
+(`transaction/3`, metadata carrying `:isolation`), `[:arcadic, :transaction, :retry]`
+(one per managed-retry attempt: `:attempt` measurement, `:reason` metadata) and the
+standalone `[:arcadic, :vector, :sparse_index_preexisting]` event (see
 [Vector search](#vector-search)) under the same allowlist.
 
 - `[:arcadic, :admin, :start | :stop | :exception]` — every `Arcadic.Server`,
