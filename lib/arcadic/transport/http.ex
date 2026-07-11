@@ -12,16 +12,45 @@ defmodule Arcadic.Transport.HTTP do
   @behaviour Arcadic.Transport
 
   alias Arcadic.{Conn, Error, Result, Telemetry, TransportError}
+  require Logger
+
+  # Writes may have been applied before a post-send close (ambiguous), so a WRITE fails over only
+  # on PRE-SEND connect-phase errors; a READ is idempotent → fails over on any connection error.
+  # A :not_leader response body is a rejection (nothing applied) → fails over for both modes.
+  @presend_reasons [:econnrefused, :nxdomain]
 
   @impl true
   def execute(%Conn{} = conn, mode, request, opts) when mode in [:read, :write] do
     path = "/api/v1/#{endpoint(mode)}/#{conn.database}"
     body = build_body(request, opts)
-
-    conn
-    |> post(path, body, opts)
-    |> handle_result()
+    execute_hosts(conn, [conn.base_url | conn.hosts], path, body, opts, mode, 0)
   end
+
+  # Last host: return whatever it yields (no more failover targets).
+  defp execute_hosts(conn, [url], path, body, opts, _mode, _idx) do
+    %{conn | base_url: url} |> post(path, body, opts) |> handle_result()
+  end
+
+  defp execute_hosts(conn, [url | rest], path, body, opts, mode, idx) do
+    result = %{conn | base_url: url} |> post(path, body, opts) |> handle_result()
+
+    if failover?(result, mode) do
+      # Value-free (D18): log the host INDEX, never the URL (base_url may carry userinfo) or a value.
+      Logger.warning("arcadic: host index #{idx} unavailable - failing over to the next host")
+      execute_hosts(conn, rest, path, body, opts, mode, idx + 1)
+    else
+      result
+    end
+  end
+
+  defp failover?({:error, %TransportError{reason: reason}}, :read) when is_atom(reason), do: true
+
+  defp failover?({:error, %TransportError{reason: reason}}, :write),
+    do: reason in @presend_reasons
+
+  # A rejected-by-non-leader write/read is safe to re-send to another host (nothing applied).
+  defp failover?({:error, %Error{reason: :not_leader}}, _mode), do: true
+  defp failover?(_result, _mode), do: false
 
   @impl true
   @spec execute_with_index(Conn.t(), :read | :write, Arcadic.Transport.request(), keyword()) ::
