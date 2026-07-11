@@ -228,4 +228,151 @@ defmodule Arcadic.TimeSeriesTest do
       end
     end
   end
+
+  describe "DDL emission" do
+    alias Arcadic.TimeSeries
+
+    defp stub_command(expected) do
+      Req.Test.stub(__MODULE__, fn c ->
+        {:ok, body, _} = Plug.Conn.read_body(c)
+        decoded = Jason.decode!(body)
+        assert decoded["language"] == "sql"
+        assert decoded["command"] == expected
+        Req.Test.json(c, %{"user" => "root", "result" => [%{"operation" => "x"}]})
+      end)
+    end
+
+    test "create_type/4 minimal — no PRECISION, no TAGS, no options" do
+      stub_command("CREATE TIMESERIES TYPE cpu TIMESTAMP ts FIELDS (v DOUBLE)")
+      assert :ok = TimeSeries.create_type(conn(), "cpu", "ts", fields: [v: "DOUBLE"])
+    end
+
+    test "create_type/4 full — fixed clause order SHARDS -> RETENTION -> COMPACTION_INTERVAL, plural units" do
+      stub_command(
+        "CREATE TIMESERIES TYPE cpu TIMESTAMP ts PRECISION MILLISECOND " <>
+          "TAGS (host STRING, region STRING) FIELDS (usage DOUBLE, n INTEGER) " <>
+          "SHARDS 2 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS"
+      )
+
+      assert :ok =
+               TimeSeries.create_type(conn(), "cpu", "ts",
+                 fields: [usage: "DOUBLE", n: "INTEGER"],
+                 tags: [host: "STRING", region: "STRING"],
+                 precision: :millisecond,
+                 shards: 2,
+                 retention: {90, :days},
+                 compaction_interval: {1, :hours}
+               )
+    end
+
+    test "create_type/4 rejects a bad column TYPE token value-free (positive allowlist)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.create_type(conn(), "cpu", "ts", fields: [v: "DOUBLE; DROP DATABASE x"])
+        end
+
+      refute Exception.message(err) =~ "DROP"
+    end
+
+    test "create_type/4 rejects a bad identifier via {:error, :invalid_identifier}" do
+      assert {:error, :invalid_identifier} =
+               TimeSeries.create_type(conn(), "bad name", "ts", fields: [v: "DOUBLE"])
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.create_type(conn(), "cpu", "1bad", fields: [v: "DOUBLE"])
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.create_type(conn(), "cpu", "ts", fields: [{"bad col", "DOUBLE"}])
+    end
+
+    test "create_type/4 requires a non-empty :fields" do
+      assert_raise ArgumentError, ~r/at least one field/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts", fields: [])
+      end
+
+      assert_raise ArgumentError, ~r/at least one field/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts", [])
+      end
+    end
+
+    test "create_type/4 rejects bad durations and precisions value-free" do
+      assert_raise ArgumentError, ~r/duration/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts",
+          fields: [v: "DOUBLE"],
+          retention: {90, :weeks}
+        )
+      end
+
+      assert_raise ArgumentError, ~r/duration/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts", fields: [v: "DOUBLE"], retention: {0, :days})
+      end
+
+      assert_raise ArgumentError, ~r/precision/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts", fields: [v: "DOUBLE"], precision: :nanos)
+      end
+
+      assert_raise ArgumentError, ~r/shards/, fn ->
+        TimeSeries.create_type(conn(), "cpu", "ts", fields: [v: "DOUBLE"], shards: 0)
+      end
+    end
+
+    test "drop_type/2 emits plain DROP (no IF EXISTS — absent from the 26.7.2 grammar)" do
+      stub_command("DROP TIMESERIES TYPE cpu")
+      assert :ok = TimeSeries.drop_type(conn(), "cpu")
+    end
+
+    test "add_downsampling/3 emits AFTER + GRANULARITY with plural units; both opts required" do
+      stub_command(
+        "ALTER TIMESERIES TYPE cpu ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS"
+      )
+
+      assert :ok =
+               TimeSeries.add_downsampling(conn(), "cpu",
+                 after: {7, :days},
+                 granularity: {1, :hours}
+               )
+
+      assert_raise ArgumentError, ~r/after/, fn ->
+        TimeSeries.add_downsampling(conn(), "cpu", granularity: {1, :hours})
+      end
+
+      assert_raise ArgumentError, ~r/granularity/, fn ->
+        TimeSeries.add_downsampling(conn(), "cpu", after: {7, :days})
+      end
+    end
+
+    test "drop_downsampling/2" do
+      stub_command("ALTER TIMESERIES TYPE cpu DROP DOWNSAMPLING POLICY")
+      assert :ok = TimeSeries.drop_downsampling(conn(), "cpu")
+    end
+
+    test "bang variants raise on a server error and return :ok on success" do
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{
+          "error" => "boom",
+          "exception" => "com.arcadedb.exception.CommandExecutionException",
+          "detail" => "Type 'cpu' already exists"
+        })
+      end)
+
+      assert_raise Arcadic.Error, fn ->
+        TimeSeries.create_type!(conn(), "cpu", "ts", fields: [v: "DOUBLE"])
+      end
+
+      stub_command("DROP TIMESERIES TYPE cpu")
+      assert :ok = TimeSeries.drop_type!(conn(), "cpu")
+    end
+
+    test "bang variants turn a bare error atom into a static ArgumentError (value-free)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.drop_type!(conn(), "bad name")
+        end
+
+      assert err.message == "time-series operation failed: :invalid_identifier"
+      refute err.message =~ "bad name"
+    end
+  end
 end
