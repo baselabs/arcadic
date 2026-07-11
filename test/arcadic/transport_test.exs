@@ -26,4 +26,8 @@ defmodule Arcadic.TransportTest do
   test "explain/3 is an optional callback" do
     assert {:explain, 3} in Arcadic.Transport.behaviour_info(:optional_callbacks)
   end
+
+  test "execute_with_index/4 is an optional callback" do
+    assert {:execute_with_index, 4} in Arcadic.Transport.behaviour_info(:optional_callbacks)
+  end
 end

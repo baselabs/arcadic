@@ -95,6 +95,16 @@ defmodule Arcadic.Transport do
   @optional_callbacks explain: 3
 
   @doc """
+  Like `execute/4` for a read/write but also returns the server's HA commit index
+  (`X-ArcadeDB-Commit-Index` response header) as `{:ok, rows, index}` — `index` is
+  `nil` on a single (non-HA) server where the header is absent. Optional — HTTP
+  implements it; Bolt has no HA header. Used by `query_bookmarked`/`command_bookmarked`.
+  """
+  @callback execute_with_index(Conn.t(), mode :: :read | :write, request(), opts :: keyword()) ::
+              {:ok, [map()], integer() | nil} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks execute_with_index: 4
+
+  @doc """
   Bulk-ingest NDJSON vertex/edge records (`POST /api/v1/batch/<db>`). The body is already-serialized
   NDJSON iodata; `opts` carries the query params (`:light_edges`, `:commit_every`). Edge endpoints
   resolve by the vertex `@id` temp key in the body, not a query param.

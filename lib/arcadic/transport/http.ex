@@ -24,6 +24,41 @@ defmodule Arcadic.Transport.HTTP do
   end
 
   @impl true
+  @spec execute_with_index(Conn.t(), :read | :write, Arcadic.Transport.request(), keyword()) ::
+          {:ok, [map()], integer() | nil} | {:error, Error.t() | TransportError.t()}
+  def execute_with_index(%Conn{} = conn, mode, request, opts) when mode in [:read, :write] do
+    path = "/api/v1/#{endpoint(mode)}/#{conn.database}"
+    body = build_body(request, opts)
+
+    case post(conn, path, body, opts) do
+      {:ok, %Req.Response{} = resp} = ok ->
+        case handle_result(ok) do
+          {:ok, rows} -> {:ok, rows, commit_index(resp)}
+          {:error, _} = err -> err
+        end
+
+      {:error, _} = err ->
+        handle_result(err)
+    end
+  end
+
+  # The HA commit-index bookmark rides the X-ArcadeDB-Commit-Index response header; absent on a
+  # single (non-HA) server. Parse value-free (Integer.parse, never String.to_integer which would
+  # echo a malformed value into a raise — Rule 3).
+  defp commit_index(%Req.Response{} = resp) do
+    case Req.Response.get_header(resp, "x-arcadedb-commit-index") do
+      [raw | _] ->
+        case Integer.parse(raw) do
+          {n, _} -> n
+          :error -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @impl true
   @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
           Arcadic.Transport.plan_result()
   def explain(%Conn{} = conn, request, opts) do

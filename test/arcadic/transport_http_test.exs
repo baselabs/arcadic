@@ -157,4 +157,78 @@ defmodule Arcadic.Transport.HTTPTest do
     assert {:error, %Error{reason: :parse_error}} =
              HTTP.explain(conn(), req, [])
   end
+
+  describe "execute_with_index/4 (S10 G14a)" do
+    setup do
+      %{
+        conn:
+          Conn.new("http://arcade.invalid", "mydb",
+            auth: {"root", "x"},
+            transport_options: [plug: {Req.Test, __MODULE__}]
+          )
+      }
+    end
+
+    test "captures the X-ArcadeDB-Commit-Index response header as an integer", %{conn: conn} do
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_resp_header("x-arcadedb-commit-index", "128")
+        |> Req.Test.json(%{"result" => [%{"n" => 1}]})
+      end)
+
+      assert {:ok, [%{"n" => 1}], 128} =
+               HTTP.execute_with_index(
+                 conn,
+                 :read,
+                 %{statement: "SELECT 1", params: %{}, language: "sql"},
+                 []
+               )
+    end
+
+    test "returns index nil when the response header is absent (single-server)", %{conn: conn} do
+      Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => []}) end)
+
+      assert {:ok, [], nil} =
+               HTTP.execute_with_index(
+                 conn,
+                 :read,
+                 %{statement: "SELECT 1", params: %{}, language: "sql"},
+                 []
+               )
+    end
+
+    test "a malformed commit-index header is ignored value-free (nil), never raised", %{
+      conn: conn
+    } do
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_resp_header("x-arcadedb-commit-index", "not-a-number")
+        |> Req.Test.json(%{"result" => []})
+      end)
+
+      assert {:ok, [], nil} =
+               HTTP.execute_with_index(
+                 conn,
+                 :read,
+                 %{statement: "SELECT 1", params: %{}, language: "sql"},
+                 []
+               )
+    end
+
+    test "an error response propagates as {:error, _} (no index tuple)", %{conn: conn} do
+      Req.Test.stub(__MODULE__, fn c ->
+        c
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{"error" => "boom", "exception" => "com.x.TransactionException"})
+      end)
+
+      assert {:error, %Error{reason: :transaction_error}} =
+               HTTP.execute_with_index(
+                 conn,
+                 :write,
+                 %{statement: "CREATE (n)", params: %{}, language: "cypher"},
+                 []
+               )
+    end
+  end
 end
