@@ -12,7 +12,8 @@ defmodule Arcadic.ErrorTest do
         {"com.arcadedb.exception.TransactionException", 500, :transaction_error},
         {"com.arcadedb.exception.ConcurrentModificationException", 500, :concurrent_modification},
         {"com.arcadedb.exception.DuplicatedKeyException", 500, :duplicate_key},
-        {"com.arcadedb.exception.TimeoutException", 500, :timeout}
+        {"com.arcadedb.exception.TimeoutException", 500, :timeout},
+        {"com.arcadedb.network.binary.ServerIsNotTheLeaderException", 400, :not_leader}
       ]
 
       for {fqn, status, reason} <- cases do
@@ -35,6 +36,15 @@ defmodule Arcadic.ErrorTest do
       }
 
       assert %Error{reason: :not_idempotent} = Error.from_response(400, body)
+    end
+
+    test "maps ServerIsNotTheLeaderException (400 with FQN) to :not_leader, not :server_error" do
+      body = %{
+        "error" => "Cannot execute command",
+        "exception" => "com.arcadedb.network.binary.ServerIsNotTheLeaderException"
+      }
+
+      assert %Error{reason: :not_leader} = Error.from_response(400, body)
     end
 
     test "falls back to :server_error for an unmapped exception" do

@@ -25,6 +25,10 @@ defmodule Arcadic.Error do
     (`ConcurrentModificationException`/`NeedRetryException`).
   - `:duplicate_key` — a unique-index violation (`DuplicatedKeyException`).
   - `:timeout` — the server reported a timeout (`TimeoutException`).
+  - `:not_leader` — the target node is not the cluster leader and could not forward
+    the write (`ServerIsNotTheLeaderException`, HTTP 400). A managed-retry
+    `transaction/3` and multi-host failover treat it as retriable (the write was
+    rejected, nothing applied).
   - `:invalid_begin_body` — a malformed `isolationLevel` in a transaction-begin body.
   - `:server_error` — the generic fallback: an unrecognized HTTP 400 body, or an
     `exception` FQN that matches none of the above.
@@ -74,7 +78,8 @@ defmodule Arcadic.Error do
     {"ConcurrentModificationException", :concurrent_modification},
     {"NeedRetryException", :concurrent_modification},
     {"DuplicatedKeyException", :duplicate_key},
-    {"TimeoutException", :timeout}
+    {"TimeoutException", :timeout},
+    {"ServerIsNotTheLeaderException", :not_leader}
   ]
 
   @doc "Build an `Arcadic.Error` from an HTTP status and a decoded ArcadeDB error body."
