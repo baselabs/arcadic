@@ -435,4 +435,228 @@ defmodule Arcadic.TimeSeriesTest do
       assert :ok = TimeSeries.drop_aggregate!(conn(), "hourly")
     end
   end
+
+  describe "write/3 and the line builder" do
+    alias Arcadic.TimeSeries
+
+    defp stub_write(expected_body, expected_query \\ "") do
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == "/api/v1/ts/tsdb/write"
+        assert c.query_string == expected_query
+        send(self(), {:lines, Req.Test.raw_body(c)})
+        Plug.Conn.send_resp(c, 204, "")
+      end)
+
+      expected_body
+    end
+
+    test "builds a full line: sorted tags, typed fields (int i-suffix, float, bool, string), timestamp" do
+      expected =
+        stub_write(
+          "cpu,host=srv1,region=us msg=\"hi\",n=42i,ok=true,usage=12.5 1700000000000000000"
+        )
+
+      point = %{
+        type: "cpu",
+        tags: %{"region" => "us", "host" => "srv1"},
+        fields: %{"usage" => 12.5, "n" => 42, "ok" => true, "msg" => "hi"},
+        timestamp: 1_700_000_000_000_000_000
+      }
+
+      assert :ok = TimeSeries.write(conn(), [point])
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+    end
+
+    test "escapes tag values (space/comma/equals/backslash) and string-field quotes/backslashes" do
+      expected =
+        stub_write("ev,svc=my\\ svc\\,prod\\=x\\\\y msg=\"quote \\\" back \\\\ slash\" 1")
+
+      point = %{
+        type: "ev",
+        tags: %{"svc" => ~S(my svc,prod=x\y)},
+        fields: %{"msg" => ~S(quote " back \ slash)},
+        timestamp: 1
+      }
+
+      assert :ok = TimeSeries.write(conn(), [point])
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+    end
+
+    test "multi-point bodies join with newline; nil timestamp omits it (server now)" do
+      expected = stub_write("a v=1i\nb v=2i 5")
+
+      assert :ok =
+               TimeSeries.write(conn(), [
+                 %{type: "a", fields: %{"v" => 1}},
+                 %{type: "b", fields: %{"v" => 2}, timestamp: 5}
+               ])
+
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+    end
+
+    test "atom type and atom tag/field names are converted (the @doc contract)" do
+      expected = stub_write("cpu,host=a v=1i 7")
+
+      assert :ok =
+               TimeSeries.write(conn(), [
+                 %{type: :cpu, tags: %{host: "a"}, fields: %{v: 1}, timestamp: 7}
+               ])
+
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+    end
+
+    test ":precision is validated client-side (server silently ignores bad values) and converts DateTime" do
+      expected = stub_write("a v=1i 1700000000000", "precision=ms")
+      dt = DateTime.from_unix!(1_700_000_000_000, :millisecond)
+
+      assert :ok =
+               TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => 1}, timestamp: dt}],
+                 precision: :ms
+               )
+
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+
+      assert_raise ArgumentError, ~r/precision/, fn ->
+        TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => 1}}], precision: :xx)
+      end
+    end
+
+    test "control bytes are rejected value-free in tag values and string fields (record-split hazard)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [
+            %{type: "a", tags: %{"k" => "in\njected"}, fields: %{"v" => 1}}
+          ])
+        end
+
+      refute Exception.message(err) =~ "jected"
+
+      err2 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{type: "a", fields: %{"msg" => "se\ncret"}}])
+        end
+
+      refute Exception.message(err2) =~ "cret"
+    end
+
+    test "invalid UTF-8 in tag values and string fields is rejected value-free" do
+      assert_raise ArgumentError, ~r/UTF-8/, fn ->
+        TimeSeries.write(conn(), [%{type: "a", tags: %{"k" => <<0xFF>>}, fields: %{"v" => 1}}])
+      end
+
+      assert_raise ArgumentError, ~r/UTF-8/, fn ->
+        TimeSeries.write(conn(), [%{type: "a", fields: %{"msg" => <<0xFF>>}}])
+      end
+    end
+
+    test "a non-String.Chars tag/field KEY is {:error, :invalid_identifier} — never a Protocol.UndefinedError echoing the key" do
+      assert {:error, :invalid_identifier} =
+               TimeSeries.write(conn(), [
+                 %{type: "a", tags: %{{:a, "leakkey"} => "x"}, fields: %{"v" => 1}}
+               ])
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.write(conn(), [%{type: "a", fields: %{{:a, "leakkey"} => 1}}])
+    end
+
+    test "an empty tag VALUE is rejected value-free (would emit an invalid `,k=` line)" do
+      assert_raise ArgumentError, ~r/non-empty/, fn ->
+        TimeSeries.write(conn(), [%{type: "a", tags: %{"k" => ""}, fields: %{"v" => 1}}])
+      end
+    end
+
+    test "an atom key colliding with its string twin is rejected (the name would emit twice)" do
+      assert_raise ArgumentError, ~r/duplicate/, fn ->
+        TimeSeries.write(conn(), [
+          %{type: "a", tags: %{:h => "x", "h" => "y"}, fields: %{"v" => 1}}
+        ])
+      end
+
+      assert_raise ArgumentError, ~r/duplicate/, fn ->
+        TimeSeries.write(conn(), [%{type: "a", fields: %{:v => 1, "v" => 2}}])
+      end
+    end
+
+    test "shape violations raise value-free; bad names return {:error, :invalid_identifier}" do
+      assert_raise ArgumentError, ~r/points must be a list/, fn ->
+        TimeSeries.write(conn(), %{type: "a", fields: %{"v" => 1}})
+      end
+
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{type: "a", fields: %{}}])
+        end
+
+      assert Exception.message(err) =~ "at least one field"
+
+      err2 = assert_raise ArgumentError, fn -> TimeSeries.write(conn(), ["not-a-map-secret"]) end
+      refute Exception.message(err2) =~ "secret"
+
+      err3 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => {:tuple, "leak"}}}])
+        end
+
+      refute Exception.message(err3) =~ "leak"
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.write(conn(), [%{type: "bad type", fields: %{"v" => 1}}])
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.write(conn(), [%{type: "a", fields: %{"bad field" => 1}}])
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.write(conn(), [
+                 %{type: "a", tags: %{"bad tag" => "x"}, fields: %{"v" => 1}}
+               ])
+    end
+
+    test "empty points list returns :ok without hitting the wire" do
+      Req.Test.stub(__MODULE__, fn _c -> flunk("no wire call expected") end)
+      assert :ok = TimeSeries.write(conn(), [])
+    end
+
+    test "a transport without ts_write is :not_supported (per-callback capability check)" do
+      bolt_conn =
+        Conn.new("bolt://h", "tsdb",
+          auth: {"u", "p"},
+          transport: Arcadic.Transport.Bolt,
+          transport_options: [username: "u", password: "p"]
+        )
+
+      assert {:error, %Error{reason: :not_supported}} =
+               TimeSeries.write(bolt_conn, [%{type: "a", fields: %{"v" => 1}}])
+    end
+
+    test "write_lines/3 passes raw lines through; non-binary/iodata raises value-free" do
+      expected = stub_write("raw,t=1 v=1 9")
+      assert :ok = TimeSeries.write_lines(conn(), "raw,t=1 v=1 9")
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+
+      err = assert_raise ArgumentError, fn -> TimeSeries.write_lines(conn(), %{secret: "x"}) end
+      refute Exception.message(err) =~ "secret"
+    end
+
+    test "write emits the :timeseries telemetry span with row_count" do
+      handler_id = "ts-write-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:arcadic, :timeseries, :stop],
+        fn _e, _m, meta, pid -> send(pid, {:span_meta, meta}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+      stub_write("a v=1i")
+      assert :ok = TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => 1}}])
+      assert_received {:span_meta, %{operation: :write, mode: :write, row_count: 1}}
+    end
+  end
 end

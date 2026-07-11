@@ -33,7 +33,7 @@ defmodule Arcadic.TimeSeries do
   - `write_lines/3` (raw passthrough) additionally inherits the malformed-line silent-skip.
   """
 
-  alias Arcadic.{Conn, Identifier, Opts}
+  alias Arcadic.{Conn, Error, Identifier, Opts, Telemetry}
 
   @typedoc "A duration for `:retention` / `:compaction_interval` / downsampling opts."
   @type duration :: {pos_integer(), :seconds | :minutes | :hours | :days}
@@ -198,6 +198,72 @@ defmodule Arcadic.TimeSeries do
   @spec drop_aggregate!(Conn.t(), String.t()) :: :ok
   def drop_aggregate!(%Conn{} = conn, name), do: bang(drop_aggregate(conn, name))
 
+  @write_opts [:precision, :timeout]
+  # Wire strings for ?precision (client-validated: the server silently IGNORES an invalid value —
+  # probed 26.7.2 — so this map is the only guard) and the DateTime conversion unit per precision.
+  @precisions %{ns: "ns", us: "us", ms: "ms", s: "s"}
+  @precision_units %{ns: :nanosecond, us: :microsecond, ms: :millisecond, s: :second}
+  # Control bytes (incl. newline) split the line-protocol record — the wire has no in-string
+  # escape for them (probed: a raw \n inside a quoted field parses the remainder as a NEW
+  # measurement). Reject value-free wherever a caller string lands in a line.
+  @control_bytes ~r/[\x00-\x1F\x7F]/
+
+  @doc """
+  Writes structured `points` as InfluxDB line protocol (`POST /api/v1/ts/<db>/write`).
+
+  Each point: `%{type: String, fields: map (REQUIRED, non-empty), tags: map \\\\ %{},
+  timestamp: integer | DateTime | nil}`. Field values: integer (emits `42i`), float, boolean, or
+  String; tag values: String. Type, tag and field NAMES are `Arcadic.Identifier`-validated
+  (they are schema columns); atom names are allowed and converted. An integer timestamp passes
+  through in the `:precision` unit; a `DateTime` is converted; `nil` omits it (server-assigned
+  now). Tags and fields emit in lexicographic key order (deterministic, Influx canonical form).
+
+  `opts`: `:precision` (`:ns` default | `:us` | `:ms` | `:s`), `:timeout` (ms).
+
+  Read the moduledoc **Operational contract** before relying on retries or mixed-type batches.
+  Value-free on every invalid input (Rule 3): shape violations raise with static messages; a bad
+  name returns `{:error, :invalid_identifier}`; caller values never appear in an error.
+  """
+  @spec write(Conn.t(), [map()], keyword()) :: :ok | {:error, atom() | Exception.t()}
+  def write(%Conn{} = conn, points, opts \\ []) do
+    unless is_list(points) do
+      raise ArgumentError, "points must be a list of point maps"
+    end
+
+    Opts.validate_keys!(opts, @write_opts)
+    wire_precision = wire_precision!(opts)
+    ts_unit = Map.fetch!(@precision_units, opts[:precision] || :ns)
+
+    with {:ok, lines} <- build_lines(points, ts_unit) do
+      dispatch_write(conn, :write, points_count(points), lines, wire_precision, opts)
+    end
+  end
+
+  @doc "Writes structured points, raising on error."
+  @spec write!(Conn.t(), [map()], keyword()) :: :ok
+  def write!(%Conn{} = conn, points, opts \\ []), do: bang(write(conn, points, opts))
+
+  @doc """
+  Writes raw, already-built line protocol (a relay path — e.g. forwarding a Telegraf batch).
+  `lines` must be a binary or iodata. arcadic performs NO validation or escaping on the content:
+  this path additionally inherits the server's malformed-line silent-skip (see the moduledoc
+  Operational contract). `opts`: `:precision`, `:timeout`.
+  """
+  @spec write_lines(Conn.t(), iodata(), keyword()) :: :ok | {:error, atom() | Exception.t()}
+  def write_lines(%Conn{} = conn, lines, opts \\ []) do
+    unless is_binary(lines) or is_list(lines) do
+      raise ArgumentError, "lines must be a binary or iodata"
+    end
+
+    Opts.validate_keys!(opts, @write_opts)
+
+    dispatch_write(conn, :write_lines, nil, lines, wire_precision!(opts), opts)
+  end
+
+  @doc "Writes raw line protocol, raising on error."
+  @spec write_lines!(Conn.t(), iodata(), keyword()) :: :ok
+  def write_lines!(%Conn{} = conn, lines, opts \\ []), do: bang(write_lines(conn, lines, opts))
+
   # --- private: DDL assembly ---
 
   # :fields must be present and non-empty; :tags may be absent. Both normalize to
@@ -296,6 +362,205 @@ defmodule Arcadic.TimeSeries do
       {:ok, _rows} -> :ok
       {:error, error} -> {:error, error}
     end
+  end
+
+  # --- private: write path ---
+
+  # The wire param is sent only when the caller passed :precision (the default :ns is the
+  # server default — probed; `precision_query(nil)` on the transport omits the param). An
+  # explicit value is validated client-side either way (the server silently ignores bad values).
+  defp wire_precision!(opts) do
+    case Keyword.fetch(opts, :precision) do
+      {:ok, p} -> precision_string!(p)
+      :error -> nil
+    end
+  end
+
+  defp precision_string!(p) do
+    case Map.fetch(@precisions, p) do
+      {:ok, s} ->
+        s
+
+      :error ->
+        raise ArgumentError, "unknown precision; allowed: #{inspect(Map.keys(@precisions))}"
+    end
+  end
+
+  defp points_count(points), do: length(points)
+
+  # Capability BEFORE the empty short-circuit (Bulk precedent, bulk.ex dispatch/3): Bolt + []
+  # must be :not_supported, not a spurious :ok. A supported transport + [] never hits the wire.
+  defp dispatch_write(%Conn{transport: transport} = conn, op, count, lines, wire_precision, opts) do
+    cond do
+      not callback?(transport, :ts_write, 3) ->
+        {:error,
+         %Error{reason: :not_supported, message: "transport does not support time-series"}}
+
+      lines == [] or lines == "" ->
+        # span/3 returns the fun's RESULT element; the empty batch never hits the wire.
+        Telemetry.span(:timeseries, %{operation: op, mode: :write}, fn ->
+          {:ok, %{row_count: 0, reason: :ok}}
+        end)
+
+      true ->
+        Telemetry.span(:timeseries, %{operation: op, mode: :write}, fn ->
+          result = transport.ts_write(conn, lines, put_precision(opts, wire_precision))
+          {result, write_stop_meta(result, count)}
+        end)
+    end
+  end
+
+  defp put_precision(opts, nil), do: Keyword.take(opts, [:timeout])
+
+  defp put_precision(opts, wire_precision),
+    do: opts |> Keyword.take([:timeout]) |> Keyword.put(:precision, wire_precision)
+
+  defp write_stop_meta(:ok, nil), do: %{reason: :ok}
+  defp write_stop_meta(:ok, count), do: %{reason: :ok, row_count: count}
+
+  defp write_stop_meta({:error, %{reason: reason}}, _count) when is_atom(reason),
+    do: %{reason: reason}
+
+  defp write_stop_meta({:error, _}, _count), do: %{reason: :error}
+
+  defp callback?(transport, fun, arity),
+    do: Code.ensure_loaded?(transport) and function_exported?(transport, fun, arity)
+
+  # Builds the newline-joined lines iodata. Identifier failures return {:error, :invalid_identifier};
+  # every other bad shape raises a STATIC message (a point may carry PII — never echo it).
+  defp build_lines(points, ts_unit) do
+    points
+    |> Enum.reduce_while({:ok, []}, fn point, {:ok, acc} ->
+      case build_line(point, ts_unit) do
+        {:ok, line} -> {:cont, {:ok, [line | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, lines} -> {:ok, lines |> Enum.reverse() |> Enum.intersperse("\n")}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp build_line(point, ts_unit) when is_map(point) do
+    type = Map.get(point, :type)
+    fields = Map.get(point, :fields)
+    tags = Map.get(point, :tags, %{})
+    timestamp = Map.get(point, :timestamp)
+
+    unless is_map(fields) and map_size(fields) > 0 do
+      raise ArgumentError, "each point requires at least one field"
+    end
+
+    unless is_map(tags), do: raise(ArgumentError, "tags must be a map")
+
+    with {:ok, type_name} <- normalize_name(type),
+         {:ok, tag_part} <- tag_fragment(tags),
+         {:ok, field_part} <- field_fragment(fields) do
+      {:ok, [type_name, tag_part, " ", field_part, ts_fragment(timestamp, ts_unit)]}
+    end
+  end
+
+  defp build_line(_point, _ts_unit), do: raise(ArgumentError, "each point must be a map")
+
+  # Names normalize to VALIDATED binaries before any sort/interpolation: a bare `to_string/1`
+  # on a non-String.Chars key (tuple/map/pid — composite keys can embed PII) crashes with a
+  # Protocol.UndefinedError instead of the value-free {:error, :invalid_identifier} contract.
+  defp normalize_name(name) when is_binary(name) do
+    case Identifier.validate(name) do
+      :ok -> {:ok, name}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp normalize_name(name) when is_atom(name) and not is_nil(name),
+    do: normalize_name(Atom.to_string(name))
+
+  defp normalize_name(_), do: {:error, :invalid_identifier}
+
+  # Validates + normalizes every key FIRST (see normalize_name/1), then sorts, then rejects a
+  # post-normalization duplicate (an atom key and its string twin would emit the name twice —
+  # a silently malformed line). Static raise: a duplicate NAME is already identifier-validated.
+  defp normalized_pairs(map) do
+    map
+    |> Enum.reduce_while({:ok, []}, fn {k, v}, {:ok, acc} ->
+      case normalize_name(k) do
+        {:ok, name} -> {:cont, {:ok, [{name, v} | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, pairs} -> {:ok, sorted_unique!(pairs)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp sorted_unique!(pairs) do
+    sorted = Enum.sort_by(pairs, &elem(&1, 0))
+
+    if Enum.uniq_by(sorted, &elem(&1, 0)) != sorted do
+      raise ArgumentError, "duplicate tag/field name after atom-key normalization"
+    end
+
+    sorted
+  end
+
+  defp tag_fragment(tags) when map_size(tags) == 0, do: {:ok, ""}
+
+  defp tag_fragment(tags) do
+    with {:ok, pairs} <- normalized_pairs(tags) do
+      {:ok, Enum.map_join(pairs, fn {k, v} -> ",#{k}=#{escape_tag_value!(v)}" end)}
+    end
+  end
+
+  defp field_fragment(fields) do
+    with {:ok, pairs} <- normalized_pairs(fields) do
+      {:ok, Enum.map_join(pairs, ",", fn {k, v} -> "#{k}=#{field_value!(v)}" end)}
+    end
+  end
+
+  defp ts_fragment(nil, _unit), do: ""
+  defp ts_fragment(ts, _unit) when is_integer(ts), do: " #{ts}"
+  defp ts_fragment(%DateTime{} = dt, unit), do: " #{DateTime.to_unix(dt, unit)}"
+
+  defp ts_fragment(_, _),
+    do: raise(ArgumentError, "timestamp must be an integer, DateTime, or nil")
+
+  # Tag values ride unquoted: escape backslash FIRST, then the delimiters. Control bytes reject.
+  # An EMPTY tag value emits `,k=` — a silently malformed line — so it rejects too (static).
+  defp escape_tag_value!(""), do: raise(ArgumentError, "tag values must be non-empty strings")
+
+  defp escape_tag_value!(v) when is_binary(v) do
+    reject_control!(v)
+
+    v
+    |> String.replace("\\", "\\\\")
+    |> String.replace(",", "\\,")
+    |> String.replace("=", "\\=")
+    |> String.replace(" ", "\\ ")
+  end
+
+  defp escape_tag_value!(_), do: raise(ArgumentError, "tag values must be strings")
+
+  defp field_value!(v) when is_integer(v), do: "#{v}i"
+  defp field_value!(v) when is_float(v), do: to_string(v)
+  defp field_value!(v) when is_boolean(v), do: to_string(v)
+
+  defp field_value!(v) when is_binary(v) do
+    reject_control!(v)
+    escaped = v |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+    "\"#{escaped}\""
+  end
+
+  defp field_value!(_),
+    do: raise(ArgumentError, "field values must be integers, floats, booleans, or strings")
+
+  defp reject_control!(v) do
+    if not String.valid?(v) or Regex.match?(@control_bytes, v) do
+      raise ArgumentError, "string values must be UTF-8 without control bytes"
+    end
+
+    :ok
   end
 
   # Shared bang: :ok passthrough; {:ok, value} unwrap (consumed by query!/latest!/prom_*! in
