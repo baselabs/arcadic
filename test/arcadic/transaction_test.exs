@@ -263,6 +263,30 @@ defmodule Arcadic.TransactionTest do
       end
     end
 
+    test "non-integer / non-positive :retry inner values are rejected value-free (no unbounded loop)" do
+      # A non-integer max_attempts defeats the `attempt < max_attempts` loop bound (Elixir term
+      # ordering: 1 < "3" is true) → unbounded retry on a persistent fault. A float backoff crashes
+      # :rand.uniform. Reject the SHAPE value-free at parse time (before any HTTP), never echo the value.
+      bad_opts = [
+        [max_attempts: "3"],
+        [max_attempts: 0],
+        [max_attempts: 1.5],
+        [base_backoff_ms: 5.0],
+        [max_backoff_ms: -1]
+      ]
+
+      for bad <- bad_opts do
+        e =
+          assert_raise ArgumentError, fn ->
+            Arcadic.transaction(conn(), fn _ -> :ok end, retry: bad)
+          end
+
+        assert Exception.message(e) =~ "positive integer"
+        # value-free: no offending value ("3"/"5"/"1") echoed
+        refute Exception.message(e) =~ ~r/\d/
+      end
+    end
+
     # --- The RAISED pre-commit arm (the D3 fix). flaky_command_stub fails the /command/ so
     # command! RAISES inside the closure (rolled back = pre-commit). Counts /command/ calls.
     defp flaky_command_stub(fail_cmds) do

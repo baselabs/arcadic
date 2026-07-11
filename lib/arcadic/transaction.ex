@@ -107,14 +107,25 @@ defmodule Arcadic.Transaction do
 
   defp parse_retry!(opts) when is_list(opts) do
     %{
-      max_attempts: Keyword.get(opts, :max_attempts, 3),
-      base_backoff_ms: Keyword.get(opts, :base_backoff_ms, 50),
-      max_backoff_ms: Keyword.get(opts, :max_backoff_ms, 1000)
+      max_attempts: retry_pos_int!(opts, :max_attempts, 3),
+      base_backoff_ms: retry_pos_int!(opts, :base_backoff_ms, 50),
+      max_backoff_ms: retry_pos_int!(opts, :max_backoff_ms, 1000)
     }
   end
 
   defp parse_retry!(_),
     do: raise(ArgumentError, "retry must be true or a keyword list of options")
+
+  # Each retry knob must be a positive integer. A non-integer max_attempts would defeat the
+  # `attempt < max_attempts` loop bound (Elixir term ordering sorts an integer below a string, so
+  # `1 < "3"` is true → unbounded retry); a non-integer backoff would crash `:rand.uniform`. Reject
+  # the SHAPE value-free (echo the key + expectation, never the offending value — Rule 3).
+  defp retry_pos_int!(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> raise ArgumentError, "retry #{key} must be a positive integer"
+    end
+  end
 
   defp run(conn, fun, opts) do
     with {:ok, tx} <- begin_pinned(conn, [conn.base_url | conn.hosts], opts) do
