@@ -375,4 +375,64 @@ defmodule Arcadic.TimeSeriesTest do
       refute err.message =~ "bad name"
     end
   end
+
+  describe "continuous aggregates" do
+    alias Arcadic.TimeSeries
+
+    test "create_aggregate/3 emits CREATE CONTINUOUS AGGREGATE name AS <select> (select verbatim)" do
+      stub_command(
+        "CREATE CONTINUOUS AGGREGATE hourly AS SELECT ts.timeBucket('1h', ts) AS hour, avg(v) AS av FROM cpu GROUP BY hour"
+      )
+
+      assert :ok =
+               TimeSeries.create_aggregate(
+                 conn(),
+                 "hourly",
+                 "SELECT ts.timeBucket('1h', ts) AS hour, avg(v) AS av FROM cpu GROUP BY hour"
+               )
+    end
+
+    test "create_aggregate/3 raises value-free on a non-binary select; :invalid_identifier on a bad name" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.create_aggregate(conn(), "h", %{secret: "x"})
+        end
+
+      refute Exception.message(err) =~ "secret"
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.create_aggregate(conn(), "bad name", "SELECT 1")
+    end
+
+    test "create_aggregate/3 fallback is TOTAL — a non-Conn first arg raises the same value-free ArgumentError, never FunctionClauseError (whose blame echoes the args)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.create_aggregate(:not_a_conn, "h", %{secret: "x"})
+        end
+
+      refute Exception.message(err) =~ "secret"
+    end
+
+    test "refresh_aggregate/2 and drop_aggregate/2" do
+      stub_command("REFRESH CONTINUOUS AGGREGATE hourly")
+      assert :ok = TimeSeries.refresh_aggregate(conn(), "hourly")
+
+      stub_command("DROP CONTINUOUS AGGREGATE hourly")
+      assert :ok = TimeSeries.drop_aggregate(conn(), "hourly")
+
+      assert {:error, :invalid_identifier} = TimeSeries.refresh_aggregate(conn(), "1bad")
+      assert {:error, :invalid_identifier} = TimeSeries.drop_aggregate(conn(), "1bad")
+    end
+
+    test "bang variants" do
+      stub_command("CREATE CONTINUOUS AGGREGATE hourly AS SELECT 1")
+      assert :ok = TimeSeries.create_aggregate!(conn(), "hourly", "SELECT 1")
+
+      stub_command("REFRESH CONTINUOUS AGGREGATE hourly")
+      assert :ok = TimeSeries.refresh_aggregate!(conn(), "hourly")
+
+      stub_command("DROP CONTINUOUS AGGREGATE hourly")
+      assert :ok = TimeSeries.drop_aggregate!(conn(), "hourly")
+    end
+  end
 end

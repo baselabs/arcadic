@@ -148,6 +148,56 @@ defmodule Arcadic.TimeSeries do
   @spec drop_downsampling!(Conn.t(), String.t()) :: :ok
   def drop_downsampling!(%Conn{} = conn, type), do: bang(drop_downsampling(conn, type))
 
+  @doc """
+  Creates a continuous aggregate: `CREATE CONTINUOUS AGGREGATE name AS select_sql`. The SELECT
+  rides through VERBATIM — the same injection rationale as `Arcadic.MaterializedView`: it is raw
+  trailing SQL (not a quoted literal), and ArcadeDB's live-verified single-statement backstop
+  makes a `;`-separated second statement a parse error. The result materializes as a document
+  type readable via `SELECT FROM name`. Refresh with `refresh_aggregate/2`.
+  """
+  @spec create_aggregate(Conn.t(), String.t(), String.t()) ::
+          :ok | {:error, atom() | Exception.t()}
+  def create_aggregate(%Conn{} = conn, name, select_sql) when is_binary(select_sql) do
+    with {:ok, [name_ok]} <- validate_idents([name]) do
+      command_ok(conn, "CREATE CONTINUOUS AGGREGATE #{name_ok} AS #{select_sql}")
+    end
+  end
+
+  # A non-binary select must not FunctionClauseError (blame echoes the args — Rule 3).
+  # Fully open fallback (no %Conn{} match), mirroring Arcadic.MaterializedView.create/3:
+  # a restrictive head with no total fallback IS the FunctionClauseError leak.
+  def create_aggregate(_conn, _name, _select_sql),
+    do: raise(ArgumentError, "select must be a string")
+
+  @doc "Creates a continuous aggregate, raising on error."
+  @spec create_aggregate!(Conn.t(), String.t(), String.t()) :: :ok
+  def create_aggregate!(%Conn{} = conn, name, select_sql),
+    do: bang(create_aggregate(conn, name, select_sql))
+
+  @doc "Refreshes a continuous aggregate (`REFRESH CONTINUOUS AGGREGATE name`)."
+  @spec refresh_aggregate(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
+  def refresh_aggregate(%Conn{} = conn, name) do
+    with {:ok, [name_ok]} <- validate_idents([name]) do
+      command_ok(conn, "REFRESH CONTINUOUS AGGREGATE #{name_ok}")
+    end
+  end
+
+  @doc "Refreshes a continuous aggregate, raising on error."
+  @spec refresh_aggregate!(Conn.t(), String.t()) :: :ok
+  def refresh_aggregate!(%Conn{} = conn, name), do: bang(refresh_aggregate(conn, name))
+
+  @doc "Drops a continuous aggregate (no `IF EXISTS` — a missing aggregate is a server error)."
+  @spec drop_aggregate(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
+  def drop_aggregate(%Conn{} = conn, name) do
+    with {:ok, [name_ok]} <- validate_idents([name]) do
+      command_ok(conn, "DROP CONTINUOUS AGGREGATE #{name_ok}")
+    end
+  end
+
+  @doc "Drops a continuous aggregate, raising on error."
+  @spec drop_aggregate!(Conn.t(), String.t()) :: :ok
+  def drop_aggregate!(%Conn{} = conn, name), do: bang(drop_aggregate(conn, name))
+
   # --- private: DDL assembly ---
 
   # :fields must be present and non-empty; :tags may be absent. Both normalize to
