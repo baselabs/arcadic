@@ -1,0 +1,356 @@
+# Time-series with Arcadic
+
+## Setup
+
+`Arcadic.TimeSeries` is a tenant-blind client for ArcadeDB's time-series surface: the
+`TIMESERIES` DDL, InfluxDB line-protocol writes, JSON query/latest reads, PromQL reads
+(instant, range, labels, series), continuous aggregates, and downsampling policies. This
+notebook walks all of it against a throwaway `sensor` type.
+
+This notebook needs a running **ArcadeDB >= 26.7.2** — the `/api/v1/ts` routes don't
+exist on older servers (they answer a plain 404). The quickest way is Docker:
+
+```
+docker run -d --name arcadic-timeseries \
+  -p 2480:2480 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  arcadedata/arcadedb:latest
+```
+
+Only the HTTP port (**2480**) is needed — every operation below, including PromQL reads,
+rides the same HTTP endpoint; none of it needs Bolt (see
+[`getting_started.livemd`](getting_started.livemd) for the Bolt transport).
+
+Every connection value can be overridden with an environment variable set before you
+launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_PASSWORD`); otherwise the defaults match
+the `docker run` above.
+
+> **Re-running cells.** The continuous-aggregate and downsampling cells create and drop
+> within the same cell, so they re-run cleanly. The **sensor type** cell is the one
+> exception: `CREATE TIMESERIES TYPE` has no `IF NOT EXISTS` on 26.7.2 (dropping a type
+> that doesn't exist yet is a server error too), so that cell (under **Define the
+> type**) issues an explicit,
+> discarded `drop_type` immediately before `create_type!` — safe to re-run in isolation.
+> **Writing points is append-only by design** (see the callout below) — re-running that
+> section adds more points, it never errors, but the row counts you see will grow with
+> every re-run. Run **Cleanup** at the bottom, then top to bottom, for a clean slate.
+
+## Install
+
+> **Requires an unreleased arcadic build.** `Arcadic.TimeSeries` is not in any published
+> release yet. Concretely, as of this writing: Hex hosts only `0.4.0`, so the `~> 0.6`
+> requirement below doesn't resolve at all (`Mix.install` fails immediately with
+> `version solving failed`, not a silent downgrade); the module also isn't yet on the
+> `main` branch on GitHub, so `{:arcadic, github: "baselabs/arcadic"}` won't have it
+> either until that catches up. The only way to run this notebook today is a local path
+> dependency against a checkout that has the module, e.g.
+> `{:arcadic, path: "/path/to/your/arcadic/checkout"}` in place of the pin below. Once a
+> release carrying it is published (and pushed), the `~> 0.6` pin resolves normally and
+> this note no longer applies.
+
+```elixir
+Mix.install([
+  {:arcadic, "~> 0.6"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## Connect
+
+We create a throwaway `arcadic_timeseries` database to play in (only if it does not
+already exist, so this cell is safe to re-run).
+
+```elixir
+http_url = System.get_env("ARCADIC_HTTP_URL", "http://localhost:2480")
+password = System.get_env("ARCADIC_PASSWORD", "playwithdata")
+database = "arcadic_timeseries"
+
+admin = Arcadic.connect(http_url, database, auth: {"root", password})
+{:ok, true} = Arcadic.Server.ready?(admin)
+
+unless match?({:ok, true}, Arcadic.Server.database_exists?(admin, database)) do
+  Arcadic.Server.create_database!(admin, database)
+end
+
+conn = Arcadic.connect(http_url, database, auth: {"root", password})
+```
+
+## Define the type
+
+`Arcadic.TimeSeries.create_type!/4` emits `CREATE TIMESERIES TYPE` — a `sensor` type
+tagged by `sensor_id`/`location`, carrying `temperature`/`humidity` fields, millisecond
+precision, and a 90-day retention window.
+
+```elixir
+# No IF NOT EXISTS on 26.7.2 -- the discarded drop makes this cell safe to re-run
+# in isolation (dropping a not-yet-existing type errors too; `_ =` discards either way).
+_ = Arcadic.TimeSeries.drop_type(conn, "sensor")
+
+:ok =
+  Arcadic.TimeSeries.create_type!(conn, "sensor", "ts",
+    fields: [temperature: "DOUBLE", humidity: "DOUBLE"],
+    tags: [sensor_id: "STRING", location: "STRING"],
+    precision: :millisecond,
+    retention: {90, :days}
+  )
+```
+
+## Writing points
+
+`Arcadic.TimeSeries.write/3` builds InfluxDB line protocol from structured point maps —
+typed fields, string tags, and an explicit timestamp. Note there are two precision
+grammars: the DDL takes `:millisecond`-style tokens (as in `create_type!` above), while
+the write path takes wire tokens (`:ns | :us | :ms | :s`) — each rejects the other's.
+Wire `:precision` declares the unit of the timestamps you put in the body, independent
+of the type's declared storage `PRECISION`: the timestamps below are epoch-milliseconds,
+hence `precision: :ms`. Omitting it means `:ns` — millisecond timestamps read as
+nanoseconds land every point in January 1970.
+
+```elixir
+now_ms = System.system_time(:millisecond)
+
+:ok =
+  Arcadic.TimeSeries.write(
+    conn,
+    [
+      %{
+        type: "sensor",
+        tags: %{"sensor_id" => "s1", "location" => "lab-a"},
+        fields: %{"temperature" => 21.5, "humidity" => 45.0},
+        timestamp: now_ms - 60_000
+      },
+      %{
+        type: "sensor",
+        tags: %{"sensor_id" => "s1", "location" => "lab-a"},
+        fields: %{"temperature" => 22.0, "humidity" => 44.0},
+        timestamp: now_ms
+      }
+    ],
+    precision: :ms
+  )
+```
+
+`Arcadic.TimeSeries.write_lines/3` is the raw passthrough — useful for relaying an
+already-built batch (e.g. forwarding a Telegraf line) without going through the point-map
+builder.
+
+```elixir
+:ok =
+  Arcadic.TimeSeries.write_lines(
+    conn,
+    "sensor,sensor_id=s2,location=lab-b temperature=19.0,humidity=50.0 #{now_ms}",
+    precision: :ms
+  )
+```
+
+> **Operational contract** (from the `Arcadic.TimeSeries` moduledoc, live-probed on
+> 26.7.2 — read this before relying on retries or mixed-type batches):
+>
+> - **Append-only, non-idempotent.** No dedup, no upsert, no server-assigned id: the
+>   identical point written twice is TWO rows. A lost response followed by a naive retry
+>   duplicates every point in the body. There is no idempotent write path — before
+>   retrying an unconfirmed write, verify whether it landed with a windowed `query/3`
+>   count over the batch's time range.
+> - **Mixed-body partial swallow.** When at least one line's type exists, lines naming an
+>   unknown type are silently dropped (HTTP 204) rather than erroring. Verify with
+>   `query/3` or `Arcadic.Schema.types/1` when it matters.
+> - **Unknown FIELD zero-fill.** A line whose field name is not on the type inserts a
+>   zero-filled row (204, no error).
+> - **Unknown tag KEY fails open** on `query/3`/`latest/3` — the filter is ignored
+>   server-side rather than rejected.
+
+## Querying
+
+A raw window query returns the server's columnar shape — `columns`/`rows`/`count` — for
+every point regardless of tag.
+
+```elixir
+{:ok, %{columns: columns, rows: rows, count: count}} =
+  Arcadic.TimeSeries.query(conn, "sensor", from: now_ms - 3_600_000, to: now_ms + 3_600_000)
+
+{columns, count}
+```
+
+`:tags` is a map the server ANDs together — every entry must match.
+
+```elixir
+{:ok, %{count: s1_count}} =
+  Arcadic.TimeSeries.query(conn, "sensor",
+    from: now_ms - 3_600_000,
+    to: now_ms + 3_600_000,
+    tags: %{"sensor_id" => "s1", "location" => "lab-a"}
+  )
+
+s1_count
+```
+
+`:aggregation` with a REQUIRED `:bucket_interval` buckets the window and reduces each
+bucket — here, an hourly `AVG` of `temperature` for `s1`.
+
+```elixir
+{:ok, %{aggregations: aggregations, buckets: buckets}} =
+  Arcadic.TimeSeries.query(conn, "sensor",
+    from: now_ms - 3_600_000,
+    to: now_ms + 3_600_000,
+    tags: %{"sensor_id" => "s1"},
+    aggregation: [%{field: "temperature", type: :avg}],
+    bucket_interval: {1, :hours}
+  )
+
+{aggregations, buckets}
+```
+
+`Arcadic.TimeSeries.latest/3` returns the single newest point matching one tag filter.
+
+```elixir
+{:ok, %{columns: latest_columns, latest: latest}} =
+  Arcadic.TimeSeries.latest(conn, "sensor", tag: {"sensor_id", "s1"})
+
+Enum.zip(latest_columns, latest) |> Map.new()
+```
+
+## PromQL
+
+Every `TIMESERIES` type doubles as a Prometheus metric: the metric name is the type name,
+and tags are labels — no separate registration step. `:time`/`from`/`to` are
+epoch-**seconds** here (PromQL convention), unlike `query/3`'s epoch-milliseconds.
+
+```elixir
+# +1: div/2 floors the second, and a Prometheus instant query excludes a sample AT OR
+# AFTER the eval instant -- evaluating one second past the floor is what actually shows
+# the millisecond-timestamped sample written above (live-probed on 26.7.2).
+now_s = div(now_ms, 1000) + 1
+
+{:ok, %{"resultType" => "vector", "result" => instant_result}} =
+  Arcadic.TimeSeries.prom_query(conn, ~S(sensor{sensor_id="s1"}), time: now_s)
+
+instant_result
+```
+
+```elixir
+{:ok, %{"resultType" => "matrix", "result" => range_result}} =
+  Arcadic.TimeSeries.prom_query_range(
+    conn,
+    ~S(sensor{sensor_id="s1"}),
+    now_s - 3600,
+    now_s + 60,
+    60
+  )
+
+range_result
+```
+
+```elixir
+{:ok, labels} = Arcadic.TimeSeries.prom_labels(conn)
+{:ok, metric_names} = Arcadic.TimeSeries.prom_label_values(conn, "__name__")
+
+# "sensor" -- the TIMESERIES type name, not a name we registered anywhere -- shows up
+# among __name__'s values: the metric name IS the type name.
+{labels, "sensor" in metric_names}
+```
+
+## SQL over time-series
+
+`Arcadic.query/4` reaches `sensor` like any other type — the `ts.timeBucket` SQL function
+buckets the timestamp column, and the params-only rule (`:name` placeholders, never
+interpolation) applies here exactly as it does everywhere else in Arcadic.
+
+```elixir
+{:ok, sql_rows} =
+  Arcadic.query(
+    conn,
+    "SELECT ts.timeBucket('1h', ts) AS hour, sensor_id, avg(temperature) AS avg_temp " <>
+      "FROM sensor WHERE sensor_id = :sensor_id GROUP BY hour, sensor_id",
+    %{"sensor_id" => "s1"},
+    language: "sql"
+  )
+
+Kino.DataTable.new(sql_rows)
+```
+
+## Continuous aggregates & downsampling
+
+`Arcadic.TimeSeries.create_aggregate/3` materializes a `SELECT` as a document type,
+refreshed on demand; neither it nor `drop_aggregate/2` has an `IF EXISTS` form, so this
+cell creates, refreshes, reads, and drops within itself — safe to re-run.
+
+```elixir
+:ok =
+  Arcadic.TimeSeries.create_aggregate(
+    conn,
+    "hourly_sensor",
+    "SELECT ts.timeBucket('1h', ts) AS hour, sensor_id, avg(temperature) AS avg_temp " <>
+      "FROM sensor GROUP BY hour, sensor_id"
+  )
+
+:ok = Arcadic.TimeSeries.refresh_aggregate(conn, "hourly_sensor")
+
+{:ok, ca_rows} = Arcadic.query(conn, "SELECT FROM hourly_sensor", %{}, language: "sql")
+
+:ok = Arcadic.TimeSeries.drop_aggregate(conn, "hourly_sensor")
+
+ca_rows
+```
+
+A downsampling policy tells ArcadeDB to compact older points at a coarser granularity;
+add and drop it here too, in the same cell.
+
+```elixir
+:ok =
+  Arcadic.TimeSeries.add_downsampling(conn, "sensor", after: {7, :days}, granularity: {1, :hours})
+
+:ok = Arcadic.TimeSeries.drop_downsampling(conn, "sensor")
+```
+
+## Prometheus & Grafana integration
+
+The PromQL family above is arcadic's app-facing wrapper for the same data a real
+Prometheus/Grafana deployment would scrape — the wire endpoints below are deployment
+configuration, not something arcadic calls on your behalf.
+
+Point a Prometheus server's remote-write/remote-read at this database's `/ts` prefix to
+have it treat ArcadeDB as its storage backend:
+
+```yaml
+remote_write:
+  - url: "http://<host>:2480/api/v1/ts/<db>/prom/write"
+    basic_auth:
+      username: root
+      password: <password>
+remote_read:
+  - url: "http://<host>:2480/api/v1/ts/<db>/prom/read"
+    basic_auth:
+      username: root
+      password: <password>
+```
+
+Point Grafana's built-in **Prometheus** datasource at the same prefix (its query path)
+to graph `sensor` alongside any other Prometheus-compatible source:
+
+```yaml
+apiVersion: 1
+datasources:
+  - name: ArcadeDB Sensor
+    type: prometheus
+    url: http://<host>:2480/api/v1/ts/<db>/prom
+    basicAuth: true
+    basicAuthUser: root
+    secureJsonData:
+      basicAuthPassword: <password>
+```
+
+ArcadeDB also exposes Grafana Infinity/native endpoints server-side
+(`/grafana/health|metadata|query`) for panels that talk to it directly rather than
+through the Prometheus datasource. Arcadic wraps the app-facing PromQL and query/write
+surfaces above; wiring either machine-to-machine path into a running Prometheus or
+Grafana instance is deployment configuration outside the client's scope.
+
+## Cleanup
+
+Drop the throwaway database when you are done (or before a fresh top-to-bottom run).
+This tears down `sensor`, its data, and any continuous aggregate or downsampling policy
+left over from a partial run.
+
+```elixir
+Arcadic.Server.drop_database(admin, database)
+```
