@@ -470,7 +470,10 @@ sample written at or after the eval instant, so a sample written at epoch-ms
 `tag=k:v` query parameter and silently ignores the rest (order-dependent —
 probed both orders return different rows), so a multi-entry tags map would be
 a nondeterministic filter; `latest/3`'s `:tag` opt is a single `{key, value}`
-pair, rejected value-free if given more than one.
+pair, rejected value-free if given more than one. The tag *value* may contain
+colons — the server splits the wire `key:value` on the **first** colon and
+matches the remainder exactly (probed 2026-07-11); an empty value is still
+rejected value-free (it would match nothing deterministically-uselessly).
 
 **Operational contract — write path (every clause live-probed on 26.7.2):**
 - **Append-only, non-idempotent.** No dedup, no upsert, no server-assigned id:
@@ -487,6 +490,12 @@ pair, rejected value-free if given more than one.
   `Arcadic.Schema.types/1`.
 - **Unknown FIELD zero-fill.** A line whose field name is not on the type
   inserts a zero-filled row (204, no error).
+- **int64 bound.** An integer field value or timestamp outside signed int64
+  (±9223372036854775807/8) is a 204 + silent line drop server-side (probed
+  both signs). As of the S13 closeout, `write/3` raises a value-free
+  `ArgumentError` client-side instead — including on a `DateTime` whose
+  converted timestamp overflows (e.g. year 2263+ at `:ns`); previously the
+  out-of-range line was silently dropped server-side.
 - **Unknown tag KEY fails open** on `query/3`/`latest/3` — the filter is
   ignored server-side rather than rejected.
 - `write_lines/3` (raw passthrough) additionally inherits the malformed-line

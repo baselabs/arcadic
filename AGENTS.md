@@ -112,7 +112,7 @@ retrieval / graphRAG), S10 (reliability & HA parity), and S11 (events & server
 programmability — `Arcadic.Changes`/`Function`/`Trigger`/`MaterializedView`/`Geo`)
 are all **EXECUTED + CLOSEOUT 100/100**. **S13 (time-series — the Influx/PromQL
 wire family split from G16 at the S11 spec) is EXECUTED** (commits
-`f1fa54b..bcf53bb`, 8 build tasks): new `Arcadic.TimeSeries` — `TIMESERIES` DDL +
+`c5c0939..d4f6fc0`, 9 tasks + closeout fixes): new `Arcadic.TimeSeries` — `TIMESERIES` DDL +
 downsampling policies + continuous aggregates (`create_type`/`drop_type`,
 `add_downsampling`/`drop_downsampling`, `create_aggregate`/`refresh_aggregate`/
 `drop_aggregate`, DDL rides `Arcadic.command/4` SQL-only), Influx line-protocol
