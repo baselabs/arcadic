@@ -71,6 +71,7 @@ defmodule WsEchoServer do
         port: port,
         controller: controller,
         reject_next?: false,
+        hang_next?: false,
         handler: nil
       })
     end)
@@ -86,8 +87,8 @@ defmodule WsEchoServer do
     {:ok, port}
   end
 
-  @doc "Push a change frame to the live client on `port`."
-  @spec push(:inet.port_number(), String.t(), map()) :: :ok
+  @doc "Push a change frame to the live client on `port` (record is any JSON term, so a test can send a malformed non-map record)."
+  @spec push(:inet.port_number(), String.t(), term()) :: :ok
   def push(port, change_type, record) do
     send(await_handler!(port), {:push, change_type, record})
     :ok
@@ -100,13 +101,32 @@ defmodule WsEchoServer do
     :ok
   end
 
-  @doc "Arm a one-shot `401` on the next `/ws` upgrade for `port`."
-  @spec reject_next_handshake(:inet.port_number()) :: :ok
-  def reject_next_handshake(port) do
+  @doc "Push a raw `{\"result\":\"error\", ...}` frame to the live client on `port`."
+  @spec push_error(:inet.port_number(), String.t(), String.t()) :: :ok
+  def push_error(port, error, detail) do
+    send(await_handler!(port), {:push_error, error, detail})
+    :ok
+  end
+
+  @doc "Arm a one-shot rejection (`status`, default `401`) on the next `/ws` upgrade for `port`."
+  @spec reject_next_handshake(:inet.port_number(), 100..599) :: :ok
+  def reject_next_handshake(port, status \\ 401) do
     %{ref: ref} = lookup_by_port!(port)
 
     Agent.update(@registry, fn state ->
-      Map.update!(state, ref, &%{&1 | reject_next?: true})
+      Map.update!(state, ref, &%{&1 | reject_next?: status})
+    end)
+
+    :ok
+  end
+
+  @doc "Arm a one-shot STALLED upgrade on the next `/ws` handshake: TCP is accepted but no 101 is ever sent."
+  @spec hang_next_handshake(:inet.port_number()) :: :ok
+  def hang_next_handshake(port) do
+    %{ref: ref} = lookup_by_port!(port)
+
+    Agent.update(@registry, fn state ->
+      Map.update!(state, ref, &%{&1 | hang_next?: true})
     end)
 
     :ok
@@ -123,6 +143,14 @@ defmodule WsEchoServer do
   def clear_reject(ref) do
     Agent.update(@registry, fn state ->
       Map.update!(state, ref, &%{&1 | reject_next?: false})
+    end)
+  end
+
+  @doc false
+  @spec clear_hang(ref()) :: :ok
+  def clear_hang(ref) do
+    Agent.update(@registry, fn state ->
+      Map.update!(state, ref, &%{&1 | hang_next?: false})
     end)
   end
 
@@ -184,16 +212,26 @@ defmodule WsEchoServer do
     def call(%{method: "GET", request_path: "/ws"} = conn, %{ref: ref}) do
       entry = WsEchoServer.fetch_by_ref!(ref)
 
-      if entry.reject_next? do
-        :ok = WsEchoServer.clear_reject(ref)
-        send_resp(conn, 401, "")
-      else
-        WebSockAdapter.upgrade(
-          conn,
-          WsEchoServer.Handler,
-          %{ref: ref, controller: entry.controller},
-          timeout: 60_000
-        )
+      cond do
+        is_integer(entry.reject_next?) ->
+          :ok = WsEchoServer.clear_reject(ref)
+          send_resp(conn, entry.reject_next?, "")
+
+        entry.hang_next? ->
+          # Accept the TCP/HTTP request but withhold the 101 long enough for the client's
+          # establishment deadline to fire (tests use a ~150ms deadline). Kept short so it does not
+          # block server teardown; the client has already reconnected on a fresh connection by then.
+          :ok = WsEchoServer.clear_hang(ref)
+          Process.sleep(600)
+          send_resp(conn, 504, "")
+
+        true ->
+          WebSockAdapter.upgrade(
+            conn,
+            WsEchoServer.Handler,
+            %{ref: ref, controller: entry.controller},
+            timeout: 60_000
+          )
       end
     end
 
@@ -223,6 +261,11 @@ defmodule WsEchoServer do
     @impl true
     def handle_info({:push, change_type, record}, state) do
       frame = Jason.encode!(%{"changeType" => change_type, "record" => record})
+      {:push, {:text, frame}, state}
+    end
+
+    def handle_info({:push_error, error, detail}, state) do
+      frame = Jason.encode!(%{"result" => "error", "error" => error, "detail" => detail})
       {:push, {:text, frame}, state}
     end
 

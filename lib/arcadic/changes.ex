@@ -43,9 +43,16 @@ defmodule Arcadic.Changes do
 
   ArcadeDB `/ws` has **no replay or checkpoint**. On any reconnect the process
   delivers a `:reconnected` marker (before re-subscribing); on buffer overflow it
-  delivers one `:overflow` marker. **Any marker obligates the consumer to
+  delivers an `:overflow` marker. **Any marker obligates the consumer to
   reconcile the affected database** — the feed is a change *hint*, not a durable
   log.
+
+  The subscriber may also receive an out-of-band error message
+  `{:arcadic_change_error, reason}`: `:unauthorized` (a terminal `401`/`403` on the
+  handshake — the process then stops, no reconnect spin) or `:subscribe_rejected`
+  (the server rejected a subscribe/unsubscribe with an error frame; non-terminal —
+  the socket stays open). Both reasons are bare atoms — the server's error text is
+  never forwarded.
 
   ## Subscriber model
 
@@ -57,15 +64,22 @@ defmodule Arcadic.Changes do
   ## Backpressure
 
   A bounded internal buffer (`:max_buffer`, default 1000) drops the **oldest**
-  events on overflow, emits one `:overflow` marker plus a
-  `[:arcadic, :changes, :dropped]` telemetry count, and keeps reading the socket
-  (a slow subscriber never wedges the server).
+  events on overflow, emits an `:overflow` marker plus a
+  `[:arcadic, :changes, :dropped]` telemetry count per drain cycle in which events
+  were dropped (a short burst coalesces into a single marker; a sustained overflow
+  emits one roughly per drain cycle), and keeps reading the socket. The buffer
+  bounds **arcadic's** memory and guarantees a slow subscriber never wedges the
+  *server* (the socket is drained continuously); it does not bound the subscriber's
+  own mailbox — a persistently slow consumer must apply its own backpressure (or
+  reconcile on the markers and discard).
 
   ## Absent optional dependency
 
   The WebSocket client rides the optional `mint_web_socket` dependency. This
   module always compiles; if the dependency is absent, `start_link/1` returns
-  `{:error, :mint_web_socket_not_available}` at runtime.
+  `{:error, :mint_web_socket_not_available}` at runtime. `start_link/1` also
+  rejects a malformed `:conn` value-free — see `Arcadic.Error` for the
+  `:invalid_auth` / `:invalid_url_scheme` / `:invalid_max_buffer` reasons.
 
   ## Telemetry
 
@@ -90,6 +104,7 @@ defmodule Arcadic.Changes do
   @compile {:no_warn_undefined, Mint.WebSocket}
 
   alias Arcadic.Changes.Event
+  alias Arcadic.Opts
   alias Arcadic.Telemetry
 
   @change_types [:create, :update, :delete]
@@ -104,6 +119,13 @@ defmodule Arcadic.Changes do
   @backoff_base 50
   @backoff_cap 5_000
 
+  # Bound the synchronous TCP connect so it cannot wedge a caller's `subscribe`/`unsubscribe`
+  # `GenServer.call` (5s default) against an unreachable host.
+  @connect_timeout 5_000
+  # Bound the WHOLE establishment (connect → 101 upgrade); a peer that accepts TCP but never
+  # completes the handshake would otherwise leave the process stuck in `:upgrading` forever.
+  @establish_timeout 10_000
+
   defstruct [
     :conn,
     :max_buffer,
@@ -115,6 +137,7 @@ defmodule Arcadic.Changes do
     :upgrade_status,
     :drain_timer,
     :pending_since,
+    :establish_timer,
     # Kept a list (never nil) so `Mint.WebSocket.new/4`'s success return survives dialyzer.
     upgrade_headers: [],
     subscriptions: %{},
@@ -123,7 +146,8 @@ defmodule Arcadic.Changes do
     opened_once?: false,
     buffer: nil,
     buffer_size: 0,
-    dropped: 0
+    dropped: 0,
+    establish_timeout: @establish_timeout
   ]
 
   # --- public API ---------------------------------------------------------------
@@ -140,15 +164,63 @@ defmodule Arcadic.Changes do
   Returns `{:error, :mint_web_socket_not_available}` when the optional
   `mint_web_socket` dependency is absent.
   """
-  @spec start_link(keyword()) :: GenServer.on_start() | {:error, :mint_web_socket_not_available}
+  @spec start_link(keyword()) ::
+          GenServer.on_start()
+          | {:error,
+             :mint_web_socket_not_available
+             | :invalid_conn
+             | :invalid_auth
+             | :invalid_url_scheme
+             | :invalid_max_buffer}
   def start_link(opts) when is_list(opts) do
-    if Code.ensure_loaded?(Mint.WebSocket) do
+    with :ok <- ensure_mint_web_socket(),
+         :ok <- validate_start_opts(opts) do
       {name, opts} = Keyword.pop(opts, :name)
       GenServer.start_link(__MODULE__, opts, if(name, do: [name: name], else: []))
-    else
-      {:error, :mint_web_socket_not_available}
     end
   end
+
+  defp ensure_mint_web_socket do
+    if Code.ensure_loaded?(Mint.WebSocket),
+      do: :ok,
+      else: {:error, :mint_web_socket_not_available}
+  end
+
+  # Validate the caller-supplied conn + max_buffer value-free BEFORE starting the process, so a
+  # malformed input returns a typed `{:error, _}` instead of (a) crash-looping under `:transient`
+  # restart or (b) leaking the value through a FunctionClauseError / `Access` blame (Rule 3).
+  defp validate_start_opts(opts) do
+    with :ok <- validate_conn(Keyword.get(opts, :conn)) do
+      validate_max_buffer(Keyword.get(opts, :max_buffer, @default_max_buffer))
+    end
+  end
+
+  defp validate_conn(%Arcadic.Conn{auth: auth, base_url: base_url}) do
+    with :ok <- validate_auth(auth), do: validate_scheme(base_url)
+  end
+
+  defp validate_conn(_), do: {:error, :invalid_conn}
+
+  # `conn.auth` reaches the `/ws` handshake headers; a shape other than `{u, p}` / `{:bearer, t}`
+  # would FunctionClauseError in `auth_headers/1` and blame-echo the credentials (Rule 3). Reject
+  # value-free here — the bare atom never carries the auth value.
+  defp validate_auth({:bearer, token}) when is_binary(token), do: :ok
+  defp validate_auth({user, pass}) when is_binary(user) and is_binary(pass), do: :ok
+  defp validate_auth(_), do: {:error, :invalid_auth}
+
+  # Only the four known ws/http schemes are accepted; an unrecognized scheme (e.g. a "htps" typo)
+  # must NOT silently downgrade to plaintext `:ws` and send the Basic-auth header in the clear.
+  defp validate_scheme(base_url) when is_binary(base_url) do
+    case URI.parse(base_url).scheme do
+      s when s in ["http", "https", "ws", "wss"] -> :ok
+      _ -> {:error, :invalid_url_scheme}
+    end
+  end
+
+  defp validate_scheme(_), do: {:error, :invalid_url_scheme}
+
+  defp validate_max_buffer(n) when is_integer(n) and n >= 1, do: :ok
+  defp validate_max_buffer(_), do: {:error, :invalid_max_buffer}
 
   @doc """
   Subscribe `client` to change events on `database`.
@@ -166,11 +238,22 @@ defmodule Arcadic.Changes do
   @spec subscribe(GenServer.server(), String.t(), keyword()) ::
           :ok | {:error, :subscriber_conflict}
   def subscribe(client, database, opts \\ []) when is_binary(database) do
-    subscriber = Keyword.get(opts, :subscriber, self())
-    type = Keyword.get(opts, :type)
+    Opts.validate_keys!(opts, [:type, :change_types, :subscriber])
+    subscriber = validate_subscriber(Keyword.get(opts, :subscriber, self()))
+    type = validate_type(Keyword.get(opts, :type))
     change_types = normalize_change_types(Keyword.get(opts, :change_types))
     GenServer.call(client, {:subscribe, database, type, change_types, subscriber})
   end
+
+  # Value-free (Rule 3): a non-pid subscriber or non-binary type would otherwise crash-echo the
+  # caller value — the subscriber via `Process.monitor/1`, the type via `Jason.encode!` in the
+  # subscribe frame. Guard both here, in the caller's process, before the `GenServer.call`.
+  defp validate_subscriber(pid) when is_pid(pid), do: pid
+  defp validate_subscriber(_), do: raise(ArgumentError, "subscriber must be a pid")
+
+  defp validate_type(nil), do: nil
+  defp validate_type(type) when is_binary(type), do: type
+  defp validate_type(_), do: raise(ArgumentError, "type must be a string")
 
   @doc "Unsubscribe `client` from change events on `database`."
   @spec unsubscribe(GenServer.server(), String.t()) :: :ok
@@ -198,6 +281,7 @@ defmodule Arcadic.Changes do
     state = %__MODULE__{
       conn: Keyword.fetch!(opts, :conn),
       max_buffer: Keyword.get(opts, :max_buffer, @default_max_buffer),
+      establish_timeout: Keyword.get(opts, :establish_timeout, @establish_timeout),
       buffer: :queue.new()
     }
 
@@ -263,6 +347,14 @@ defmodule Arcadic.Changes do
 
   def handle_info(:reconnect, state), do: {:noreply, state}
 
+  # Establishment deadline fired while still connecting/upgrading → the handshake stalled; reconnect.
+  # A stale timeout after we already opened (or are already reconnecting) is ignored.
+  def handle_info(:establish_timeout, %{phase: phase} = state)
+      when phase in [:connecting, :upgrading],
+      do: {:noreply, reconnect(state)}
+
+  def handle_info(:establish_timeout, state), do: {:noreply, state}
+
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{subscriber_ref: ref} = state),
     do: {:stop, :normal, state}
 
@@ -286,21 +378,30 @@ defmodule Arcadic.Changes do
   # --- connection state machine -------------------------------------------------
 
   defp do_connect(state) do
+    state = cancel_establish_timer(state)
     {http_scheme, ws_scheme, host, port} = parse_endpoint(state.conn.base_url)
 
-    case Mint.HTTP.connect(http_scheme, host, port, protocols: [:http1]) do
+    case Mint.HTTP.connect(http_scheme, host, port,
+           protocols: [:http1],
+           timeout: @connect_timeout
+         ) do
       {:ok, mconn} ->
         headers = auth_headers(state.conn.auth)
 
         case Mint.WebSocket.upgrade(ws_scheme, mconn, "/ws", headers) do
           {:ok, mconn, ref} ->
+            # Arm the establishment deadline: if the 101 never arrives we reconnect rather than
+            # sit in `:upgrading` forever (cancelled on `on_open`).
+            timer = Process.send_after(self(), :establish_timeout, state.establish_timeout)
+
             %{
               state
               | mconn: mconn,
                 ref: ref,
                 phase: :upgrading,
                 upgrade_status: nil,
-                upgrade_headers: []
+                upgrade_headers: [],
+                establish_timer: timer
             }
 
           {:error, mconn, _reason} ->
@@ -317,7 +418,7 @@ defmodule Arcadic.Changes do
       case step(resp, st) do
         {:ok, st2} -> {:cont, {:noreply, st2}}
         {:reconnect, st2} -> {:halt, {:noreply, reconnect(st2)}}
-        {:terminal_401, st2} -> {:halt, terminal_unauthorized(st2)}
+        {:terminal_auth, st2} -> {:halt, terminal_unauthorized(st2)}
       end
     end)
   end
@@ -330,7 +431,8 @@ defmodule Arcadic.Changes do
   defp step({:done, ref}, %{ref: ref} = st) do
     case st.upgrade_status do
       101 -> {:ok, on_open(st)}
-      401 -> {:terminal_401, st}
+      # 401 (bad credentials) and 403 (forbidden) are both terminal auth failures — never spin.
+      status when status in [401, 403] -> {:terminal_auth, st}
       _ -> {:reconnect, st}
     end
   end
@@ -347,21 +449,17 @@ defmodule Arcadic.Changes do
   defp step(_other, st), do: {:ok, st}
 
   defp on_open(st) do
+    st = cancel_establish_timer(st)
+
     case ws_new(st.mconn, st.ref, st.upgrade_headers) do
       {:ok, mconn, ws} ->
-        st = %{
-          st
-          | mconn: mconn,
-            ws: ws,
-            phase: :open,
-            reconnect_attempts: 0,
-            upgrade_status: nil,
-            upgrade_headers: []
-        }
+        # NB: `reconnect_attempts` is reset to 0 by `resubscribe/1` on full success — NOT here —
+        # so a failure between the 101 and the first re-subscribe frame still grows the backoff.
+        st = %{st | mconn: mconn, ws: ws, phase: :open, upgrade_status: nil, upgrade_headers: []}
 
         st =
           if st.opened_once? do
-            deliver_reconnected_markers(st)
+            st |> flush_pending() |> deliver_reconnected_markers()
           else
             emit(:start)
             %{st | opened_once?: true}
@@ -386,12 +484,17 @@ defmodule Arcadic.Changes do
   defp ws_new(mconn, ref, headers), do: apply(Mint.WebSocket, :new, [mconn, ref, 101, headers])
 
   defp resubscribe(st) do
-    Enum.reduce_while(Map.to_list(st.subscriptions), st, fn {db, sub}, acc ->
-      case send_frame(acc, subscribe_frame(db, sub)) do
-        {:ok, acc2} -> {:cont, acc2}
-        {:error, acc2} -> {:halt, reconnect(acc2)}
-      end
-    end)
+    result =
+      Enum.reduce_while(Map.to_list(st.subscriptions), st, fn {db, sub}, acc ->
+        case send_frame(acc, subscribe_frame(db, sub)) do
+          {:ok, acc2} -> {:cont, acc2}
+          {:error, acc2} -> {:halt, reconnect(acc2)}
+        end
+      end)
+
+    # Reset the backoff only once the socket is open AND every live subscription was re-sent (a
+    # send failure above halts to `reconnect/1`, leaving `phase: :reconnecting` and the backoff grown).
+    if result.phase == :open, do: %{result | reconnect_attempts: 0}, else: result
   end
 
   defp decode_and_handle(data, st) do
@@ -411,18 +514,31 @@ defmodule Arcadic.Changes do
   defp handle_frame({:text, text}, st) do
     case Jason.decode(text) do
       {:ok, %{"changeType" => _} = payload} -> {:ok, ingest_change(st, payload)}
-      # Acks (`{"result":"ok"}`) and any non-change JSON are informational.
+      {:ok, %{"result" => "error"}} -> {:ok, deliver_subscribe_error(st)}
+      # Acks (`{"result":"ok"}`) and any other JSON are informational.
       _ -> {:ok, st}
     end
   end
 
   defp handle_frame({:close, _code, _reason}, st), do: {:reconnect, st}
-  defp handle_frame({:ping, data}, st), do: {:ok, send_pong(st, data)}
+  # A failed pong write means the socket is dead — reconnect rather than sit marked `:open`.
+  defp handle_frame({:ping, data}, st), do: send_pong(st, data)
   defp handle_frame(_frame, st), do: {:ok, st}
+
+  # A server `{"result":"error", ...}` frame rejects a subscribe/unsubscribe (the caller already got
+  # an optimistic `:ok`). Surface it value-free — NEVER forward the server's `error`/`detail` strings
+  # (they may echo caller/server data, Rule 3). Non-terminal: the socket stays open.
+  defp deliver_subscribe_error(%{subscriber: sub} = st) when is_pid(sub) do
+    send(sub, {:arcadic_change_error, :subscribe_rejected})
+    st
+  end
+
+  defp deliver_subscribe_error(st), do: st
 
   # --- reconnect / terminal -----------------------------------------------------
 
   defp reconnect(state) do
+    state = cancel_establish_timer(state)
     close_conn(state)
     attempts = state.reconnect_attempts
     Process.send_after(self(), :reconnect, backoff_ms(attempts))
@@ -437,6 +553,14 @@ defmodule Arcadic.Changes do
         upgrade_status: nil,
         upgrade_headers: []
     }
+  end
+
+  # Cancel any armed establishment deadline (idempotent).
+  defp cancel_establish_timer(%{establish_timer: nil} = st), do: st
+
+  defp cancel_establish_timer(%{establish_timer: timer} = st) do
+    Process.cancel_timer(timer)
+    %{st | establish_timer: nil}
   end
 
   defp terminal_unauthorized(state) do
@@ -462,12 +586,14 @@ defmodule Arcadic.Changes do
         change_type = parse_change_type(payload["changeType"])
 
         if allowed?(sub.change_types, change_type) do
+          record = record_map(payload["record"])
+
           enqueue(st, %Event{
             database: db,
-            type: payload["type"] || sub.type,
+            type: payload["type"] || record["@type"] || sub.type,
             change_type: change_type,
-            rid: get_in(payload, ["record", "@rid"]),
-            record: payload["record"]
+            rid: record["@rid"],
+            record: record
           })
         else
           st
@@ -495,6 +621,12 @@ defmodule Arcadic.Changes do
   end
 
   defp match_subscription(_st, _payload), do: :none
+
+  # A well-formed ArcadeDB change frame carries a map `record`; a non-map (hostile/garbled frame)
+  # must not reach `get_in`/`Access` (which would raise and blame-echo the value — Rule 3). Coerce a
+  # non-map to `nil` value-free: the change signal is preserved, the malformed payload is dropped.
+  defp record_map(record) when is_map(record), do: record
+  defp record_map(_), do: nil
 
   defp parse_change_type("create"), do: :create
   defp parse_change_type("update"), do: :update
@@ -545,6 +677,17 @@ defmodule Arcadic.Changes do
   end
 
   defp flush_buffer(st), do: st
+
+  # On reconnect, deliver any buffered pre-gap events (and their overflow marker) BEFORE the
+  # `:reconnected` marker, so the marker cleanly separates pre-gap from post-gap delivery instead of
+  # racing the debounced drain timer (which otherwise fires the buffer AFTER the marker).
+  defp flush_pending(st) do
+    if st.drain_timer, do: Process.cancel_timer(st.drain_timer)
+
+    %{st | drain_timer: nil, pending_since: nil}
+    |> deliver_overflow_marker()
+    |> flush_buffer()
+  end
 
   defp deliver_reconnected_markers(%{subscriber: sub} = st) when is_pid(sub) do
     Enum.each(Map.keys(st.subscriptions), fn db ->
@@ -600,9 +743,9 @@ defmodule Arcadic.Changes do
   defp send_pong(st, data) do
     with {:ok, ws, frame} <- Mint.WebSocket.encode(st.ws, {:pong, data}),
          {:ok, mconn} <- Mint.WebSocket.stream_request_body(st.mconn, st.ref, frame) do
-      %{st | ws: ws, mconn: mconn}
+      {:ok, %{st | ws: ws, mconn: mconn}}
     else
-      _ -> st
+      _ -> {:reconnect, st}
     end
   end
 

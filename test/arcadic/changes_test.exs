@@ -173,6 +173,49 @@ defmodule Arcadic.ChangesTest do
     assert_receive {:DOWN, ^mref, :process, ^pid, :normal}, 2000
   end
 
+  describe "input validation (value-free, before any connect / GenServer.call)" do
+    test "start_link rejects a malformed auth shape value-free (no credential echo)" do
+      # `Conn.new` does not strictly validate the auth tuple shape, so a 3-tuple typo constructs;
+      # `auth_headers/1` would then FunctionClauseError and blame-echo the credentials (Rule 3).
+      conn = Arcadic.connect("ws://127.0.0.1:1", "testdb", auth: {"root", "p3nnyleak", :extra})
+      result = Changes.start_link(conn: conn)
+      assert result == {:error, :invalid_auth}
+      refute inspect(result) =~ "p3nnyleak"
+    end
+
+    test "start_link rejects an unknown URL scheme (no silent plaintext downgrade)" do
+      conn = Arcadic.connect("htps://127.0.0.1:2480", "testdb", auth: {"u", "p"})
+      assert Changes.start_link(conn: conn) == {:error, :invalid_url_scheme}
+    end
+
+    test "start_link rejects a non-positive / non-integer max_buffer" do
+      conn = Arcadic.connect("ws://127.0.0.1:1", "testdb", auth: {"u", "p"})
+      assert Changes.start_link(conn: conn, max_buffer: 0) == {:error, :invalid_max_buffer}
+      assert Changes.start_link(conn: conn, max_buffer: -1) == {:error, :invalid_max_buffer}
+      assert Changes.start_link(conn: conn, max_buffer: "big") == {:error, :invalid_max_buffer}
+    end
+
+    test "subscribe rejects a non-pid subscriber value-free (no value echo)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Changes.subscribe(self(), "db", subscriber: :s3cret_atom_val)
+        end
+
+      refute Exception.message(err) =~ "s3cret_atom_val"
+    end
+
+    test "subscribe rejects a non-binary type value-free (no value echo)" do
+      err = assert_raise ArgumentError, fn -> Changes.subscribe(self(), "db", type: 9_998_887) end
+      refute Exception.message(err) =~ "9998887"
+    end
+
+    test "subscribe rejects an unknown opt key (fail-closed filter, not silent-open)" do
+      assert_raise ArgumentError, fn ->
+        Changes.subscribe(self(), "db", change_type: [:create])
+      end
+    end
+  end
+
   test "10: under a caller's Supervisor a terminal 401 stays dead (transient, not restarted)" do
     {:ok, port} = WsEchoServer.start(self())
 
@@ -204,5 +247,103 @@ defmodule Arcadic.ChangesTest do
 
     assert match?({Changes, :undefined, _type, _mods}, child),
            "the Changes child was restarted after a terminal 401 (expected it dead): #{inspect(child)}"
+  end
+
+  test "11: a malformed (non-map) record does not crash the process and delivers value-free" do
+    {:ok, port} = WsEchoServer.start(self())
+    {:ok, pid} = Changes.start_link(conn: connect(port))
+    mref = Process.monitor(pid)
+    :ok = Changes.subscribe(pid, "testdb")
+    assert_receive {:ws_echo, "subscribe", _}, 1000
+
+    # A frame whose `record` is NOT a map (protocol violation / hostile frame): `get_in`/Access on
+    # a scalar would raise and blame-echo the value (Rule 3). The change signal is still delivered,
+    # with a nil record, and the process survives.
+    :ok = WsEchoServer.push(port, "create", "s3cr3t_scalar")
+
+    assert_receive {:arcadic_change, %Event{change_type: :create, record: rec, rid: nil}}, 1000
+    assert is_nil(rec)
+    refute_receive {:DOWN, ^mref, :process, ^pid, _}, 300
+    assert Process.alive?(pid)
+  end
+
+  test "12: event.type reflects the record's @type on an all-types subscription" do
+    {:ok, port} = WsEchoServer.start(self())
+    {:ok, pid} = Changes.start_link(conn: connect(port))
+    :ok = Changes.subscribe(pid, "testdb")
+    assert_receive {:ws_echo, "subscribe", _}, 1000
+
+    :ok = WsEchoServer.push(port, "create", %{"@rid" => "#9:0", "@type" => "Person"})
+
+    # No :type filter set, no top-level "type" key in the frame — event.type falls back to the
+    # record's own class rather than nil.
+    assert_receive {:arcadic_change, %Event{change_type: :create, type: "Person"}}, 1000
+  end
+
+  test "13: a 403 on the reconnect handshake is terminal (not reconnect-forever)" do
+    {:ok, port} = WsEchoServer.start(self())
+    {:ok, pid} = Changes.start_link(conn: connect(port))
+    mref = Process.monitor(pid)
+    :ok = Changes.subscribe(pid, "testdb")
+    assert_receive {:ws_echo, "subscribe", _}, 1000
+
+    WsEchoServer.reject_next_handshake(port, 403)
+    :ok = WsEchoServer.drop(port)
+
+    assert_receive {:arcadic_change_error, :unauthorized}, 2000
+    assert_receive {:DOWN, ^mref, :process, ^pid, :normal}, 2000
+    # No spin: a 403 must not follow the wildcard reconnect branch.
+    refute_receive {:ws_echo, "subscribe", _}, 500
+  end
+
+  test "14: a server error frame surfaces a value-free :subscribe_rejected marker (non-terminal)" do
+    {:ok, port} = WsEchoServer.start(self())
+    {:ok, pid} = Changes.start_link(conn: connect(port))
+    :ok = Changes.subscribe(pid, "testdb")
+    assert_receive {:ws_echo, "subscribe", _}, 1000
+
+    WsEchoServer.push_error(port, "database 'x' does not exist", "s3cret_detail")
+
+    assert_receive {:arcadic_change_error, :subscribe_rejected}, 1000
+    # value-free: the server's error/detail strings are never forwarded to the subscriber.
+    refute_received {:arcadic_change_error, "s3cret_detail"}
+    # non-terminal: the socket stays open and still delivers changes.
+    assert Process.alive?(pid)
+    :ok = WsEchoServer.push(port, "create", %{"@rid" => "#14:0"})
+    assert_receive {:arcadic_change, %Event{change_type: :create, rid: "#14:0"}}, 1000
+  end
+
+  test "15: a stalled upgrade (TCP accepted, no 101) hits the establishment timeout and reconnects" do
+    {:ok, port} = WsEchoServer.start(self())
+    # The FIRST handshake stalls (no 101); a short establish_timeout must break the stall.
+    WsEchoServer.hang_next_handshake(port)
+    {:ok, pid} = Changes.start_link(conn: connect(port), establish_timeout: 150)
+    :ok = Changes.subscribe(pid, "testdb")
+
+    # Recovery proof: the deadline fired, the client reconnected, and the SECOND (non-stalling)
+    # handshake succeeded → the deferred subscribe frame lands. Without the timeout it hangs forever.
+    assert_receive {:ws_echo, "subscribe", %{"database" => "testdb"}}, 3000
+    assert Process.alive?(pid)
+  end
+
+  test "16: buffered pre-gap events are flushed BEFORE the :reconnected marker (deterministic order)" do
+    {:ok, port} = WsEchoServer.start(self())
+    {:ok, pid} = Changes.start_link(conn: connect(port))
+    :ok = Changes.subscribe(pid, "testdb")
+    assert_receive {:ws_echo, "subscribe", _}, 1000
+
+    # Buffer an event, then immediately drop the socket (before the 15ms drain fires). Without
+    # flush-before-marker the drain races the reconnect and the order is non-deterministic; with it
+    # the pre-gap event always precedes the :reconnected marker.
+    :ok = WsEchoServer.push(port, "create", %{"@rid" => "#16:0"})
+    :ok = WsEchoServer.drop(port)
+
+    order =
+      for _ <- 1..2 do
+        assert_receive {:arcadic_change, %Event{} = e}, 2000
+        e.change_type
+      end
+
+    assert order == [:create, :reconnected]
   end
 end

@@ -36,6 +36,11 @@ defmodule Arcadic.Function do
   (a list of parameter-name atoms/strings, each `Identifier`-validated), and `opts`:
   `:language` (`:js` default | `:sql` | `:cypher`).
 
+  `params` and `opts` are **both positional**. To set only `opts` on a no-parameter function, pass
+  an explicit `[]` for `params`: `define(conn, name, body, [], language: :sql)`. A bare
+  `define(conn, name, body, language: :sql)` binds the keyword list to `params` (not `opts`) and
+  returns `{:error, :invalid_identifier}`.
+
   Emits `DEFINE FUNCTION lib.fn "body" [PARAMETERS [a, b]] LANGUAGE <lang>`. Value-free on a bad
   name (`:invalid_identifier`), a bad param (`:invalid_identifier`), an unencodable body
   (`:unencodable_body`), or an unknown language (`:invalid_language`) — none echo the offending

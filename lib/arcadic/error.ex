@@ -59,8 +59,14 @@ defmodule Arcadic.Error do
   a body containing the sole breakout byte, a backslash, or a control/line byte, none of which
   ArcadeDB's `"..."` DDL literal can escape), and, from `Arcadic.Changes`,
   `{:error, :mint_web_socket_not_available}` (`start_link/1`, when the optional
-  `mint_web_socket` dependency is absent) and `{:error, :subscriber_conflict}`
-  (`subscribe/3`, a second subscriber pid on an already-bound process).
+  `mint_web_socket` dependency is absent), `{:error, :subscriber_conflict}`
+  (`subscribe/3`, a second subscriber pid on an already-bound process), and the
+  `start_link/1` conn-shape rejections `{:error, :invalid_conn}` (no/invalid
+  `:conn`), `{:error, :invalid_auth}` (an auth shape other than `{user, pass}` /
+  `{:bearer, token}`), `{:error, :invalid_url_scheme}` (a `base_url` scheme
+  outside `http`/`https`/`ws`/`wss` — guards against a silent plaintext
+  downgrade), and `{:error, :invalid_max_buffer}` (a non-positive-integer
+  `:max_buffer`).
   """
 
   defexception [:reason, :http_status, :exception, :message, :detail]
