@@ -228,7 +228,8 @@ downsampling policies, and continuous aggregates. **Requires ArcadeDB ≥ 26.7.2
 
 ```elixir
 now_ms = System.system_time(:millisecond)  # write/query take epoch-MILLISECONDS
-now_s = div(now_ms, 1000)                  # the PromQL family takes epoch-SECONDS
+# +1: div/2 floors, and a Prometheus instant query excludes a sample at or after the eval instant
+now_s = div(now_ms, 1000) + 1              # the PromQL family takes epoch-SECONDS
 
 :ok =
   Arcadic.TimeSeries.create_type!(conn, "sensor", "ts",
