@@ -238,6 +238,13 @@ defmodule Arcadic.ChangesTest do
                {:error, :invalid_establish_timeout}
     end
 
+    test "start_link rejects an unknown opt key (fail-closed, symmetric with subscribe)" do
+      # Without the key guard a typo'd `:max_buffer` silently falls back to the default (and the
+      # process starts). The guard reports the offending KEY name only, value-free.
+      conn = Arcadic.connect("ws://127.0.0.1:1", "testdb", auth: {"u", "p"})
+      assert_raise ArgumentError, fn -> Changes.start_link(conn: conn, max_buffr: 5) end
+    end
+
     test "init backstops a DIRECT GenServer.start_link that bypasses the public wrapper" do
       # A bad-scheme conn reaches init via a raw GenServer.start_link (bypassing the public
       # start_link/1, which short-circuits before spawning). The init backstop fails closed with

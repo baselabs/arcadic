@@ -191,7 +191,13 @@ defmodule Arcadic.Changes do
   # Validate the caller-supplied conn + max_buffer value-free BEFORE starting the process, so a
   # malformed input returns a typed `{:error, _}` instead of (a) crash-looping under `:transient`
   # restart or (b) leaking the value through a FunctionClauseError / `Access` blame (Rule 3).
+  @start_opts [:conn, :name, :max_buffer, :establish_timeout]
+
   defp validate_start_opts(opts) do
+    # Fail closed on a typo'd opt key (symmetric with `subscribe/3`), so a mistyped `:max_buffer`
+    # can't silently fall back to the default. Reports the offending KEY name only, value-free.
+    Opts.validate_keys!(opts, @start_opts)
+
     with :ok <- validate_conn(Keyword.get(opts, :conn)),
          :ok <- validate_max_buffer(Keyword.get(opts, :max_buffer, @default_max_buffer)) do
       validate_establish_timeout(Keyword.get(opts, :establish_timeout, @establish_timeout))
