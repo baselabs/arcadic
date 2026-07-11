@@ -629,6 +629,122 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  @impl true
+  def ts_write(%Conn{} = conn, lines, opts) do
+    query = precision_query(opts[:precision])
+
+    req_opts =
+      [
+        url: conn.base_url <> "/api/v1/ts/#{conn.database}/write" <> query,
+        headers: [{"content-type", "text/plain"} | headers(conn)],
+        body: lines,
+        retry: false,
+        finch: conn.transport_options[:finch],
+        plug: conn.transport_options[:plug],
+        receive_timeout: opts[:timeout] || conn.timeout
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    handle_status_only(Req.post(req_opts))
+  end
+
+  # The FACADE validates :precision; encode here anyway (URI.encode_query, the batch_query/1
+  # precedent) and reject a non-binary value-free (defense in depth — an uncontrolled `#{}`
+  # coercion would echo the value via a Protocol.UndefinedError raise, Rule 3).
+  defp precision_query(nil), do: ""
+  defp precision_query(p) when is_binary(p), do: "?" <> URI.encode_query([{"precision", p}])
+  defp precision_query(_p), do: raise(ArgumentError, "invalid :precision")
+
+  @impl true
+  def ts_query(%Conn{} = conn, body, opts) do
+    case post(conn, "/api/v1/ts/#{conn.database}/query", body, opts) do
+      {:ok, %Req.Response{status: status, body: b}} when status in 200..299 ->
+        shape_ts_query(b)
+
+      other ->
+        other |> unwrap_body() |> drop_ok()
+    end
+  end
+
+  # The query endpoint answers one of two shapes; atomize the KNOWN keys, fail closed otherwise.
+  defp shape_ts_query(%{"rows" => rows} = b) when is_list(rows) do
+    {:ok, %{columns: Map.get(b, "columns", []), rows: rows, count: Map.get(b, "count", 0)}}
+  end
+
+  defp shape_ts_query(%{"buckets" => buckets} = b) when is_list(buckets) do
+    {:ok,
+     %{
+       aggregations: Map.get(b, "aggregations", []),
+       buckets:
+         Enum.map(buckets, fn bk ->
+           %{timestamp: Map.get(bk, "timestamp"), values: Map.get(bk, "values", [])}
+         end),
+       count: Map.get(b, "count", 0)
+     }}
+  end
+
+  defp shape_ts_query(_b),
+    do: {:error, %Error{reason: :unexpected_response, message: "off-contract ts query body"}}
+
+  # unwrap_body's 2xx clause returns {:ok, body}; error paths pass through. This helper exists so
+  # the non-2xx/fault arms of ts_query/ts_latest reuse unwrap_body WITHOUT admitting its 2xx
+  # success (already handled by the caller's own 2xx clause) into the return type.
+  defp drop_ok({:ok, _body}),
+    do: {:error, %Error{reason: :unexpected_response, message: "off-contract ts body"}}
+
+  defp drop_ok({:error, _} = err), do: err
+
+  @impl true
+  def ts_latest(%Conn{} = conn, params, opts) do
+    path = "/api/v1/ts/#{conn.database}/latest?" <> URI.encode_query(params)
+
+    case raw_get(conn, path, opts) do
+      {:ok, %Req.Response{status: status, body: b}} when status in 200..299 and is_map(b) ->
+        {:ok, %{columns: Map.get(b, "columns", []), latest: Map.get(b, "latest", [])}}
+
+      other ->
+        other |> unwrap_body() |> drop_ok()
+    end
+  end
+
+  @prom_paths %{
+    query: "query",
+    query_range: "query_range",
+    labels: "labels",
+    series: "series"
+  }
+
+  @impl true
+  def ts_prom_get(%Conn{} = conn, op, params, opts) do
+    suffix = prom_suffix(op)
+    qs = if params == [], do: "", else: "?" <> URI.encode_query(params)
+    path = "/api/v1/ts/#{conn.database}/prom/api/v1/#{suffix}" <> qs
+
+    case raw_get(conn, path, opts) do
+      {:ok, %Req.Response{status: status, body: %{"status" => "success"} = b}}
+      when status in 200..299 ->
+        {:ok, Map.get(b, "data", %{})}
+
+      {:ok, %Req.Response{status: status, body: %{"status" => "error"} = b}} ->
+        {:error,
+         Error.from_response(max(status, 400), %{
+           "error" => b["errorType"] || "prometheus error",
+           "detail" => b["error"]
+         })}
+
+      other ->
+        other |> unwrap_body() |> drop_ok()
+    end
+  end
+
+  # The label rides the URL path: facade-validated (Prometheus label grammar) AND encoded here —
+  # defense in depth, value-free on the unknown-op arm (never echo the op's companions).
+  defp prom_suffix({:label_values, label}) when is_binary(label),
+    do: "label/#{URI.encode_www_form(label)}/values"
+
+  defp prom_suffix(op) when is_map_key(@prom_paths, op), do: @prom_paths[op]
+  defp prom_suffix(_op), do: raise(ArgumentError, "unknown prom op")
+
   # Inlines a map-guarded success branch (NOT the shared unwrap_body/1, whose 2xx clause returns
   # {:ok, term()}) so the success type stays the monomorphic {:ok, map()} the @callback declares.
   @impl true
@@ -734,14 +850,15 @@ defmodule Arcadic.Transport.HTTP do
   # GET returning a decoded body map (for /databases).
   defp get(%Conn{} = conn, path), do: conn |> raw_get(path) |> unwrap_body()
 
-  defp raw_get(%Conn{} = conn, path) do
+  # opts carries an optional per-call :timeout (the ts_* read paths); default callers keep conn.timeout.
+  defp raw_get(%Conn{} = conn, path, opts \\ []) do
     [
       url: conn.base_url <> path,
       headers: headers(conn),
       retry: false,
       finch: conn.transport_options[:finch],
       plug: conn.transport_options[:plug],
-      receive_timeout: conn.timeout
+      receive_timeout: opts[:timeout] || conn.timeout
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Req.get()

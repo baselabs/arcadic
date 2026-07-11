@@ -114,4 +114,46 @@ defmodule Arcadic.Transport do
   @callback batch_ingest(Conn.t(), ndjson :: iodata(), opts :: keyword()) ::
               {:ok, map()} | {:error, Error.t() | TransportError.t()}
   @optional_callbacks batch_ingest: 3
+
+  @doc """
+  Write raw InfluxDB line protocol to `POST /api/v1/ts/<db>/write` (204 on success). `lines` is
+  already-built line-protocol iodata; `opts[:precision]` is the validated `"ns"|"us"|"ms"|"s"`
+  string (the FACADE validates — an invalid value is silently ignored server-side, probed 26.7.2).
+  Append-only, no dedup: a lost response + naive retry duplicates every point. Optional — HTTP-only.
+  """
+  @callback ts_write(Conn.t(), lines :: iodata(), opts :: keyword()) ::
+              :ok | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks ts_write: 3
+
+  @doc """
+  Run a time-series query (`POST /api/v1/ts/<db>/query`). `body` is the already-shaped wire map.
+  Returns the RAW `%{columns, rows, count}` or AGGREGATED `%{aggregations, buckets, count}` shape
+  (atomized top-level keys; bucket maps atomized to `%{timestamp, values}`). Optional — HTTP-only.
+  """
+  @callback ts_query(Conn.t(), body :: map(), opts :: keyword()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks ts_query: 3
+
+  @doc """
+  Fetch the newest point (`GET /api/v1/ts/<db>/latest`). `params` is a `[{String.t(), String.t()}]`
+  query-param list (`type` required; at most one `tag` — the server applies only the FIRST, probed).
+  Returns `%{columns, latest}` (atomized). Optional — HTTP-only.
+  """
+  @callback ts_latest(Conn.t(), params :: [{String.t(), String.t()}], opts :: keyword()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks ts_latest: 3
+
+  @doc """
+  PromQL read family (`GET /api/v1/ts/<db>/prom/api/v1/…`). `op` is the allowlisted route atom —
+  `:query | :query_range | :labels | :series | {:label_values, label}` (the label is
+  facade-validated AND URL-encoded here). Unwraps the Prometheus envelope: `status:"success"` →
+  `{:ok, data}`; `status:"error"` → a typed error. Optional — HTTP-only.
+  """
+  @callback ts_prom_get(
+              Conn.t(),
+              op :: atom() | {:label_values, String.t()},
+              params :: [{String.t(), String.t()}],
+              opts :: keyword()
+            ) :: {:ok, map() | list()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks ts_prom_get: 4
 end

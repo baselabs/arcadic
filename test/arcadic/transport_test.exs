@@ -30,4 +30,14 @@ defmodule Arcadic.TransportTest do
   test "execute_with_index/4 is an optional callback" do
     assert {:execute_with_index, 4} in Arcadic.Transport.behaviour_info(:optional_callbacks)
   end
+
+  test "ts_* time-series callbacks are declared optional" do
+    optional = Arcadic.Transport.behaviour_info(:optional_callbacks)
+    callbacks = Arcadic.Transport.behaviour_info(:callbacks)
+
+    for cb <- [{:ts_write, 3}, {:ts_query, 3}, {:ts_latest, 3}, {:ts_prom_get, 4}] do
+      assert cb in callbacks
+      assert cb in optional
+    end
+  end
 end
