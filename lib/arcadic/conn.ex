@@ -8,7 +8,7 @@ defmodule Arcadic.Conn do
   `with_database/2`.
   """
 
-  alias Arcadic.Identifier
+  alias Arcadic.{Identifier, Opts}
 
   @type consistency :: :eventual | :read_your_writes | :linearizable
 
@@ -41,6 +41,11 @@ defmodule Arcadic.Conn do
 
   @consistency_levels [:eventual, :read_your_writes, :linearizable]
 
+  # Value-free opt-key allowlist (mirrors the query/command surface via Arcadic.Opts.validate_keys!/2).
+  # An unknown key is a caller TYPO (e.g. `consistancy:`/`hosts` mis-spelled) that would otherwise be
+  # silently ignored — for a connection-control opt that means the wrong default silently applies.
+  @connect_opts [:auth, :transport, :transport_options, :timeout, :consistency, :hosts]
+
   @doc """
   Build a connection handle.
 
@@ -62,6 +67,7 @@ defmodule Arcadic.Conn do
   """
   @spec new(String.t(), String.t(), keyword()) :: t()
   def new(base_url, database, opts \\ []) when is_binary(base_url) and is_binary(database) do
+    Opts.validate_keys!(opts, @connect_opts)
     auth = opts[:auth] || raise ArgumentError, "Arcadic.connect/3 requires :auth {user, pass}"
     transport = Keyword.get(opts, :transport, Arcadic.Transport.HTTP)
     validate_identifier!(database)

@@ -263,6 +263,18 @@ defmodule Arcadic.TransactionTest do
       end
     end
 
+    test "an unknown transaction option key is rejected value-free (catches a typo'd :retry → silent no-retry)" do
+      e =
+        assert_raise ArgumentError, ~r/unknown option/, fn ->
+          Arcadic.transaction(conn(), fn _ -> :ok end, retires: "SEKRET-VALUE")
+        end
+
+      # value-free: the offending VALUE never leaks; the allowed set names the real :retry key so a
+      # typo no longer silently means "no retry" (the S10 closeout footgun).
+      refute Exception.message(e) =~ "SEKRET-VALUE"
+      assert Exception.message(e) =~ "retry"
+    end
+
     test "non-integer / non-positive :retry inner values are rejected value-free (no unbounded loop)" do
       # A non-integer max_attempts defeats the `attempt < max_attempts` loop bound (Elixir term
       # ordering: 1 < "3" is true) → unbounded retry on a persistent fault. A float backoff crashes

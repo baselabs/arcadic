@@ -7,11 +7,16 @@ defmodule Arcadic.Transaction do
   `{:error, reason}`. Nesting raises — there is no verified HTTP savepoint contract.
   """
 
-  alias Arcadic.{Conn, Error, Telemetry, TransportError}
+  alias Arcadic.{Conn, Error, Opts, Telemetry, TransportError}
 
   require Logger
 
   @rollback_throw :arcadic_rollback
+
+  # Value-free opt-key allowlist (mirrors the query/command surface via Arcadic.Opts.validate_keys!/2).
+  # An unknown key is a caller TYPO — a mis-spelled `:retry` would otherwise be silently ignored and
+  # silently mean "no retry" (a transaction that should survive a conflict would not).
+  @transaction_opts [:isolation, :retry]
 
   # A RAISED Arcadic.Error is pre-commit (closure raised → tx rolled back → nothing applied): retry
   # the fuller set incl. :timeout. A RETURNED {:error, %Error{}} is a begin/commit-phase failure
@@ -32,6 +37,7 @@ defmodule Arcadic.Transaction do
   end
 
   def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
+    Opts.validate_keys!(opts, @transaction_opts)
     retry = parse_retry!(opts[:retry])
 
     Telemetry.span(:transaction, %{isolation: opts[:isolation]}, fn ->

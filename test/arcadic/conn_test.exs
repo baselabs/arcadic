@@ -203,4 +203,39 @@ defmodule Arcadic.ConnTest do
       end
     end
   end
+
+  describe "option-key validation" do
+    test "an unknown connect option key is rejected value-free (catches a typo like :consistancy)" do
+      e =
+        assert_raise ArgumentError, ~r/unknown option/, fn ->
+          Conn.new("http://a.invalid", "db", auth: {"root", "x"}, consistancy: "SEKRET-VALUE")
+        end
+
+      # value-free: the offending VALUE never leaks (the key NAME is echoed, like query/command opts)
+      refute Exception.message(e) =~ "SEKRET-VALUE"
+      # the allowed set is surfaced to guide the caller to the real key
+      assert Exception.message(e) =~ "consistency"
+    end
+
+    test "every documented connect opt key is accepted (allowlist is complete)" do
+      conn =
+        Conn.new("http://a.invalid", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.HTTP,
+          transport_options: [],
+          timeout: 5_000,
+          consistency: :read_your_writes,
+          hosts: ["http://b.invalid"]
+        )
+
+      assert conn.timeout == 5_000
+      assert conn.consistency == :read_your_writes
+    end
+
+    test "non-keyword connect opts are rejected value-free" do
+      assert_raise ArgumentError, ~r/keyword list/, fn ->
+        Conn.new("http://a.invalid", "db", %{auth: {"root", "x"}})
+      end
+    end
+  end
 end

@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Treated as retriable by managed retry and as failover-eligible by multi-host
   failover (the write was rejected, nothing applied).
 
+### Changed
+
+- `connect/3` and `transaction/3` now reject unknown option keys value-free
+  (an `ArgumentError` naming the allowed set), matching `query`/`command`. A
+  typo'd option — `consistancy:`, or `retires:` for `retry:` — was previously
+  ignored silently, which for a connection-control option meant the wrong
+  default applied (a mis-spelled `retry:` silently meant no retry). The
+  offending value is never echoed.
+
 ## [0.5.0] - 2026-07-10
 
 ### Added
