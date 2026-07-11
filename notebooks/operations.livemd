@@ -1,0 +1,410 @@
+# Operations with Arcadic
+
+## Setup
+
+This notebook is an **operations** tour of `Arcadic`: the parts of the surface a
+running application leans on day to day rather than in its first query — schema
+migrations, import/export, backup/restore, streaming, telemetry — followed by
+ArcadeDB's event and programmability layer: live change events, user-defined
+functions, triggers, and geospatial indexing.
+
+This notebook needs a running **ArcadeDB**. The quickest way is Docker:
+
+```
+docker run -d --name arcadic-operations \
+  -p 2480:2480 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  arcadedata/arcadedb:latest
+```
+
+Only the HTTP port (**2480**) is needed — every operation below, including the
+change-events `/ws` feed, rides the same HTTP endpoint; none of it needs Bolt
+(see [`getting_started.livemd`](getting_started.livemd) for the Bolt transport).
+
+Every connection value can be overridden with an environment variable set before
+you launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_PASSWORD`); otherwise the
+defaults match the `docker run` above.
+
+> **Re-running cells.** Most cells are idempotent: the migration, the DDL
+> (`IF NOT EXISTS`/idempotent-by-default index/function-redefine/trigger-recreate
+> patterns), and the read-only cells are all safe to re-run. **Two spots are not
+> re-run-safe in isolation** (mirrors the callout in
+> [`graphrag.livemd`](graphrag.livemd)): the **Import & export** section's seed
+> inserts add two more `Metric` documents each time you re-run just that cell,
+> and the **Functions & triggers** section's `CREATE VERTEX` add another
+> `Reading`/`AuditLog` row each time you re-run just that line. Running the whole
+> notebook top to bottom (or **Cleanup** then top to bottom) always ends up in
+> the same clean state.
+
+## Install
+
+> **Requires an unreleased arcadic build.** `Arcadic.Changes`, `Arcadic.Function`,
+> `Arcadic.Trigger`, `Arcadic.MaterializedView`, and `Arcadic.Geo` — everything
+> from **Change events** onward below — are not in any published release yet.
+> Concretely, as of this writing: Hex hosts only `0.4.0`, so the `~> 0.5`
+> requirement below doesn't resolve at all (`Mix.install` fails immediately with
+> `version solving failed`, not a silent downgrade to `0.4.0`); the modules also
+> aren't yet on the `main` branch on GitHub, so `{:arcadic, github:
+> "baselabs/arcadic"}` won't have them either until that catches up. The only way
+> to run this notebook today is a local path dependency against a checkout that
+> has these modules, e.g. `{:arcadic, path: "/path/to/your/arcadic/checkout"}` in
+> place of the pin below. Once a release carrying them is published (and pushed),
+> the `~> 0.5` pin resolves normally and this note no longer applies.
+
+```elixir
+Mix.install([
+  {:arcadic, "~> 0.5"},
+  {:mint_web_socket, "~> 1.0"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## Connect
+
+We create a throwaway `arcadic_operations` database to play in (only if it does
+not already exist, so this cell is safe to re-run).
+
+```elixir
+http_url = System.get_env("ARCADIC_HTTP_URL", "http://localhost:2480")
+password = System.get_env("ARCADIC_PASSWORD", "playwithdata")
+database = "arcadic_operations"
+
+admin = Arcadic.connect(http_url, database, auth: {"root", password})
+{:ok, true} = Arcadic.Server.ready?(admin)
+
+unless match?({:ok, true}, Arcadic.Server.database_exists?(admin, database)) do
+  :ok = Arcadic.Server.create_database(admin, database)
+end
+
+conn = Arcadic.connect(http_url, database, auth: {"root", password})
+```
+
+## Schema & migrations
+
+`Arcadic.Migrator` runs `Arcadic.Migration`s in order and records applied
+versions in `_arcadic_migrations`, so re-running is a no-op. This defines the
+`Reading` vertex type the rest of the notebook writes to.
+
+```elixir
+defmodule Ops.Migrations.V1 do
+  @behaviour Arcadic.Migration
+  @impl true
+  def version, do: 1
+  @impl true
+  def up(c) do
+    Arcadic.command!(c, "CREATE VERTEX TYPE Reading IF NOT EXISTS", %{}, language: "sql")
+    Arcadic.command!(c, "CREATE PROPERTY Reading.sensor IF NOT EXISTS STRING", %{}, language: "sql")
+    Arcadic.command!(c, "CREATE PROPERTY Reading.value IF NOT EXISTS DOUBLE", %{}, language: "sql")
+    :ok
+  end
+
+  @impl true
+  def down(c), do: Arcadic.command!(c, "DROP TYPE Reading IF EXISTS", %{}, language: "sql") && :ok
+end
+
+defmodule Ops.Migrations do
+  use Arcadic.MigrationRegistry
+  migrations([Ops.Migrations.V1])
+end
+
+{:ok, applied} = Arcadic.Migrator.migrate(conn, Ops.Migrations)
+{:ok, status} = Arcadic.Migrator.status(conn, Ops.Migrations)
+{applied, status}
+```
+
+`Arcadic.Schema` reads the database's own catalog — the `Reading` type the
+migration just created shows up here too.
+
+```elixir
+Arcadic.Schema.types!(conn) |> Enum.map(& &1["name"])
+```
+
+## Import & export
+
+`Arcadic.Export.database!/3` runs ArcadeDB's `EXPORT DATABASE` server-side, and
+`Arcadic.Import.database!/3` its inverse. Both take a bare, allowlisted name —
+never a caller path — and settings via `with:`.
+
+> Re-running just the two seed inserts below duplicates `Metric` documents (see
+> the Setup heads-up); a top-to-bottom re-run is always clean.
+
+```elixir
+Arcadic.command!(conn, "CREATE DOCUMENT TYPE Metric IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "INSERT INTO Metric SET n = 1", %{}, language: "sql")
+Arcadic.command!(conn, "INSERT INTO Metric SET n = 2", %{}, language: "sql")
+
+export_name = "arcadic_operations_export"
+Arcadic.Export.database!(conn, export_name, with: [overwrite: true])
+```
+
+Import it into a second, disposable database to prove the round trip. ArcadeDB
+writes `EXPORT DATABASE` artifacts to a server-local directory (`with:
+overwrite: true` above lets this cell re-run); the path below matches the
+official `arcadedata/arcadedb` image — override it if your setup differs.
+
+```elixir
+import_dst = "arcadic_operations_import_dst"
+_ = Arcadic.Server.drop_database(admin, import_dst)
+:ok = Arcadic.Server.create_database!(admin, import_dst)
+dst_conn = Arcadic.connect(http_url, import_dst, auth: {"root", password})
+
+import_rows = Arcadic.Import.database!(dst_conn, "file:///home/arcadedb/exports/#{export_name}")
+
+# The round trip proven, drop the throwaway destination immediately.
+Arcadic.Server.drop_database(admin, import_dst)
+import_rows
+```
+
+## Backup & restore
+
+`Arcadic.Backup.backup!/2` runs `BACKUP DATABASE` on the current database and
+returns the server-generated `backupFile` name; `list!/1` lists tracked backups.
+
+```elixir
+%{"backupFile" => backup_file} = Arcadic.Backup.backup!(conn)
+backups = Arcadic.Backup.list!(conn)
+{backup_file, backups}
+```
+
+`Arcadic.Backup.restore!/3` creates a **new** database from a backup file — the
+target must not already exist. ArcadeDB writes each database's backups under
+its own subdirectory of the server's backup root (again, the official image's
+default path; override it if yours differs).
+
+```elixir
+restore_check = "arcadic_operations_restore_check"
+_ = Arcadic.Server.drop_database(admin, restore_check)
+
+Arcadic.Backup.restore!(
+  conn,
+  restore_check,
+  "file:///home/arcadedb/backups/#{database}/#{backup_file}"
+)
+
+restored_conn = Arcadic.connect(http_url, restore_check, auth: {"root", password})
+proof = Arcadic.query!(restored_conn, "SELECT count(*) AS c FROM Metric", %{}, language: "sql")
+
+# Proof done — drop the throwaway restore target.
+Arcadic.Server.drop_database(admin, restore_check)
+proof
+```
+
+## Streaming
+
+`Arcadic.query_stream/4` streams a large read as a lazy `Stream` over HTTP,
+paging behind the scenes so the whole result never sits in memory at once — see
+[`getting_started.livemd`](getting_started.livemd) for the full HTTP-vs-Bolt
+walkthrough (Bolt is unused here; every operation below is HTTP-only).
+
+```elixir
+Arcadic.command!(conn, "MERGE (r:Reading {sensor: $s}) SET r.value = $v", %{
+  "s" => "temp-1",
+  "v" => 21.5
+})
+
+Arcadic.command!(conn, "MERGE (r:Reading {sensor: $s}) SET r.value = $v", %{
+  "s" => "temp-2",
+  "v" => 19.0
+})
+
+{:ok, stream} =
+  Arcadic.query_stream(conn, "SELECT sensor, value FROM Reading", %{},
+    language: "sql",
+    chunk_size: 5
+  )
+
+Enum.to_list(stream) |> Kino.DataTable.new()
+```
+
+## Telemetry
+
+Every `query`/`command` emits a `:telemetry` span
+(`[:arcadic, :query | :command, :start | :stop | :exception]`) whose metadata is
+**value-free by construction** — `Arcadic.Telemetry`'s allowlist admits only
+shape (`language`, `mode`, `http_status`, `reason`, `row_count`,
+`in_transaction?`, …), never a statement, params, or a row's values.
+
+```elixir
+handler_id = "operations-notebook"
+notebook_pid = self()
+
+:telemetry.attach_many(
+  handler_id,
+  [[:arcadic, :query, :stop], [:arcadic, :command, :stop]],
+  fn event, measurements, metadata, _config ->
+    send(notebook_pid, {:telemetry, event, measurements, metadata})
+  end,
+  nil
+)
+
+Arcadic.command!(conn, "MERGE (r:Reading {sensor: $s}) SET r.value = $v", %{
+  "s" => "temp-3",
+  "v" => 5.0
+})
+
+:telemetry.detach(handler_id)
+```
+
+```elixir
+receive do
+  {:telemetry, event, measurements, metadata} -> {event, measurements, metadata}
+after
+  2000 -> :no_telemetry_event
+end
+```
+
+## Change events
+
+`Arcadic.Changes` is arcadic's one caller-supervised process: it holds
+ArcadeDB's `/ws` change-events socket open and pushes each change to a single
+subscriber as `{:arcadic_change, %Arcadic.Changes.Event{}}`. It is
+**best-effort at-most-once** — `/ws` has no replay, so a `:reconnected` marker
+(after a dropped socket) or an `:overflow` marker (a slow subscriber's buffer
+dropped events) both obligate the subscriber to reconcile; a terminal
+`{:arcadic_change_error, :unauthorized}` message means the handshake was
+rejected and the process has stopped.
+
+We start it via `Kino.start_child/1` so re-evaluating this cell cleanly stops
+the previous socket before opening a new one.
+
+```elixir
+{:ok, changes} = Kino.start_child({Arcadic.Changes, conn: conn})
+:ok = Arcadic.Changes.subscribe(changes, database, type: "Reading")
+# Small margin for the subscribe frame to reach the server before the next
+# cell's write — otherwise the write could race the subscription.
+Process.sleep(500)
+```
+
+Trigger a change from a separate cell (over the same `conn`, just to show the
+event is a live push, not a poll):
+
+```elixir
+Arcadic.command!(conn, "MERGE (r:Reading {sensor: $s}) SET r.value = $v", %{
+  "s" => "temp-4",
+  "v" => 99.0
+})
+```
+
+Receive it:
+
+```elixir
+receive do
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :create} = event} ->
+    event
+
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :reconnected}} ->
+    :reconnected_reconcile_needed
+
+  {:arcadic_change_error, :unauthorized} ->
+    raise "change-events subscription was rejected (unauthorized)"
+after
+  5000 -> raise "timed out waiting for the change event"
+end
+```
+
+## Functions & triggers
+
+`Arcadic.Function.define!/5` emits `DEFINE FUNCTION` — a dotted `library.fn`
+name, a single-line body (ArcadeDB's `"..."` body literal has no escape, so a
+multi-line or quote-carrying body is rejected client-side before any wire
+call), and optional named `params`. Redefining an existing function errors
+server-side, so the idempotent-safe shape is delete-then-define. Deleting a
+function twice within an existing library is idempotent, but on a fresh database
+the `ops` library doesn't exist yet, so the first delete errors — the `_ =`
+below discards that, making this cell re-run-safe either way.
+
+```elixir
+_ = Arcadic.Function.delete(conn, "ops.celsius_to_fahrenheit")
+
+:ok =
+  Arcadic.Function.define!(
+    conn,
+    "ops.celsius_to_fahrenheit",
+    "return c * 9 / 5 + 32",
+    [:c],
+    language: :js
+  )
+```
+
+Call it via the backtick idiom inside an ordinary query — the function name is
+interpolated (behind the per-segment allowlist), the argument rides `params`:
+
+```elixir
+Arcadic.query!(conn, "SELECT `ops.celsius_to_fahrenheit`(:c) AS f", %{"c" => 21.5}, language: "sql")
+```
+
+`Arcadic.Trigger.create!/4` fires a `timing` × `event` action on a type.
+`DROP TRIGGER` takes no `IF EXISTS`, so — same idiom as the function above — we
+discard the drop's error before creating.
+
+```elixir
+Arcadic.command!(conn, "CREATE DOCUMENT TYPE AuditLog IF NOT EXISTS", %{}, language: "sql")
+_ = Arcadic.Trigger.drop(conn, "reading_audit")
+
+:ok =
+  Arcadic.Trigger.create!(conn, "reading_audit", "Reading",
+    timing: :after,
+    event: :create,
+    execute: {:sql, "insert into AuditLog set event = 'reading_created'"}
+  )
+```
+
+Fire it — creating a `Reading` runs the trigger, which writes to `AuditLog`:
+
+```elixir
+Arcadic.command!(conn, "CREATE VERTEX Reading SET sensor = 'trigger-demo', value = 1.0", %{},
+  language: "sql"
+)
+
+Arcadic.query!(conn, "SELECT FROM AuditLog", %{}, language: "sql")
+```
+
+## Geospatial indexing
+
+`Arcadic.Geo.create_index!/4` builds a `GEOSPATIAL` index over a **string
+property holding WKT** (ArcadeDB has no native `POINT` schema type); it is
+idempotent by default (`IF NOT EXISTS` unless `if_not_exists: false`).
+Geospatial querying itself rides ordinary `Arcadic.query/4` — here,
+`distance/2` between a WKT column and a literal `point(...)`.
+
+```elixir
+Arcadic.command!(conn, "CREATE VERTEX TYPE Station IF NOT EXISTS", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE PROPERTY Station.wkt IF NOT EXISTS STRING", %{}, language: "sql")
+
+Arcadic.command!(conn, "MERGE (s:Station {name: $name}) SET s.wkt = $wkt", %{
+  "name" => "HQ",
+  "wkt" => "POINT (-122.42 37.77)"
+})
+
+:ok = Arcadic.Geo.create_index!(conn, "Station", "wkt")
+```
+
+```elixir
+Arcadic.query!(
+  conn,
+  "SELECT name, distance(wkt, point(-122.41, 37.78)) AS meters FROM Station",
+  %{},
+  language: "sql"
+)
+```
+
+## Beyond this notebook
+
+`Arcadic.MaterializedView` — `create!/3`/`drop!/2` for ArcadeDB's
+`MATERIALIZED VIEW`, parallel to `Function`/`Trigger`/`Geo` above — doesn't get
+its own cell here, e.g. `Arcadic.MaterializedView.create!(conn,
+"reading_summary", "SELECT sensor, avg(value) AS avg_value FROM Reading GROUP BY sensor")`
+followed by an ordinary `Arcadic.query!(conn, "SELECT FROM reading_summary", %{}, language: "sql")`.
+
+## Cleanup
+
+Drop the throwaway database when you are done (or before a fresh top-to-bottom
+run). This also tears down anything the sections above created inside it
+(`Reading`, `Metric`, `AuditLog`, `Station`, the trigger, the function, and any
+backups) — the `import_dst`/`restore_check` databases were already dropped
+within their own sections.
+
+```elixir
+if Process.alive?(changes), do: GenServer.stop(changes)
+Arcadic.Server.drop_database(admin, database)
+```

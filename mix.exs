@@ -83,6 +83,7 @@ defmodule Arcadic.MixProject do
         "README.md",
         "notebooks/getting_started.livemd",
         "notebooks/graphrag.livemd",
+        "notebooks/operations.livemd",
         "usage-rules.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
