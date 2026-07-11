@@ -145,8 +145,11 @@ defmodule Arcadic.Transaction do
 
   # Try begin against each host in order; PIN the session conn to the first host that answers
   # (the session id is host-local, so the tx must not fail over mid-flight). A begin that fails
-  # with a pre-send connect error rolls to the next host; any other begin error is returned. hosts
-  # is cleared on the pinned conn so no downstream fold re-selects mid-tx.
+  # with a pre-send connect error, or with a `:not_leader` REJECTION (an unambiguous 400 — no
+  # session was created), rolls to the next host (D15/D16: begin iterates until it succeeds; a
+  # :not_leader rejection is "safe for both modes", mirroring the data-plane `failover?/2`). Any
+  # other begin error is returned (failing over would mask a genuine fault). `hosts` is cleared on
+  # the pinned conn so no downstream fold re-selects mid-tx.
   defp begin_pinned(_conn, [], _opts),
     do: {:error, %TransportError{reason: :econnrefused}}
 
@@ -159,6 +162,9 @@ defmodule Arcadic.Transaction do
 
       {:error, %TransportError{reason: reason}}
       when reason in [:econnrefused, :nxdomain] and rest != [] ->
+        begin_pinned(conn, rest, opts)
+
+      {:error, %Error{reason: :not_leader}} when rest != [] ->
         begin_pinned(conn, rest, opts)
 
       {:error, _} = err ->

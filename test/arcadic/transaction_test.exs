@@ -424,5 +424,71 @@ defmodule Arcadic.TransactionTest do
       assert {:error, %Arcadic.TransportError{reason: :econnrefused}} =
                Arcadic.transaction(conn, fn _ -> :ok end)
     end
+
+    test "tx begin fails over to the next host on a :not_leader begin rejection and pins to it" do
+      Req.Test.stub(__MODULE__.NotLeaderBegin, fn c ->
+        cond do
+          c.host == "h1.invalid" and String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_status(400)
+            |> Req.Test.json(%{
+              "error" => "Cannot execute command",
+              "exception" => "com.arcadedb.network.binary.ServerIsNotTheLeaderException"
+            })
+
+          String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "AS-1")
+            |> Plug.Conn.send_resp(204, "")
+
+          String.contains?(c.request_path, "/commit/") ->
+            Plug.Conn.send_resp(c, 204, "")
+
+          true ->
+            Req.Test.json(c, %{"result" => [%{"host" => c.host}]})
+        end
+      end)
+
+      conn =
+        Conn.new("http://h1.invalid", "db",
+          auth: {"root", "x"},
+          hosts: ["http://h2.invalid"],
+          transport_options: [plug: {Req.Test, __MODULE__.NotLeaderBegin}]
+        )
+
+      # h1 begin rejects with :not_leader (unambiguous 400, no session created) → safe to
+      # fail over; pin to h2 and run the in-tx command there (D15/D16: begin iterates until it
+      # succeeds; a :not_leader rejection is "safe for both modes").
+      assert {:ok, [%{"host" => "h2.invalid"}]} =
+               Arcadic.transaction(conn, fn tx ->
+                 Arcadic.command!(tx, "SELECT 1", %{}, language: "sql")
+               end)
+    end
+
+    test "tx begin does NOT fail over on a non-rejection begin error (e.g. :parse_error) — returns it" do
+      Req.Test.stub(__MODULE__.BadBegin, fn c ->
+        cond do
+          c.host == "h1.invalid" and String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_status(400)
+            |> Req.Test.json(%{"error" => "x", "exception" => "com.x.CommandParsingException"})
+
+          true ->
+            Req.Test.json(c, %{"result" => [%{"host" => c.host}]})
+        end
+      end)
+
+      conn =
+        Conn.new("http://h1.invalid", "db",
+          auth: {"root", "x"},
+          hosts: ["http://h2.invalid"],
+          transport_options: [plug: {Req.Test, __MODULE__.BadBegin}]
+        )
+
+      # A begin that fails with a non-connection, non-:not_leader error is surfaced (h2 untried):
+      # failing over would mask a genuine begin fault.
+      assert {:error, %Arcadic.Error{reason: :parse_error}} =
+               Arcadic.transaction(conn, fn _ -> :ok end)
+    end
   end
 end
