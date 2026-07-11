@@ -53,8 +53,14 @@ defmodule Arcadic.Error do
   `{:error, :invalid_setting_value}` (`Arcadic.Server.set_server_setting/3` and
   `set_database_setting/3`), `{:error, :invalid_url}`
   (`Arcadic.Backup.backup/2`'s `:to` target and `restore/3`'s source URL, via
-  `Arcadic.Identifier.validate_url/1`), and `{:error, :invalid_user_spec}`
-  (`Arcadic.Security.create_user/2` — an unencodable user spec, e.g. a non-UTF-8 password).
+  `Arcadic.Identifier.validate_url/1`), `{:error, :invalid_user_spec}`
+  (`Arcadic.Security.create_user/2` — an unencodable user spec, e.g. a non-UTF-8 password),
+  `{:error, :unencodable_body}` (`Arcadic.Function.define/5` and `Arcadic.Trigger.create/4` —
+  a body containing the sole breakout byte, a backslash, or a control/line byte, none of which
+  ArcadeDB's `"..."` DDL literal can escape), and, from `Arcadic.Changes`,
+  `{:error, :mint_web_socket_not_available}` (`start_link/1`, when the optional
+  `mint_web_socket` dependency is absent) and `{:error, :subscriber_conflict}`
+  (`subscribe/3`, a second subscriber pid on an already-bound process).
   """
 
   defexception [:reason, :http_status, :exception, :message, :detail]

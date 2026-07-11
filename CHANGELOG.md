@@ -37,6 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leader and could not forward the write (`ServerIsNotTheLeaderException`).
   Treated as retriable by managed retry and as failover-eligible by multi-host
   failover (the write was rejected, nothing applied).
+- `Arcadic.Changes` — a live change-events client for ArcadeDB's `/ws` feed. Start
+  it under your own supervision tree (`start_link/1`) and `subscribe/3` a database
+  to receive `{:arcadic_change, %Arcadic.Changes.Event{}}` messages. **Best-effort
+  at-most-once**: the feed has no replay, so a reconnect delivers a `:reconnected`
+  marker (events during the gap are lost) and a full delivery buffer delivers one
+  `:overflow` marker after dropping the oldest events — either marker means the
+  subscriber should reconcile. Requires the optional `mint_web_socket` dependency;
+  `start_link/1` returns `{:error, :mint_web_socket_not_available}` without it.
+- `Arcadic.Function` — `define/5` / `delete/2` (+ `!`) for ArcadeDB user-defined
+  functions (`DEFINE FUNCTION` / `DELETE FUNCTION`). A function name is a dotted
+  `library.fn`; the body is a single-line, single-quoted literal (ArcadeDB's DDL
+  string literal has no escape); `:language` selects `:js` (default), `:sql`, or
+  `:cypher`. Call a defined function from an ordinary `query/4`/`command/4` via
+  the backtick idiom.
+- `Arcadic.Trigger` — `create/4` / `drop/2` (+ `!`) for ArcadeDB triggers
+  (`CREATE TRIGGER` / `DROP TRIGGER`), firing a `:timing` (`:before`/`:after`) ×
+  `:event` (`:create`/`:delete`/`:update`/`:read`) action in `:sql`, `:javascript`,
+  or `:java`. Shares `Arcadic.Function`'s single-line/single-quoted body limit.
+- `Arcadic.MaterializedView` — `create/3` / `drop/2` (+ `!`) for ArcadeDB
+  materialized views (`CREATE MATERIALIZED VIEW` / `DROP MATERIALIZED VIEW`) from
+  a raw `SELECT` statement.
+- `Arcadic.Geo` — `create_index/4` / `drop_index/3` (+ `!`) for a `GEOSPATIAL`
+  index over a string property holding WKT (this ArcadeDB build has no native
+  `POINT` schema type). Geospatial querying rides ordinary `query/4`/`command/4`.
 
 ### Changed
 

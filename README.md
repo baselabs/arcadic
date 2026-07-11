@@ -47,6 +47,12 @@ ArcadeDB").
   positive-allowlist URL validator that closes the interpolated-URL injection surface, and
   symmetric server-side export (`Arcadic.Export.database/3`, `EXPORT DATABASE`) with a
   path-safe name.
+- **Change events & server programmability** — `Arcadic.Changes` streams ArcadeDB's
+  live `/ws` change feed to a caller-supervised process (best-effort at-most-once,
+  with in-band reconnect/overflow gap markers); `Arcadic.Function` / `Arcadic.Trigger`
+  define server-side functions and triggers (`DEFINE FUNCTION` / `CREATE TRIGGER`);
+  `Arcadic.MaterializedView` creates/drops materialized views from a raw `SELECT`;
+  `Arcadic.Geo` adds `GEOSPATIAL` index DDL over WKT-string properties.
 - **Batteries included** — server, security, and backup admin (`Arcadic.Server`,
   `Arcadic.Security`, `Arcadic.Backup`), a migration runner, vector search,
   schema introspection, bulk import, allowlist-validated identifiers, and
@@ -169,6 +175,45 @@ pre-send connect error, never on an ambiguous post-send close. A session
 (`transaction/3`) pins to whichever host answers first. Bookmarked calls target the
 primary host and do not participate in failover (the bookmark is host-relative).
 
+## Change events & server programmability
+
+`Arcadic.Changes` is arcadic's one caller-supervised process — start it under your
+own supervision tree, then subscribe a database. It delivers each change as
+`{:arcadic_change, %Arcadic.Changes.Event{}}` to a single subscriber pid.
+
+**Best-effort at-most-once.** ArcadeDB's `/ws` feed has no replay or checkpoint: on
+reconnect the process delivers a `change_type: :reconnected` marker (events during
+the gap are gone), and on subscriber-side buffer overflow it delivers one
+`change_type: :overflow` marker after dropping the oldest buffered events. Treat
+either marker as an obligation to reconcile the affected database — the feed is a
+change hint, not a durable log. A terminal 401 on the (re)handshake (auth expiry or
+credential rotation) arrives as a distinct `{:arcadic_change_error, :unauthorized}`
+message and then stops the process — terminal, not reconnected; the caller
+re-establishes with fresh credentials.
+
+```elixir
+children = [
+  {Arcadic.Changes, conn: conn, name: MyApp.Changes}
+]
+
+:ok = Arcadic.Changes.subscribe(MyApp.Changes, "mydb", change_types: [:create, :update])
+
+receive do
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :reconnected}} -> reconcile()
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :overflow}} -> reconcile()
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :create, record: record}} -> handle(record)
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :update, record: record}} -> handle(record)
+  # terminal — the process has stopped; re-establish with fresh credentials
+  {:arcadic_change_error, :unauthorized} -> reauthenticate()
+end
+```
+
+`Arcadic.Function` and `Arcadic.Trigger` define server-side JS/SQL logic
+(`DEFINE FUNCTION`, `CREATE TRIGGER`); `Arcadic.MaterializedView` and `Arcadic.Geo`
+round out the DDL surface. See [`usage-rules.md`](usage-rules.md) for the full
+contract, including the single-line/single-quoted body limit shared by
+`Function`/`Trigger`.
+
 ## Options reference
 
 Which options each function accepts (an unknown key is rejected value-free):
@@ -225,7 +270,12 @@ echoing the offending string. The admin surface follows the same convention:
 `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`,
 `Arcadic.Backup.backup/2` / `restore/3` return `{:error, :invalid_url}`, and
 `Arcadic.Security.create_user/2` returns `{:error, :invalid_user_spec}` for an unencodable
-user spec (e.g. a non-UTF-8 password) — all value-free.
+user spec (e.g. a non-UTF-8 password) — all value-free. `Arcadic.Function.define/5` and
+`Arcadic.Trigger.create/4` return `{:error, :unencodable_body}` for a body ArcadeDB's
+quoted DDL literal can't hold (a literal `"`, a backslash, or a newline); `Arcadic.Changes`
+returns `{:error, :mint_web_socket_not_available}` from `start_link/1` when the optional
+`mint_web_socket` dependency is absent, and `{:error, :subscriber_conflict}` from
+`subscribe/3` for a second subscriber pid on an already-bound process.
 
 ## Telemetry
 

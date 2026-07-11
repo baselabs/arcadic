@@ -168,6 +168,40 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   tokens_property, weights_property, tokens, weights, k}` arm, and/or a
   `{:fulltext, type, property, query, k}` arm — fused in one hybrid-ranked
   result set (see `Arcadic.Vector` above and Bulk loading below).
+- **`Arcadic.Geo`** — `GEOSPATIAL` index DDL: `create_index/4` (`type`, `property`,
+  idempotent `IF NOT EXISTS` unless `if_not_exists: false`) and `drop_index/3`
+  (`IF EXISTS`), both + `!`. The index sits on a **string property holding WKT**
+  (ArcadeDB has no native `POINT` schema type) — see Geospatial indexing & functions
+  below for the querying side.
+- **`Arcadic.Function`** — `DEFINE FUNCTION` / `DELETE FUNCTION` DDL: `define/5`
+  (`name` a dotted `library.fn`, validated per segment; `body`; optional `params`
+  atom/string list; `opts: [language: :js | :sql | :cypher]`, `:js` default) and
+  `delete/2`, both + `!`. There is no call wrapper (a query template, a charter
+  non-goal) — invoke a defined function inside an ordinary `query/4`/`command/4`
+  via the backtick idiom: `` SELECT `lib.fn`(:a, :b) `` (SQL) — the name is
+  interpolated behind the per-segment allowlist, arguments ride `params`. **Body is
+  single-line and single-quoted — a substrate limit**, not an arcadic narrowing:
+  ArcadeDB's `"..."` body literal has no escape (a literal `"`, a backslash, or a
+  newline all parse-error server-side), so a body needing any of those is rejected
+  value-free before any wire call.
+- **`Arcadic.Trigger`** — `CREATE TRIGGER` / `DROP TRIGGER` DDL: `create/4`
+  (`name`, `type`, `opts` all required: `:timing` `:before`/`:after`, `:event`
+  `:create`/`:delete`/`:update`/`:read`, `:execute` a `{lang, code}` tuple with
+  `lang` `:sql`/`:javascript`/`:java`) and `drop/2` (**no `IF EXISTS`** — dropping a
+  missing trigger is a server error), both + `!`. Shares `Arcadic.Function`'s
+  **single-line/single-quoted body** substrate limit — same reject-not-escape guard.
+- **`Arcadic.MaterializedView`** — `CREATE MATERIALIZED VIEW` / `DROP MATERIALIZED
+  VIEW` DDL: `create/3` (`name`, a raw `select_sql` string emitted verbatim — unlike
+  `Function`/`Trigger`, this is trailing SQL, not a quoted DDL literal, so an
+  internal single-quoted string in a `WHERE` clause is legitimate and passes
+  through) and `drop/2` (**no `IF EXISTS`**), both + `!`.
+- **`Arcadic.Changes`** — a caller-supervised `GenServer` client for ArcadeDB's
+  live `/ws` change-events feed: `start_link/1` (`:conn`, `:name`, `:max_buffer`,
+  default 1000) and `subscribe/3` / `unsubscribe/2` (`:type` filter, `:change_types`
+  subset of `[:create, :update, :delete]`, `:subscriber` pid — one subscriber per
+  process, a conflicting second subscriber gets `{:error, :subscriber_conflict}`).
+  Delivers `{:arcadic_change, %Arcadic.Changes.Event{}}` to the subscriber pid. See
+  Change events below for the reliability contract.
 
 ## Bulk loading
 
@@ -253,6 +287,136 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `command_bookmarked/4`) target the primary host and do **not** participate in
   failover (the bookmark is host-relative); point `base_url` at a load balancer,
   or use non-bookmarked `query/4`/`command/4` when you need failover.
+
+## Server-side programmability: functions, triggers & materialized views
+
+`Arcadic.Function` (`DEFINE FUNCTION`/`DELETE FUNCTION`) and `Arcadic.Trigger`
+(`CREATE TRIGGER`/`DROP TRIGGER`) both embed a caller body as a `"..."` DDL
+string literal. **That literal has no escape** — ArcadeDB parse-errors on a
+literal double-quote, a backslash, or a newline inside it — so the body must be
+a **single line, single-quoted** (i.e. use `'...'` for any string literal
+inside the body, never `"..."`). This is a substrate limit, not something
+arcadic could lift: ArcadeDB's own end-to-end tests use only single-line,
+single-quoted-JS bodies. A body that needs a double quote, a backslash, or a
+newline is rejected value-free as `{:error, :unencodable_body}` before any wire
+call — restructure it (e.g. drop the newline, single-quote your JS strings)
+rather than trying to escape it.
+
+```elixir
+:ok = Arcadic.Function.define(conn, "math.sum", "return a + b;", [:a, :b])
+
+:ok =
+  Arcadic.Trigger.create(conn, "logCreate", "User",
+    timing: :after,
+    event: :create,
+    execute: {:javascript, "print('user created: ' + record.name);"}
+  )
+```
+
+`Arcadic.MaterializedView.create/3` is different: its `select_sql` is raw
+trailing SQL, not a quoted DDL literal, so a `'single-quoted string'` inside a
+`WHERE` clause is ordinary SQL and passes through unmodified — injection safety
+instead rests on ArcadeDB's single-statement backstop (a `;`-separated second
+statement is a parse error).
+
+```elixir
+:ok = Arcadic.MaterializedView.create(conn, "activeUsers", "SELECT FROM User WHERE active = true")
+```
+
+`Arcadic.Trigger.drop/2` and `Arcadic.MaterializedView.drop/2` take **no `IF
+EXISTS`** (probe-confirmed) — dropping a name that doesn't exist is a server
+error, unlike `Arcadic.Function.delete/2` (idempotent server-side) or
+`Arcadic.Geo`'s index drop.
+
+## Change events (`Arcadic.Changes`)
+
+`Arcadic.Changes` is arcadic's one **caller-supervised** process — start it
+under your own supervision tree (`start_link/1`, opts `:conn`/`:name`/
+`:max_buffer`), then `subscribe/3` a database. It presents `conn.auth` on the
+`/ws` handshake and pushes each change to a single subscriber pid as
+`{:arcadic_change, %Arcadic.Changes.Event{}}`.
+
+**Reliability contract: best-effort at-most-once, stated plainly.** ArcadeDB's
+`/ws` feed has no replay and no checkpoint. On every reconnect (dropped socket,
+re-established) the process delivers a `change_type: :reconnected` marker
+*before* re-subscribing — any events that occurred during the gap are gone.
+On buffer overflow (`:max_buffer`, default 1000 — a slow subscriber) it drops
+the **oldest** buffered events and delivers one `change_type: :overflow`
+marker (`database: nil`, since the drop can span the whole subscription).
+**Receiving either marker is not optional to handle** — it obligates the
+subscriber to reconcile the affected database against current state, because
+the feed is a change *hint*, not a durable log. A terminal 401 on the
+(re)handshake (auth expiry or credential rotation) is delivered as a distinct
+`{:arcadic_change_error, :unauthorized}` message and then **stops the process**
+— it is terminal, not reconnected (the caller must re-establish with fresh
+credentials). A subscribe with a different `:subscriber` than the one already
+bound is rejected `{:error, :subscriber_conflict}`; the bound subscriber's exit
+stops the process.
+
+```elixir
+{:ok, pid} = Arcadic.Changes.start_link(conn: conn)
+:ok = Arcadic.Changes.subscribe(pid, "mydb", change_types: [:create, :update])
+
+receive do
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :reconnected}} ->
+    # reconcile — events during the gap are lost, not replayed
+    :ok
+
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :overflow}} ->
+    # reconcile — this subscriber fell behind and the oldest events were dropped
+    :ok
+
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :create, record: record}} ->
+    handle_create(record)
+
+  {:arcadic_change, %Arcadic.Changes.Event{change_type: :update, record: record}} ->
+    handle_update(record)
+
+  {:arcadic_change_error, :unauthorized} ->
+    # terminal — the process has stopped; re-establish with fresh credentials
+    :stopped
+end
+```
+
+The WebSocket client rides the **optional** `mint_web_socket` dependency —
+`start_link/1` returns `{:error, :mint_web_socket_not_available}` at runtime
+if it isn't in your deps (the module itself always compiles).
+
+## Geospatial indexing & functions
+
+`Arcadic.Geo.create_index/4` creates a `GEOSPATIAL` index over a **string
+property holding WKT** (`"POINT (x y)"`, `"LINESTRING (...)"`, etc.) — this
+ArcadeDB build has no native `POINT` schema type, so geospatial data is stored
+as WKT text and indexed as such. Querying rides ordinary `query/4`/`command/4`;
+`Arcadic.Geo` has no query builder (a query template is a charter non-goal).
+
+Function names verified against the ArcadeDB engine source
+(`engine/.../function/{geo,sql/geo}/`) and, for the constructor/distance set,
+live-confirmed callable:
+
+- **Live-confirmed callable** (bare names): `point`, `linestring`, `polygon`,
+  `rectangle`, `circle`, `distance`. In Cypher (arcadic's default language),
+  `point(x, y)` and `point({longitude:, latitude:})`/`point({x:, y:})` build a
+  point map; `distance(p1, p2)` returns great-circle metres for WGS-84 points
+  (Haversine) or Euclidean distance for Cartesian ones. `linestring`/`polygon`/
+  `circle`/`rectangle` build WKT strings.
+- **Source-registered, not independently live-tested this slice** — the
+  `geo.*`-namespaced predicate family: `geo.contains`, `geo.crosses`,
+  `geo.disjoint`, `geo.dWithin`, `geo.equals`, `geo.intersects`, `geo.overlaps`,
+  `geo.touches`, `geo.within`. These have no bare alias (unlike `point`/
+  `linestring`/`polygon`/`circle`/`rectangle`/`distance`, which are registered
+  under both a `geo.`-namespaced primary name and a bare backward-compatibility
+  alias) — verify live before depending on one in production.
+
+```elixir
+:ok = Arcadic.Geo.create_index(conn, "Place", "wkt")
+
+Arcadic.command!(conn, "CREATE (p:Place {wkt: $wkt})", %{"wkt" => "POINT (-122.4 37.8)"})
+
+# distance(p1, p2) rides ordinary query/4 — no arcadic query builder
+{:ok, [%{"d" => meters}]} =
+  Arcadic.query(conn, "RETURN distance(point(-122.4, 37.8), point(-122.0, 37.3)) AS d")
+```
 
 ## Non-negotiable rules
 
@@ -347,7 +511,13 @@ surface); `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`
 password); and, from `Arcadic.Bulk.ingest/3`, `{:error, :invalid_record}` (a
 record that fails to encode), `{:error, :not_supported}` (the transport has no
 batch endpoint, e.g. Bolt), and `{:error, :unexpected_response}` (a non-map 2xx
-body — off-contract).
+body — off-contract). `Arcadic.Function.define/5` / `Arcadic.Trigger.create/4`
+return `{:error, :unencodable_body}` for a body ArcadeDB's `"..."` DDL literal
+cannot hold (a literal `"`, a backslash, or a newline). `Arcadic.Changes`
+returns `{:error, :mint_web_socket_not_available}` from `start_link/1` (the
+optional `mint_web_socket` dependency is absent) and `{:error,
+:subscriber_conflict}` from `subscribe/3` (a second subscriber pid on an
+already-bound process).
 
 ## Telemetry
 
