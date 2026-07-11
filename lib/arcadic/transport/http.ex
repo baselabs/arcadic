@@ -645,7 +645,18 @@ defmodule Arcadic.Transport.HTTP do
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-    handle_status_only(Req.post(req_opts))
+    # The /ts write contract is 204 exactly. Any OTHER 2xx is off-contract (fail closed, F8) —
+    # handle_status_only's blanket 2xx→:ok must not admit it; its non-2xx/fault arms still apply.
+    case Req.post(req_opts) do
+      {:ok, %Req.Response{status: 204}} ->
+        :ok
+
+      {:ok, %Req.Response{status: status}} when status in 200..299 ->
+        {:error, %Error{reason: :unexpected_response, message: "off-contract ts write response"}}
+
+      other ->
+        handle_status_only(other)
+    end
   end
 
   # The FACADE validates :precision; encode here anyway (URI.encode_query, the batch_query/1
@@ -667,24 +678,51 @@ defmodule Arcadic.Transport.HTTP do
   end
 
   # The query endpoint answers one of two shapes; atomize the KNOWN keys, fail closed otherwise.
-  defp shape_ts_query(%{"rows" => rows} = b) when is_list(rows) do
-    {:ok, %{columns: Map.get(b, "columns", []), rows: rows, count: Map.get(b, "count", 0)}}
+  # The envelope keys are REQUIRED (pattern-matched, F9) — fabricating columns/count defaults
+  # would dress an off-contract body up as a valid empty result.
+  defp shape_ts_query(%{"rows" => rows, "columns" => columns, "count" => count})
+       when is_list(rows) do
+    {:ok, %{columns: columns, rows: rows, count: count}}
   end
 
-  defp shape_ts_query(%{"buckets" => buckets} = b) when is_list(buckets) do
-    {:ok,
-     %{
-       aggregations: Map.get(b, "aggregations", []),
-       buckets:
-         Enum.map(buckets, fn bk ->
-           %{timestamp: Map.get(bk, "timestamp"), values: Map.get(bk, "values", [])}
-         end),
-       count: Map.get(b, "count", 0)
-     }}
+  defp shape_ts_query(%{"buckets" => buckets, "aggregations" => aggregations, "count" => count})
+       when is_list(buckets) do
+    case shape_buckets(buckets) do
+      {:ok, shaped} ->
+        {:ok, %{aggregations: aggregations, buckets: shaped, count: count}}
+
+      :error ->
+        off_contract_ts_query()
+    end
   end
 
-  defp shape_ts_query(_b),
+  defp shape_ts_query(_b), do: off_contract_ts_query()
+
+  defp off_contract_ts_query,
     do: {:error, %Error{reason: :unexpected_response, message: "off-contract ts query body"}}
+
+  # A non-map bucket (or non-list values) fails the WHOLE response closed, value-free — a bare
+  # Map.get would raise BadMapError echoing raw peer data (F10, Rule 3).
+  defp shape_buckets(buckets) do
+    buckets
+    |> Enum.reduce_while({:ok, []}, fn
+      %{} = bk, {:ok, acc} ->
+        values = Map.get(bk, "values", [])
+
+        if is_list(values) do
+          {:cont, {:ok, [%{timestamp: Map.get(bk, "timestamp"), values: values} | acc]}}
+        else
+          {:halt, :error}
+        end
+
+      _bk, _acc ->
+        {:halt, :error}
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      :error -> :error
+    end
+  end
 
   # unwrap_body's 2xx clause returns {:ok, body}; error paths pass through. This helper exists so
   # the non-2xx/fault arms of ts_query/ts_latest reuse unwrap_body WITHOUT admitting its 2xx
@@ -698,9 +736,12 @@ defmodule Arcadic.Transport.HTTP do
   def ts_latest(%Conn{} = conn, params, opts) do
     path = "/api/v1/ts/#{conn.database}/latest?" <> URI.encode_query(params)
 
+    # The "latest" key is REQUIRED (F9) — the live server sends "latest": null for an empty type
+    # (on-contract; normalize to []). A 2xx map WITHOUT the key is off-contract → drop_ok path.
     case raw_get(conn, path, opts) do
-      {:ok, %Req.Response{status: status, body: b}} when status in 200..299 and is_map(b) ->
-        {:ok, %{columns: Map.get(b, "columns", []), latest: Map.get(b, "latest", [])}}
+      {:ok, %Req.Response{status: status, body: %{"latest" => latest} = b}}
+      when status in 200..299 ->
+        {:ok, %{columns: Map.get(b, "columns", []), latest: latest || []}}
 
       other ->
         other |> unwrap_body() |> drop_ok()
@@ -720,10 +761,12 @@ defmodule Arcadic.Transport.HTTP do
     qs = if params == [], do: "", else: "?" <> URI.encode_query(params)
     path = "/api/v1/ts/#{conn.database}/prom/api/v1/#{suffix}" <> qs
 
+    # The success arm REQUIRES the "data" key (F9) — a keyless success envelope is off-contract
+    # and falls through to the drop_ok fail-closed path, never a fabricated %{}.
     case raw_get(conn, path, opts) do
-      {:ok, %Req.Response{status: status, body: %{"status" => "success"} = b}}
+      {:ok, %Req.Response{status: status, body: %{"status" => "success", "data" => data}}}
       when status in 200..299 ->
-        {:ok, Map.get(b, "data", %{})}
+        {:ok, data}
 
       {:ok, %Req.Response{status: status, body: %{"status" => "error"} = b}} ->
         {:error,

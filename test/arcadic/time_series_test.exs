@@ -50,6 +50,15 @@ defmodule Arcadic.TimeSeriesTest do
       assert {:error, %Error{http_status: 400}} = HTTP.ts_write(conn(), "cpu v=1.0", [])
     end
 
+    test "a 2xx OTHER than the contract 204 is :unexpected_response (a 200-JSON write ack is off-contract)" do
+      Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"result" => "ok"}) end)
+
+      assert {:error, %Error{reason: :unexpected_response} = err} =
+               HTTP.ts_write(conn(), "cpu v=1.0", [])
+
+      assert Exception.message(err) == "off-contract ts write response"
+    end
+
     test "a transport fault surfaces %Arcadic.TransportError{}" do
       Req.Test.stub(__MODULE__, fn c -> Req.Test.transport_error(c, :econnrefused) end)
 
@@ -90,6 +99,56 @@ defmodule Arcadic.TimeSeriesTest do
       assert {:ok,
               %{aggregations: ["v_avg"], buckets: [%{timestamp: 100, values: [9.5]}], count: 1}} =
                HTTP.ts_query(conn(), %{"type" => "cpu"}, [])
+    end
+
+    test "a rows body missing the count key is :unexpected_response (no fabricated defaults)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "columns" => ["ts"], "rows" => [[1]]})
+      end)
+
+      assert {:error, %Error{reason: :unexpected_response}} =
+               HTTP.ts_query(conn(), %{"type" => "cpu"}, [])
+    end
+
+    test "a buckets body missing aggregations/count is :unexpected_response (no fabricated defaults)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "buckets" => []})
+      end)
+
+      assert {:error, %Error{reason: :unexpected_response}} =
+               HTTP.ts_query(conn(), %{"type" => "cpu"}, [])
+    end
+
+    test "a NON-MAP bucket element fails the whole response closed, value-free (no BadMapError echoing peer data)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{
+          "type" => "cpu",
+          "aggregations" => ["v_avg"],
+          "buckets" => ["PEER_SENTINEL_ROW"],
+          "count" => 1
+        })
+      end)
+
+      assert {:error, %Error{reason: :unexpected_response} = err} =
+               HTTP.ts_query(conn(), %{"type" => "cpu"}, [])
+
+      refute Exception.message(err) =~ "PEER_SENTINEL_ROW"
+    end
+
+    test "a bucket whose values is NOT a list fails the whole response closed" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{
+          "type" => "cpu",
+          "aggregations" => ["v_avg"],
+          "buckets" => [%{"timestamp" => 1, "values" => "PEER_SENTINEL"}],
+          "count" => 1
+        })
+      end)
+
+      assert {:error, %Error{reason: :unexpected_response} = err} =
+               HTTP.ts_query(conn(), %{"type" => "cpu"}, [])
+
+      refute Exception.message(err) =~ "PEER_SENTINEL"
     end
 
     test "a 2xx body missing BOTH rows and buckets is :unexpected_response (off-contract, fail closed)" do
@@ -133,6 +192,24 @@ defmodule Arcadic.TimeSeriesTest do
 
     test "a 2xx non-map body is :unexpected_response (off-contract, fail closed)" do
       Req.Test.stub(__MODULE__, fn c -> Plug.Conn.send_resp(c, 200, "not json") end)
+
+      assert {:error, %Error{reason: :unexpected_response}} =
+               HTTP.ts_latest(conn(), [{"type", "cpu"}], [])
+    end
+
+    test "\"latest\": null normalizes to [] (the live server's on-contract empty-type answer)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "columns" => ["ts", "v"], "latest" => nil})
+      end)
+
+      assert {:ok, %{columns: ["ts", "v"], latest: []}} =
+               HTTP.ts_latest(conn(), [{"type", "cpu"}], [])
+    end
+
+    test "a 2xx map MISSING the latest key is :unexpected_response (no fabricated default)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "columns" => ["ts", "v"]})
+      end)
 
       assert {:error, %Error{reason: :unexpected_response}} =
                HTTP.ts_latest(conn(), [{"type", "cpu"}], [])
@@ -209,6 +286,13 @@ defmodule Arcadic.TimeSeriesTest do
 
     test "a malformed 2xx body missing the status envelope is :unexpected_response (fail closed)" do
       Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"data" => []}) end)
+
+      assert {:error, %Error{reason: :unexpected_response}} =
+               HTTP.ts_prom_get(conn(), :labels, [], [])
+    end
+
+    test "a success envelope MISSING the data key is :unexpected_response (no fabricated %{} default)" do
+      Req.Test.stub(__MODULE__, fn c -> Req.Test.json(c, %{"status" => "success"}) end)
 
       assert {:error, %Error{reason: :unexpected_response}} =
                HTTP.ts_prom_get(conn(), :labels, [], [])
