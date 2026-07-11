@@ -633,6 +633,88 @@ defmodule Arcadic.TimeSeriesTest do
                TimeSeries.write(bolt_conn, [%{type: "a", fields: %{"v" => 1}}])
     end
 
+    test "write_lines/3 rejects deep-invalid iodata value-free (would crash inside the HTTP client with the batch in the blame)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write_lines(conn(), ["m,t=x v=1.0 SENTINEL_LINE", :SENTINEL_ATOM])
+        end
+
+      assert err.message == "lines must be valid iodata"
+      refute Exception.message(err) =~ "SENTINEL_LINE"
+      refute Exception.message(err) =~ "SENTINEL_ATOM"
+
+      err2 = assert_raise ArgumentError, fn -> TimeSeries.write_lines(conn(), ["line", nil]) end
+      assert err2.message == "lines must be valid iodata"
+
+      err3 = assert_raise ArgumentError, fn -> TimeSeries.write_lines(conn(), [999_999]) end
+      assert err3.message == "lines must be valid iodata"
+
+      # An improper list ([elem | :tail]) also fails the iodata probe — the F3 class for this entry.
+      err4 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write_lines(conn(), ["m v=1" | :SENTINEL_TAIL])
+        end
+
+      assert err4.message == "lines must be valid iodata"
+      refute Exception.message(err4) =~ "SENTINEL_TAIL"
+    end
+
+    test "write_lines/3 empty-EQUIVALENT iodata short-circuits without hitting the wire" do
+      Req.Test.stub(__MODULE__, fn _c -> flunk("no wire call expected") end)
+      assert :ok = TimeSeries.write_lines(conn(), [""])
+      assert :ok = TimeSeries.write_lines(conn(), [[]])
+    end
+
+    test "improper lists are rejected value-free at every list-walking public entry (F3)" do
+      # create_type :fields (normalize_columns!/1)
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.create_type(conn(), "cpu", "ts", fields: [{:v, "DOUBLE"} | :SENTINEL_TAIL])
+        end
+
+      assert err.message == "columns must be a proper list"
+      refute Exception.message(err) =~ "SENTINEL_TAIL"
+
+      # write points walk (build_lines/2)
+      err2 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => 1}} | :SENTINEL_TAIL])
+        end
+
+      assert err2.message == "points must be a proper list"
+      refute Exception.message(err2) =~ "SENTINEL_TAIL"
+
+      # query :fields (query_fields/1)
+      err3 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.query(conn(), "cpu", fields: ["a" | :SENTINEL_TAIL])
+        end
+
+      assert err3.message == "fields must be a proper list"
+      refute Exception.message(err3) =~ "SENTINEL_TAIL"
+
+      # query :aggregation (aggregation_object/2 requests walk)
+      err4 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.query(conn(), "cpu",
+            aggregation: [%{field: "u", type: :avg} | :SENTINEL_TAIL],
+            bucket_interval: 1
+          )
+        end
+
+      assert err4.message == "aggregation must be a proper list"
+      refute Exception.message(err4) =~ "SENTINEL_TAIL"
+
+      # prom_series :matches (Enum.all? walk)
+      err5 =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.prom_series(conn(), ["cpu" | :SENTINEL_TAIL])
+        end
+
+      assert err5.message == "matches must be a proper list"
+      refute Exception.message(err5) =~ "SENTINEL_TAIL"
+    end
+
     test "write_lines/3 passes raw lines through; non-binary/iodata raises value-free" do
       expected = stub_write("raw,t=1 v=1 9")
       assert :ok = TimeSeries.write_lines(conn(), "raw,t=1 v=1 9")

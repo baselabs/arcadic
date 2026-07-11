@@ -230,6 +230,7 @@ defmodule Arcadic.TimeSeries do
       raise ArgumentError, "points must be a list of point maps"
     end
 
+    assert_proper_list!(points, "points")
     Opts.validate_keys!(opts, @write_opts)
     wire_precision = wire_precision!(opts)
     ts_unit = Map.fetch!(@precision_units, opts[:precision] || :ns)
@@ -255,8 +256,20 @@ defmodule Arcadic.TimeSeries do
       raise ArgumentError, "lines must be a binary or iodata"
     end
 
+    # Deep validation at the facade: a shallowly-list-shaped but INVALID iodata term would
+    # otherwise crash inside the HTTP client's own :erlang.iolist_size with the ENTIRE batch
+    # (caller PII) echoed in the blame (Rule 3). The computed size doubles as the
+    # empty-equivalent short-circuit ([""], [[]] never hit the wire, like [] and "").
+    size =
+      try do
+        :erlang.iolist_size(lines)
+      rescue
+        ArgumentError -> raise ArgumentError, "lines must be valid iodata"
+      end
+
     Opts.validate_keys!(opts, @write_opts)
 
+    lines = if size == 0, do: "", else: lines
     dispatch_write(conn, :write_lines, nil, lines, wire_precision!(opts), opts)
   end
 
@@ -429,7 +442,14 @@ defmodule Arcadic.TimeSeries do
   def prom_series(%Conn{} = conn, matches, opts \\ []) do
     Opts.validate_keys!(opts, @timeout_only)
 
-    unless is_list(matches) and Enum.all?(matches, &(is_binary(&1) and &1 != "")) do
+    unless is_list(matches) do
+      raise ArgumentError, "matches must be a list of non-empty selector strings"
+    end
+
+    # Properness BEFORE the Enum.all? walk (an improper tail would crash it, echoing the tail).
+    assert_proper_list!(matches, "matches")
+
+    unless Enum.all?(matches, &(is_binary(&1) and &1 != "")) do
       raise ArgumentError, "matches must be a list of non-empty selector strings"
     end
 
@@ -455,6 +475,8 @@ defmodule Arcadic.TimeSeries do
   defp optional_columns!(cols), do: normalize_columns!(cols)
 
   defp normalize_columns!(cols) when is_list(cols) do
+    assert_proper_list!(cols, "columns")
+
     Enum.map(cols, fn
       {k, v} when (is_atom(k) or is_binary(k)) and is_binary(v) -> {to_string(k), v}
       _ -> raise ArgumentError, "columns must be {name, type} pairs with a string type"
@@ -463,6 +485,16 @@ defmodule Arcadic.TimeSeries do
 
   defp normalize_columns!(_),
     do: raise(ArgumentError, "columns must be a list of {name, type} pairs")
+
+  # An improper list ([elem | :tail]) satisfies is_list/1 but crashes any Enum walk with a
+  # FunctionClauseError whose blame echoes the tail (Rule 3 — the list may carry PII).
+  # length/1 probes properness value-free; `role` is always a static string, never the value.
+  defp assert_proper_list!(list, role) do
+    _ = length(list)
+    :ok
+  rescue
+    ArgumentError -> raise ArgumentError, "#{role} must be a proper list"
+  end
 
   # Validates every column name (identifier) and its TYPE token (positive allowlist — the token
   # is interpolated into DDL; an off-list token raises value-free, never echoing the input).
@@ -805,8 +837,10 @@ defmodule Arcadic.TimeSeries do
 
   # No `with` wrapper: validate_idents/1 already returns the exact {:ok, list} | {:error, _}
   # shape (a redundant `with` fails credo --strict Refactor.RedundantWithClauseResult).
-  defp query_fields(fields) when is_list(fields),
-    do: validate_idents(Enum.map(fields, &name_string!/1))
+  defp query_fields(fields) when is_list(fields) do
+    assert_proper_list!(fields, "fields")
+    validate_idents(Enum.map(fields, &name_string!/1))
+  end
 
   defp query_fields(_), do: raise(ArgumentError, "fields must be a list of column names")
 
@@ -852,6 +886,7 @@ defmodule Arcadic.TimeSeries do
     do: raise(ArgumentError, "bucket_interval requires :aggregation")
 
   defp aggregation_object(requests, interval) when is_list(requests) and requests != [] do
+    assert_proper_list!(requests, "aggregation")
     ms = bucket_interval_ms!(interval)
 
     requests
