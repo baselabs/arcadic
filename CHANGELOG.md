@@ -43,8 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at-most-once**: the feed has no replay, so a reconnect delivers a `:reconnected`
   marker (events during the gap are lost) and a full delivery buffer delivers one
   `:overflow` marker after dropping the oldest events — either marker means the
-  subscriber should reconcile. Requires the optional `mint_web_socket` dependency;
-  `start_link/1` returns `{:error, :mint_web_socket_not_available}` without it.
+  subscriber should reconcile. A terminal `401`/`403` handshake failure delivers
+  `{:arcadic_change_error, :unauthorized}` (then stops, no reconnect spin); a
+  server-rejected subscribe delivers a non-terminal
+  `{:arcadic_change_error, :subscribe_rejected}`. Requires the optional
+  `mint_web_socket` dependency; `start_link/1` returns
+  `{:error, :mint_web_socket_not_available}` without it, and validates the `:conn`
+  value-free (`:invalid_auth` / `:invalid_url_scheme` / `:invalid_max_buffer` —
+  an unrecognized URL scheme is refused, never downgraded to plaintext).
 - `Arcadic.Function` — `define/5` / `delete/2` (+ `!`) for ArcadeDB user-defined
   functions (`DEFINE FUNCTION` / `DELETE FUNCTION`). A function name is a dotted
   `library.fn`; the body is a single-line, single-quoted literal (ArcadeDB's DDL

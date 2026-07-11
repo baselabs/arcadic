@@ -345,13 +345,22 @@ the **oldest** buffered events and delivers one `change_type: :overflow`
 marker (`database: nil`, since the drop can span the whole subscription).
 **Receiving either marker is not optional to handle** — it obligates the
 subscriber to reconcile the affected database against current state, because
-the feed is a change *hint*, not a durable log. A terminal 401 on the
-(re)handshake (auth expiry or credential rotation) is delivered as a distinct
-`{:arcadic_change_error, :unauthorized}` message and then **stops the process**
-— it is terminal, not reconnected (the caller must re-establish with fresh
-credentials). A subscribe with a different `:subscriber` than the one already
-bound is rejected `{:error, :subscriber_conflict}`; the bound subscriber's exit
-stops the process.
+the feed is a change *hint*, not a durable log. A terminal `401`/`403` on the
+(re)handshake (auth expiry, credential rotation, or a forbidden principal) is
+delivered as a distinct `{:arcadic_change_error, :unauthorized}` message and then
+**stops the process** — it is terminal, not reconnected (the caller must
+re-establish with fresh credentials). A server-side rejection of a
+subscribe/unsubscribe (an error frame) arrives as a non-terminal
+`{:arcadic_change_error, :subscribe_rejected}` (the socket stays open; the
+server's error text is never forwarded). A subscribe with a different
+`:subscriber` than the one already bound is rejected
+`{:error, :subscriber_conflict}`; the bound subscriber's exit stops the process.
+`start_link/1` also rejects a malformed `:conn` value-free
+(`:invalid_auth` / `:invalid_url_scheme` / `:invalid_max_buffer`) — notably an
+unrecognized URL scheme is refused rather than silently downgraded to plaintext.
+The buffer bounds arcadic's own memory (a slow subscriber never wedges the
+server); it does not bound the subscriber's mailbox — a persistently slow
+consumer must reconcile on the markers and shed load itself.
 
 ```elixir
 {:ok, pid} = Arcadic.Changes.start_link(conn: conn)
