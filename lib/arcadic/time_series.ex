@@ -325,6 +325,122 @@ defmodule Arcadic.TimeSeries do
   @spec latest!(Conn.t(), String.t(), keyword()) :: map()
   def latest!(%Conn{} = conn, type, opts \\ []), do: bang(latest(conn, type, opts))
 
+  @prom_opts [:time, :timeout]
+  @timeout_only [:timeout]
+  # The Prometheus label-name grammar (a leading underscore is legal — `__name__` is the
+  # canonical metric label; `Arcadic.Identifier` would reject it). URL-path-safe by construction;
+  # the transport additionally URL-encodes the path segment.
+  @prom_label_re ~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/
+
+  @doc """
+  PromQL instant query (`GET …/prom/api/v1/query`). The PromQL text rides as a URL-encoded query
+  value (data, not statement text). `opts`: `:time` (epoch-seconds integer or `DateTime`),
+  `:timeout`. Returns the decoded Prometheus `data` object (`%{"resultType" => …, "result" => …}`).
+  The metric name is the TIMESERIES type name; tags are labels.
+  """
+  @spec prom_query(Conn.t(), String.t(), keyword()) ::
+          {:ok, map() | list()} | {:error, atom() | Exception.t()}
+  def prom_query(%Conn{} = conn, promql, opts \\ []) do
+    Opts.validate_keys!(opts, @prom_opts)
+    params = [{"query", promql!(promql)}] ++ time_param(opts[:time])
+    prom_get(conn, :query, :prom_query, params, opts)
+  end
+
+  @doc "PromQL instant query, returning the data or raising."
+  @spec prom_query!(Conn.t(), String.t(), keyword()) :: map() | list()
+  def prom_query!(%Conn{} = conn, promql, opts \\ []), do: bang(prom_query(conn, promql, opts))
+
+  @doc """
+  PromQL range query (`GET …/prom/api/v1/query_range`). `from`/`to` are epoch-seconds integers or
+  `DateTime`s; `step` is an integer (seconds) or a Prometheus duration string (`"1m"`).
+  """
+  @spec prom_query_range(
+          Conn.t(),
+          String.t(),
+          integer() | DateTime.t(),
+          integer() | DateTime.t(),
+          integer() | String.t(),
+          keyword()
+        ) :: {:ok, map() | list()} | {:error, atom() | Exception.t()}
+  def prom_query_range(%Conn{} = conn, promql, from, to, step, opts \\ []) do
+    Opts.validate_keys!(opts, @timeout_only)
+
+    params = [
+      {"query", promql!(promql)},
+      {"start", epoch_s!(from, :from)},
+      {"end", epoch_s!(to, :to)},
+      {"step", step!(step)}
+    ]
+
+    prom_get(conn, :query_range, :prom_query_range, params, opts)
+  end
+
+  @doc "PromQL range query, returning the data or raising."
+  @spec prom_query_range!(
+          Conn.t(),
+          String.t(),
+          integer() | DateTime.t(),
+          integer() | DateTime.t(),
+          integer() | String.t(),
+          keyword()
+        ) :: map() | list()
+  def prom_query_range!(%Conn{} = conn, promql, from, to, step, opts \\ []),
+    do: bang(prom_query_range(conn, promql, from, to, step, opts))
+
+  @doc "Label names (`GET …/prom/api/v1/labels`)."
+  @spec prom_labels(Conn.t(), keyword()) :: {:ok, list()} | {:error, atom() | Exception.t()}
+  def prom_labels(%Conn{} = conn, opts \\ []) do
+    Opts.validate_keys!(opts, @timeout_only)
+    prom_get(conn, :labels, :prom_labels, [], opts)
+  end
+
+  @doc "Label names, returning the list or raising."
+  @spec prom_labels!(Conn.t(), keyword()) :: list()
+  def prom_labels!(%Conn{} = conn, opts \\ []), do: bang(prom_labels(conn, opts))
+
+  @doc """
+  Values of one label (`GET …/prom/api/v1/label/<label>/values`). The label must match the
+  Prometheus label grammar (`[a-zA-Z_][a-zA-Z0-9_]*` — `__name__` is legal).
+  """
+  @spec prom_label_values(Conn.t(), String.t(), keyword()) ::
+          {:ok, list()} | {:error, atom() | Exception.t()}
+  def prom_label_values(%Conn{} = conn, label, opts \\ []) do
+    Opts.validate_keys!(opts, @timeout_only)
+
+    unless is_binary(label) and Regex.match?(@prom_label_re, label) do
+      raise ArgumentError, "label must match the Prometheus label grammar"
+    end
+
+    prom_get(conn, {:label_values, label}, :prom_label_values, [], opts)
+  end
+
+  @doc "Values of one label, returning the list or raising."
+  @spec prom_label_values!(Conn.t(), String.t(), keyword()) :: list()
+  def prom_label_values!(%Conn{} = conn, label, opts \\ []),
+    do: bang(prom_label_values(conn, label, opts))
+
+  @doc """
+  Series matching the given selectors (`GET …/prom/api/v1/series`, repeated `match[]` params).
+  `matches` is a list of non-empty selector strings (the LIST may be empty — the server answers
+  an unfiltered call — but an empty-string entry is a meaningless selector and rejects).
+  """
+  @spec prom_series(Conn.t(), [String.t()], keyword()) ::
+          {:ok, list()} | {:error, atom() | Exception.t()}
+  def prom_series(%Conn{} = conn, matches, opts \\ []) do
+    Opts.validate_keys!(opts, @timeout_only)
+
+    unless is_list(matches) and Enum.all?(matches, &(is_binary(&1) and &1 != "")) do
+      raise ArgumentError, "matches must be a list of non-empty selector strings"
+    end
+
+    prom_get(conn, :series, :prom_series, Enum.map(matches, &{"match[]", &1}), opts)
+  end
+
+  @doc "Series matching the selectors, returning the list or raising."
+  @spec prom_series!(Conn.t(), [String.t()], keyword()) :: list()
+  def prom_series!(%Conn{} = conn, matches, opts \\ []),
+    do: bang(prom_series(conn, matches, opts))
+
   # --- private: DDL assembly ---
 
   # :fields must be present and non-empty; :tags may be absent. Both normalize to
@@ -642,8 +758,8 @@ defmodule Arcadic.TimeSeries do
   defp read_stop_meta({:ok, %{count: count}}) when is_integer(count),
     do: %{reason: :ok, row_count: count}
 
-  # The list clause is unreachable from ts_query/ts_latest (map successes) — it is staged for
-  # T6's prom_* reads, whose data envelopes unwrap to lists. Consumed by T6; do not prune.
+  # The list clause is unreachable from ts_query/ts_latest (map successes); the prom_* reads
+  # (T6), whose data envelopes unwrap to lists, land here (span-asserted in the unit suite).
   defp read_stop_meta({:ok, list}) when is_list(list), do: %{reason: :ok, row_count: length(list)}
   defp read_stop_meta({:ok, _}), do: %{reason: :ok}
   defp read_stop_meta({:error, %{reason: reason}}) when is_atom(reason), do: %{reason: reason}
@@ -843,6 +959,44 @@ defmodule Arcadic.TimeSeries do
 
   defp latest_tag_params(_),
     do: raise(ArgumentError, "tag must be a {key, value} tuple")
+
+  # --- private: prom path ---
+
+  defp prom_get(conn, wire_op, span_op, params, opts) do
+    dispatch_read(
+      conn,
+      :ts_prom_get,
+      span_op,
+      fn transport ->
+        transport.ts_prom_get(conn, wire_op, params, Keyword.take(opts, [:timeout]))
+      end,
+      4
+    )
+  end
+
+  # An empty PromQL text is never a valid query — reject client-side (static, value-free),
+  # consistent with the module's empty-string rules (tag values, DDL columns).
+  defp promql!(""), do: raise(ArgumentError, "the PromQL query must be a non-empty string")
+  defp promql!(q) when is_binary(q), do: q
+  defp promql!(_), do: raise(ArgumentError, "the PromQL query must be a string")
+
+  defp time_param(nil), do: []
+  defp time_param(t), do: [{"time", epoch_s!(t, :time)}]
+
+  defp epoch_s!(s, _label) when is_integer(s), do: Integer.to_string(s)
+
+  defp epoch_s!(%DateTime{} = dt, _label),
+    do: dt |> DateTime.to_unix(:second) |> Integer.to_string()
+
+  defp epoch_s!(_, label),
+    do: raise(ArgumentError, "#{label} must be an epoch-seconds integer or DateTime")
+
+  # Integers validate fully client-side; duration STRINGS only reject the empty case (static) —
+  # the server owns the duration grammar, so no client-side parse beyond non-emptiness.
+  defp step!(s) when is_integer(s) and s > 0, do: Integer.to_string(s)
+  defp step!(""), do: raise(ArgumentError, "step must be a non-empty duration string")
+  defp step!(s) when is_binary(s), do: s
+  defp step!(_), do: raise(ArgumentError, "step must be a positive integer or duration string")
 
   # Shared bang: :ok passthrough; {:ok, value} unwrap (consumed by query!/latest!/prom_*! in
   # later tasks — NOT dead code); exceptions reraise; bare atoms get a static message.

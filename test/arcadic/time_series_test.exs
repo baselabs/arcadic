@@ -924,4 +924,174 @@ defmodule Arcadic.TimeSeriesTest do
       assert_received {:span_meta, %{operation: :query, mode: :read, row_count: 0}}
     end
   end
+
+  describe "promql family" do
+    alias Arcadic.TimeSeries
+
+    defp stub_prom(expected_path, expected_query, data) do
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == expected_path
+        assert URI.decode_query(c.query_string) == expected_query
+        Req.Test.json(c, %{"status" => "success", "data" => data})
+      end)
+    end
+
+    test "prom_query/3 instant with :time (int or DateTime, epoch-seconds)" do
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query",
+        %{"query" => "cpu{host=\"a\"}", "time" => "1700000000"},
+        %{"resultType" => "vector", "result" => []}
+      )
+
+      assert {:ok, %{"resultType" => "vector"}} =
+               TimeSeries.prom_query(conn(), "cpu{host=\"a\"}", time: 1_700_000_000)
+
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query",
+        %{"query" => "cpu", "time" => "1700000000"},
+        %{"resultType" => "vector", "result" => []}
+      )
+
+      assert {:ok, _} =
+               TimeSeries.prom_query(conn(), "cpu", time: DateTime.from_unix!(1_700_000_000))
+    end
+
+    test "prom_query_range/6 sends start/end/step (step: integer seconds or duration string)" do
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query_range",
+        %{"query" => "cpu", "start" => "100", "end" => "200", "step" => "60"},
+        %{"resultType" => "matrix", "result" => []}
+      )
+
+      assert {:ok, %{"resultType" => "matrix"}} =
+               TimeSeries.prom_query_range(conn(), "cpu", 100, 200, 60)
+
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query_range",
+        %{"query" => "cpu", "start" => "100", "end" => "200", "step" => "1m"},
+        %{"resultType" => "matrix", "result" => []}
+      )
+
+      assert {:ok, _} = TimeSeries.prom_query_range(conn(), "cpu", 100, 200, "1m")
+    end
+
+    test "prom_labels/2, prom_label_values/3 (Prometheus label grammar admits __name__), prom_series/3" do
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/labels", %{}, ["__name__", "host"])
+      assert {:ok, ["__name__", "host"]} = TimeSeries.prom_labels(conn())
+
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/label/__name__/values", %{}, ["cpu"])
+      assert {:ok, ["cpu"]} = TimeSeries.prom_label_values(conn(), "__name__")
+
+      assert_raise ArgumentError, ~r/label/, fn ->
+        TimeSeries.prom_label_values(conn(), "bad-label!")
+      end
+
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == "/api/v1/ts/tsdb/prom/api/v1/series"
+        assert c.query_string == "match%5B%5D=cpu&match%5B%5D=mem"
+        Req.Test.json(c, %{"status" => "success", "data" => []})
+      end)
+
+      assert {:ok, []} = TimeSeries.prom_series(conn(), ["cpu", "mem"])
+      assert_raise ArgumentError, ~r/matches/, fn -> TimeSeries.prom_series(conn(), "cpu") end
+    end
+
+    test "prom_query/3 without :time omits the time param entirely" do
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query",
+        %{"query" => "cpu"},
+        %{"resultType" => "vector", "result" => []}
+      )
+
+      assert {:ok, %{"resultType" => "vector"}} = TimeSeries.prom_query(conn(), "cpu")
+    end
+
+    test "empty PromQL, empty step string, step 0, and an empty match entry reject (static)" do
+      assert_raise ArgumentError, ~r/non-empty/, fn -> TimeSeries.prom_query(conn(), "") end
+
+      assert_raise ArgumentError, ~r/non-empty/, fn ->
+        TimeSeries.prom_query_range(conn(), "cpu", 100, 200, "")
+      end
+
+      assert_raise ArgumentError, ~r/step/, fn ->
+        TimeSeries.prom_query_range(conn(), "cpu", 100, 200, 0)
+      end
+
+      assert_raise ArgumentError, ~r/non-empty/, fn -> TimeSeries.prom_series(conn(), [""]) end
+    end
+
+    test "a non-integer/DateTime time raises value-free" do
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.prom_query(conn(), "cpu", time: 1.5)
+        end
+
+      refute Exception.message(err) =~ "1.5"
+      assert err.message =~ "epoch-seconds"
+    end
+
+    test "every prom bang unwraps through its own wire op (swapped delegation goes red)" do
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query",
+        %{"query" => "cpu", "time" => "100"},
+        %{"resultType" => "vector", "result" => []}
+      )
+
+      assert %{"resultType" => "vector"} = TimeSeries.prom_query!(conn(), "cpu", time: 100)
+
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/query_range",
+        %{"query" => "cpu", "start" => "100", "end" => "200", "step" => "60"},
+        %{"resultType" => "matrix", "result" => []}
+      )
+
+      assert %{"resultType" => "matrix"} =
+               TimeSeries.prom_query_range!(conn(), "cpu", 100, 200, 60)
+
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/label/host/values", %{}, ["a", "b"])
+      assert ["a", "b"] = TimeSeries.prom_label_values!(conn(), "host")
+
+      stub_prom(
+        "/api/v1/ts/tsdb/prom/api/v1/series",
+        %{"match[]" => "cpu"},
+        [%{"__name__" => "cpu"}]
+      )
+
+      assert [%{"__name__" => "cpu"}] = TimeSeries.prom_series!(conn(), ["cpu"])
+    end
+
+    test "prom reads emit the :timeseries read span with row_count from the list envelope" do
+      handler_id = "ts-prom-read-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:arcadic, :timeseries, :stop],
+        fn _e, _m, meta, pid -> send(pid, {:span_meta, meta}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/labels", %{}, ["__name__", "host", "region"])
+      assert {:ok, [_, _, _]} = TimeSeries.prom_labels(conn())
+      assert_received {:span_meta, %{operation: :prom_labels, mode: :read, row_count: 3}}
+    end
+
+    test "non-binary promql raises value-free; capability check; bang unwraps" do
+      err = assert_raise ArgumentError, fn -> TimeSeries.prom_query(conn(), %{secret: "q"}) end
+      refute Exception.message(err) =~ "secret"
+
+      bolt_conn =
+        Conn.new("bolt://h", "tsdb",
+          auth: {"u", "p"},
+          transport: Arcadic.Transport.Bolt,
+          transport_options: [username: "u", password: "p"]
+        )
+
+      assert {:error, %Error{reason: :not_supported}} = TimeSeries.prom_labels(bolt_conn)
+
+      stub_prom("/api/v1/ts/tsdb/prom/api/v1/labels", %{}, ["host"])
+      assert ["host"] = TimeSeries.prom_labels!(conn())
+    end
+  end
 end
