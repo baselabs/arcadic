@@ -215,6 +215,15 @@ defmodule Arcadic.TimeSeriesTest do
                HTTP.ts_latest(conn(), [{"type", "cpu"}], [])
     end
 
+    test "a 2xx map MISSING the columns key is :unexpected_response (no fabricated default)" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "latest" => [1, 2.5]})
+      end)
+
+      assert {:error, %Error{reason: :unexpected_response}} =
+               HTTP.ts_latest(conn(), [{"type", "cpu"}], [])
+    end
+
     test "a transport fault surfaces %Arcadic.TransportError{}" do
       Req.Test.stub(__MODULE__, fn c -> Req.Test.transport_error(c, :econnrefused) end)
 

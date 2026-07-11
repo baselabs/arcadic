@@ -736,12 +736,13 @@ defmodule Arcadic.Transport.HTTP do
   def ts_latest(%Conn{} = conn, params, opts) do
     path = "/api/v1/ts/#{conn.database}/latest?" <> URI.encode_query(params)
 
-    # The "latest" key is REQUIRED (F9) — the live server sends "latest": null for an empty type
-    # (on-contract; normalize to []). A 2xx map WITHOUT the key is off-contract → drop_ok path.
+    # BOTH contract keys are REQUIRED (F9 + round-2 NEW-2, no fabricated defaults) — the live
+    # server always sends "columns" (probed) and sends "latest": null for an empty type
+    # (on-contract; normalize to []). A 2xx map missing either key is off-contract → drop_ok path.
     case raw_get(conn, path, opts) do
-      {:ok, %Req.Response{status: status, body: %{"latest" => latest} = b}}
+      {:ok, %Req.Response{status: status, body: %{"latest" => latest, "columns" => columns}}}
       when status in 200..299 ->
-        {:ok, %{columns: Map.get(b, "columns", []), latest: latest || []}}
+        {:ok, %{columns: columns, latest: latest || []}}
 
       other ->
         other |> unwrap_body() |> drop_ok()
