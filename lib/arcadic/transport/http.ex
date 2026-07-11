@@ -436,15 +436,36 @@ defmodule Arcadic.Transport.HTTP do
 
   @doc false
   @spec headers(Conn.t()) :: [{String.t(), String.t()}]
-  def headers(%Conn{auth: {:bearer, token}, session_id: session_id}) do
-    base = [{"authorization", "Bearer " <> token}]
-    if session_id, do: [{"arcadedb-session-id", session_id} | base], else: base
+  def headers(%Conn{} = conn) do
+    conn
+    |> auth_headers()
+    |> maybe_session(conn.session_id)
+    |> maybe_consistency(conn)
   end
 
-  def headers(%Conn{auth: {user, pass}, session_id: session_id}) do
-    base = [{"authorization", "Basic " <> Base.encode64("#{user}:#{pass}")}]
-    if session_id, do: [{"arcadedb-session-id", session_id} | base], else: base
+  defp auth_headers(%Conn{auth: {:bearer, token}}), do: [{"authorization", "Bearer " <> token}]
+
+  defp auth_headers(%Conn{auth: {user, pass}}),
+    do: [{"authorization", "Basic " <> Base.encode64("#{user}:#{pass}")}]
+
+  defp maybe_session(headers, nil), do: headers
+  defp maybe_session(headers, sid), do: [{"arcadedb-session-id", sid} | headers]
+
+  # :eventual sends NO header (ArcadeDB's ReadConsistency.EVENTUAL == "no headers"), so a
+  # default conn is byte-identical to pre-S10. read_your_writes also sends X-ArcadeDB-Read-After
+  # when a bookmark is present (nil on single-server → omitted). Applied to BOTH auth clauses.
+  defp maybe_consistency(headers, %Conn{consistency: :eventual}), do: headers
+
+  defp maybe_consistency(headers, %Conn{consistency: level} = conn) do
+    headers = [{"x-arcadedb-read-consistency", Atom.to_string(level)} | headers]
+    maybe_read_after(headers, conn)
   end
+
+  defp maybe_read_after(headers, %Conn{consistency: :read_your_writes, read_after: idx})
+       when is_integer(idx),
+       do: [{"x-arcadedb-read-after", Integer.to_string(idx)} | headers]
+
+  defp maybe_read_after(headers, _conn), do: headers
 
   # Result handling for a query/command response.
   defp handle_result({:ok, %Req.Response{status: status, body: body}})
