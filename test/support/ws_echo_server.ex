@@ -101,7 +101,7 @@ defmodule WsEchoServer do
     :ok
   end
 
-  @doc "Push a raw `{\"result\":\"error\", ...}` frame to the live client on `port`."
+  @doc "Push a raw server error frame (a `result: error` JSON object) to the live client on `port`."
   @spec push_error(:inet.port_number(), String.t(), String.t()) :: :ok
   def push_error(port, error, detail) do
     send(await_handler!(port), {:push_error, error, detail})
