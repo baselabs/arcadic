@@ -659,4 +659,269 @@ defmodule Arcadic.TimeSeriesTest do
       assert_received {:span_meta, %{operation: :write, mode: :write, row_count: 1}}
     end
   end
+
+  describe "query/3 and latest/3" do
+    alias Arcadic.TimeSeries
+
+    defp stub_ts_query(expected_body, response) do
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == "/api/v1/ts/tsdb/query"
+        {:ok, body, _} = Plug.Conn.read_body(c)
+        assert Jason.decode!(body) == expected_body
+        Req.Test.json(c, response)
+      end)
+    end
+
+    test "raw query: from/to as epoch-ms ints or DateTime, fields, AND-tags, limit" do
+      stub_ts_query(
+        %{
+          "type" => "cpu",
+          "from" => 1_700_000_000_000,
+          "to" => 1_700_000_360_000,
+          "fields" => ["usage"],
+          "tags" => %{"host" => "a", "region" => "eu"},
+          "limit" => 10
+        },
+        %{"type" => "cpu", "columns" => ["ts", "usage"], "rows" => [[1, 2.0]], "count" => 1}
+      )
+
+      assert {:ok, %{columns: ["ts", "usage"], rows: [[1, 2.0]], count: 1}} =
+               TimeSeries.query(conn(), "cpu",
+                 from: 1_700_000_000_000,
+                 to: DateTime.from_unix!(1_700_000_360_000, :millisecond),
+                 fields: ["usage"],
+                 tags: %{"host" => "a", "region" => "eu"},
+                 limit: 10
+               )
+    end
+
+    test "aggregated query shapes {bucketInterval, requests} with UPPERCASE allowlisted types" do
+      stub_ts_query(
+        %{
+          "type" => "cpu",
+          "aggregation" => %{
+            "bucketInterval" => 3_600_000,
+            "requests" => [%{"field" => "usage", "type" => "AVG", "alias" => "au"}]
+          }
+        },
+        %{
+          "type" => "cpu",
+          "aggregations" => ["au"],
+          "buckets" => [%{"timestamp" => 1, "values" => [2.0]}],
+          "count" => 1
+        }
+      )
+
+      assert {:ok, %{aggregations: ["au"], buckets: [%{timestamp: 1, values: [2.0]}], count: 1}} =
+               TimeSeries.query(conn(), "cpu",
+                 aggregation: [%{field: "usage", type: :avg, alias: "au"}],
+                 bucket_interval: {1, :hours}
+               )
+    end
+
+    test "aggregation guards: off-allowlist type, missing bucket_interval, bad field — value-free" do
+      assert_raise ArgumentError, ~r/aggregation type/, fn ->
+        TimeSeries.query(conn(), "cpu",
+          aggregation: [%{field: "u", type: :stddev}],
+          bucket_interval: 1
+        )
+      end
+
+      assert_raise ArgumentError, ~r/bucket_interval/, fn ->
+        TimeSeries.query(conn(), "cpu", aggregation: [%{field: "u", type: :avg}])
+      end
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.query(conn(), "cpu",
+                 aggregation: [%{field: "bad field", type: :avg}],
+                 bucket_interval: 1
+               )
+    end
+
+    test "limit must be a positive integer (the server accepts -1 and returns count:-1 nonsense)" do
+      assert_raise ArgumentError, ~r/limit/, fn -> TimeSeries.query(conn(), "cpu", limit: -1) end
+      assert_raise ArgumentError, ~r/limit/, fn -> TimeSeries.query(conn(), "cpu", limit: 0) end
+    end
+
+    test "bad from/to and bad type are rejected" do
+      assert_raise ArgumentError, ~r/from/, fn ->
+        TimeSeries.query(conn(), "cpu", from: "2026-01-01")
+      end
+
+      assert {:error, :invalid_identifier} = TimeSeries.query(conn(), "bad type")
+    end
+
+    test "latest/3 sends type + at most ONE tag; a multi-tag request is rejected value-free" do
+      Req.Test.stub(__MODULE__, fn c ->
+        assert c.request_path == "/api/v1/ts/tsdb/latest"
+        assert URI.decode_query(c.query_string) == %{"type" => "cpu", "tag" => "host:a"}
+        Req.Test.json(c, %{"type" => "cpu", "columns" => ["ts", "v"], "latest" => [1, 2.0]})
+      end)
+
+      assert {:ok, %{columns: ["ts", "v"], latest: [1, 2.0]}} =
+               TimeSeries.latest(conn(), "cpu", tag: {"host", "a"})
+
+      # The substrate applies only the FIRST tag param, order-dependently (probed both orders on
+      # 26.7.2) — a multi-tag map would be a NONDETERMINISTIC filter no-op, so >1 is rejected.
+      assert_raise ArgumentError, ~r/single tag/, fn ->
+        TimeSeries.latest(conn(), "cpu", tag: %{"host" => "a", "region" => "eu"})
+      end
+
+      assert {:error, :invalid_identifier} =
+               TimeSeries.latest(conn(), "cpu", tag: {"bad key", "v"})
+
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.latest(conn(), "cpu", tag: {"host", :notbin})
+        end
+
+      refute Exception.message(err) =~ "notbin"
+    end
+
+    test "query!/latest! unwrap the value; capability check on a Bolt conn" do
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "columns" => [], "rows" => [], "count" => 0})
+      end)
+
+      assert %{rows: [], count: 0} = TimeSeries.query!(conn(), "cpu")
+
+      bolt_conn =
+        Conn.new("bolt://h", "tsdb",
+          auth: {"u", "p"},
+          transport: Arcadic.Transport.Bolt,
+          transport_options: [username: "u", password: "p"]
+        )
+
+      assert {:error, %Error{reason: :not_supported}} = TimeSeries.query(bolt_conn, "cpu")
+      assert {:error, %Error{reason: :not_supported}} = TimeSeries.latest(bolt_conn, "cpu")
+    end
+
+    test "query tags: an atom key colliding with its string twin is rejected (write-path parity)" do
+      assert_raise ArgumentError, ~r/duplicate/, fn ->
+        TimeSeries.query(conn(), "cpu", tags: %{:host => "a", "host" => "b"})
+      end
+    end
+
+    test "query tags: atom keys convert; a non-binary tag VALUE raises value-free" do
+      stub_ts_query(
+        %{"type" => "cpu", "tags" => %{"host" => "a"}},
+        %{"type" => "cpu", "columns" => ["ts"], "rows" => [], "count" => 0}
+      )
+
+      assert {:ok, %{count: 0}} = TimeSeries.query(conn(), "cpu", tags: %{host: "a"})
+
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.query(conn(), "cpu", tags: %{"host" => 42})
+        end
+
+      assert err.message == "tag values must be strings"
+    end
+
+    test "fields: an empty list and a non-name entry are rejected value-free" do
+      assert_raise ArgumentError, ~r/fields/, fn ->
+        TimeSeries.query(conn(), "cpu", fields: [])
+      end
+
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.query(conn(), "cpu", fields: [{:secret, "leak"}])
+        end
+
+      refute Exception.message(err) =~ "leak"
+    end
+
+    test "bucket_interval without aggregation, a zero duration, and an empty request list are rejected" do
+      assert_raise ArgumentError, ~r/bucket_interval/, fn ->
+        TimeSeries.query(conn(), "cpu", bucket_interval: 3_600_000)
+      end
+
+      assert_raise ArgumentError, ~r/bucket_interval/, fn ->
+        TimeSeries.query(conn(), "cpu",
+          aggregation: [%{field: "u", type: :avg}],
+          bucket_interval: {0, :hours}
+        )
+      end
+
+      assert_raise ArgumentError, ~r/aggregation/, fn ->
+        TimeSeries.query(conn(), "cpu", aggregation: [], bucket_interval: 1)
+      end
+    end
+
+    test "duplicate aggregation OUTPUTS are rejected; distinct types on one field are fine" do
+      # Colliding alias.
+      assert_raise ArgumentError, ~r/duplicate aggregation output/, fn ->
+        TimeSeries.query(conn(), "cpu",
+          aggregation: [
+            %{field: "a", type: :avg, alias: "x"},
+            %{field: "b", type: :max, alias: "x"}
+          ],
+          bucket_interval: 1
+        )
+      end
+
+      # Identical field+type pair, no alias.
+      assert_raise ArgumentError, ~r/duplicate aggregation output/, fn ->
+        TimeSeries.query(conn(), "cpu",
+          aggregation: [%{field: "u", type: :avg}, %{field: "u", type: :avg}],
+          bucket_interval: 1
+        )
+      end
+
+      # NOT a collision: the server's default output name incorporates the type ("u_avg"/"u_max").
+      stub_ts_query(
+        %{
+          "type" => "cpu",
+          "aggregation" => %{
+            "bucketInterval" => 1,
+            "requests" => [
+              %{"field" => "u", "type" => "AVG"},
+              %{"field" => "u", "type" => "MAX"}
+            ]
+          }
+        },
+        %{"type" => "cpu", "aggregations" => ["u_avg", "u_max"], "buckets" => [], "count" => 0}
+      )
+
+      assert {:ok, %{count: 0}} =
+               TimeSeries.query(conn(), "cpu",
+                 aggregation: [%{field: "u", type: :avg}, %{field: "u", type: :max}],
+                 bucket_interval: 1
+               )
+    end
+
+    test "latest tag values: empty and colon-bearing values are rejected value-free (unprobed key:value micro-format)" do
+      assert_raise ArgumentError, ~r/non-empty/, fn ->
+        TimeSeries.latest(conn(), "cpu", tag: {"host", ""})
+      end
+
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.latest(conn(), "cpu", tag: {"host", "secret:leak"})
+        end
+
+      refute Exception.message(err) =~ "secret"
+      assert err.message =~ "colon"
+    end
+
+    test "query emits the :timeseries read span with row_count" do
+      handler_id = "ts-read-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:arcadic, :timeseries, :stop],
+        fn _e, _m, meta, pid -> send(pid, {:span_meta, meta}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        Req.Test.json(c, %{"type" => "cpu", "columns" => [], "rows" => [], "count" => 0})
+      end)
+
+      assert {:ok, %{count: 0}} = TimeSeries.query(conn(), "cpu")
+      assert_received {:span_meta, %{operation: :query, mode: :read, row_count: 0}}
+    end
+  end
 end

@@ -264,6 +264,67 @@ defmodule Arcadic.TimeSeries do
   @spec write_lines!(Conn.t(), iodata(), keyword()) :: :ok
   def write_lines!(%Conn{} = conn, lines, opts \\ []), do: bang(write_lines(conn, lines, opts))
 
+  @query_opts [:from, :to, :fields, :tags, :limit, :aggregation, :bucket_interval, :timeout]
+  @latest_opts [:tag, :timeout]
+  # The exact server enum, UPPERCASE and case-sensitive (anything else 500s — probed 26.7.2).
+  @agg_types %{sum: "SUM", avg: "AVG", min: "MIN", max: "MAX", count: "COUNT"}
+
+  @doc """
+  Time-series query (`POST /api/v1/ts/<db>/query`).
+
+  `opts`: `:from`/`:to` (integer epoch-**milliseconds** or `DateTime` — note: milliseconds
+  regardless of the type's declared PRECISION, probed), `:fields` (non-empty projection — NOTE the server
+  has a live projection defect returning misaligned values under a wrong-width header; see the
+  usage-rules time-series section), `:tags` (map — the server ANDs all entries; an UNKNOWN tag
+  key fails open, ignored server-side), `:limit` (positive integer; server default 20000),
+  `:aggregation` (`[%{field: name, type: :sum | :avg | :min | :max | :count, alias: String?}]`)
+  with REQUIRED `:bucket_interval` (`t:duration/0` or a positive ms integer), `:timeout`.
+
+  Returns the server's columnar shape with atomized keys: raw
+  `{:ok, %{columns, rows, count}}`; aggregated `{:ok, %{aggregations, buckets, count}}`
+  (each bucket `%{timestamp, values}`). Deliberately NOT zipped into row-maps.
+  """
+  @spec query(Conn.t(), String.t(), keyword()) :: {:ok, map()} | {:error, atom() | Exception.t()}
+  def query(%Conn{} = conn, type, opts \\ []) do
+    Opts.validate_keys!(opts, @query_opts)
+
+    with :ok <- Identifier.validate(type),
+         {:ok, body} <- query_body(type, opts) do
+      dispatch_read(conn, :ts_query, :query, fn transport ->
+        transport.ts_query(conn, body, Keyword.take(opts, [:timeout]))
+      end)
+    end
+  end
+
+  @doc "Time-series query, returning the result map or raising."
+  @spec query!(Conn.t(), String.t(), keyword()) :: map()
+  def query!(%Conn{} = conn, type, opts \\ []), do: bang(query(conn, type, opts))
+
+  @doc """
+  Newest point (`GET /api/v1/ts/<db>/latest`). `opts`: `:tag` — a SINGLE `{key, value}` pair
+  (the substrate applies only the first tag filter; a multi-entry map is rejected — probed);
+  the value must be non-empty and colon-free (the wire `key:value` delimiter is unescapable),
+  `:timeout`. Returns `{:ok, %{columns, latest}}`.
+  """
+  @spec latest(Conn.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, atom() | Exception.t()}
+  def latest(%Conn{} = conn, type, opts \\ []) do
+    Opts.validate_keys!(opts, @latest_opts)
+
+    with :ok <- Identifier.validate(type),
+         {:ok, tag_params} <- latest_tag_params(opts[:tag]) do
+      params = [{"type", type} | tag_params]
+
+      dispatch_read(conn, :ts_latest, :latest, fn transport ->
+        transport.ts_latest(conn, params, Keyword.take(opts, [:timeout]))
+      end)
+    end
+  end
+
+  @doc "Newest point, returning the result map or raising."
+  @spec latest!(Conn.t(), String.t(), keyword()) :: map()
+  def latest!(%Conn{} = conn, type, opts \\ []), do: bang(latest(conn, type, opts))
+
   # --- private: DDL assembly ---
 
   # :fields must be present and non-empty; :tags may be absent. Both normalize to
@@ -562,6 +623,226 @@ defmodule Arcadic.TimeSeries do
 
     :ok
   end
+
+  # --- private: read path ---
+
+  # All /ts reads share the capability check + :timeseries read span. `arity` is 3 for ts_query/
+  # ts_latest; ts_prom_get (T6) passes 4.
+  defp dispatch_read(%Conn{transport: transport}, callback, op, fun, arity \\ 3) do
+    if callback?(transport, callback, arity) do
+      Telemetry.span(:timeseries, %{operation: op, mode: :read}, fn ->
+        result = fun.(transport)
+        {result, read_stop_meta(result)}
+      end)
+    else
+      {:error, %Error{reason: :not_supported, message: "transport does not support time-series"}}
+    end
+  end
+
+  defp read_stop_meta({:ok, %{count: count}}) when is_integer(count),
+    do: %{reason: :ok, row_count: count}
+
+  # The list clause is unreachable from ts_query/ts_latest (map successes) — it is staged for
+  # T6's prom_* reads, whose data envelopes unwrap to lists. Consumed by T6; do not prune.
+  defp read_stop_meta({:ok, list}) when is_list(list), do: %{reason: :ok, row_count: length(list)}
+  defp read_stop_meta({:ok, _}), do: %{reason: :ok}
+  defp read_stop_meta({:error, %{reason: reason}}) when is_atom(reason), do: %{reason: reason}
+  defp read_stop_meta({:error, _}), do: %{reason: :error}
+
+  defp query_body(type, opts) do
+    with {:ok, fields} <- query_fields(opts[:fields]),
+         {:ok, tags} <- query_tags(opts[:tags]),
+         {:ok, aggregation} <- aggregation_object(opts[:aggregation], opts[:bucket_interval]) do
+      body =
+        %{"type" => type}
+        |> put_present("from", to_ms!(opts[:from], :from))
+        |> put_present("to", to_ms!(opts[:to], :to))
+        |> put_present("fields", fields)
+        |> put_present("tags", tags)
+        |> put_present("limit", query_limit!(opts[:limit]))
+        |> put_present("aggregation", aggregation)
+
+      {:ok, body}
+    end
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  defp to_ms!(nil, _label), do: nil
+  defp to_ms!(ms, _label) when is_integer(ms), do: ms
+  defp to_ms!(%DateTime{} = dt, _label), do: DateTime.to_unix(dt, :millisecond)
+
+  defp to_ms!(_, label),
+    do: raise(ArgumentError, "#{label} must be an epoch-ms integer or DateTime")
+
+  defp query_limit!(nil), do: nil
+  defp query_limit!(n) when is_integer(n) and n > 0, do: n
+  defp query_limit!(_), do: raise(ArgumentError, "limit must be a positive integer")
+
+  defp query_fields(nil), do: {:ok, nil}
+
+  # An empty projection would ship "fields": [] into the endpoint's KNOWN projection defect
+  # (misaligned values under a wrong-width header) — reject, consistent with the DDL column rule.
+  defp query_fields([]),
+    do: raise(ArgumentError, "fields must be a non-empty list of column names")
+
+  # No `with` wrapper: validate_idents/1 already returns the exact {:ok, list} | {:error, _}
+  # shape (a redundant `with` fails credo --strict Refactor.RedundantWithClauseResult).
+  defp query_fields(fields) when is_list(fields),
+    do: validate_idents(Enum.map(fields, &name_string!/1))
+
+  defp query_fields(_), do: raise(ArgumentError, "fields must be a list of column names")
+
+  defp query_tags(nil), do: {:ok, nil}
+
+  # Post-normalization duplicate keys (an atom key and its string twin) reject, mirroring the
+  # write path's sorted_unique!/1 — a silent last-wins would be iteration-order-dependent.
+  defp query_tags(tags) when is_map(tags) do
+    tags
+    |> Enum.reduce_while({:ok, %{}}, fn {k, v}, {:ok, acc} ->
+      key = name_string!(k)
+
+      cond do
+        Identifier.validate(key) != :ok ->
+          {:halt, {:error, :invalid_identifier}}
+
+        not is_binary(v) ->
+          raise ArgumentError, "tag values must be strings"
+
+        is_map_key(acc, key) ->
+          raise ArgumentError, "duplicate tag name after atom-key normalization"
+
+        true ->
+          {:cont, {:ok, Map.put(acc, key, v)}}
+      end
+    end)
+  end
+
+  defp query_tags(_), do: raise(ArgumentError, "tags must be a map")
+
+  # Deliberate divergence from the write path's normalize_name/1: read-path name SHAPE
+  # violations raise a static ArgumentError, while normalize_name returns
+  # {:error, :invalid_identifier} (the shipped T5 contract). Keep the two in conscious sync —
+  # do not let their behaviors drift silently.
+  defp name_string!(name) when is_binary(name), do: name
+  defp name_string!(name) when is_atom(name) and not is_nil(name), do: to_string(name)
+  defp name_string!(_), do: raise(ArgumentError, "names must be strings or atoms")
+
+  defp aggregation_object(nil, nil), do: {:ok, nil}
+
+  # A bucket_interval WITHOUT aggregation would otherwise be silently dropped from the body.
+  defp aggregation_object(nil, _interval),
+    do: raise(ArgumentError, "bucket_interval requires :aggregation")
+
+  defp aggregation_object(requests, interval) when is_list(requests) and requests != [] do
+    ms = bucket_interval_ms!(interval)
+
+    requests
+    |> Enum.reduce_while({:ok, []}, fn req, {:ok, acc} ->
+      case agg_request(req) do
+        {:ok, wire} -> {:cont, {:ok, [wire | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, wires} ->
+        wires = Enum.reverse(wires)
+        assert_unique_outputs!(wires)
+        {:ok, %{"bucketInterval" => ms, "requests" => wires}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp aggregation_object(_, _),
+    do: raise(ArgumentError, "aggregation must be a non-empty list of request maps")
+
+  # Effective output identity: the alias when present, else the {field, type} pair — the server's
+  # default column name incorporates BOTH (e.g. "u_avg"), so avg+max on one un-aliased field is
+  # NOT a collision. Colliding outputs would produce indistinguishable response columns.
+  defp assert_unique_outputs!(wires) do
+    keys = Enum.map(wires, fn wire -> Map.get(wire, "alias") || {wire["field"], wire["type"]} end)
+
+    if Enum.uniq(keys) != keys do
+      raise ArgumentError, "duplicate aggregation output (alias or un-aliased field+type pair)"
+    end
+
+    :ok
+  end
+
+  defp agg_request(%{field: field, type: type} = req) do
+    agg_type =
+      Map.get(@agg_types, type) ||
+        raise(
+          ArgumentError,
+          "unknown aggregation type; allowed: #{inspect(Map.keys(@agg_types))}"
+        )
+
+    field_name = name_string!(field)
+
+    with :ok <- Identifier.validate(field_name) do
+      wire = %{"field" => field_name, "type" => agg_type}
+
+      case Map.get(req, :alias) do
+        nil -> {:ok, wire}
+        a when is_binary(a) -> {:ok, Map.put(wire, "alias", a)}
+        _ -> raise ArgumentError, "alias must be a string"
+      end
+    end
+  end
+
+  defp agg_request(_),
+    do: raise(ArgumentError, "each aggregation request needs :field and :type")
+
+  defp bucket_interval_ms!({n, unit})
+       when is_integer(n) and n > 0 and is_map_key(@duration_units, unit) do
+    n * unit_ms(unit)
+  end
+
+  defp bucket_interval_ms!(ms) when is_integer(ms) and ms > 0, do: ms
+
+  defp bucket_interval_ms!(_),
+    do:
+      raise(
+        ArgumentError,
+        "bucket_interval is required with aggregation: {n, unit} or a positive ms integer"
+      )
+
+  defp unit_ms(:seconds), do: 1_000
+  defp unit_ms(:minutes), do: 60_000
+  defp unit_ms(:hours), do: 3_600_000
+  defp unit_ms(:days), do: 86_400_000
+
+  defp latest_tag_params(nil), do: {:ok, []}
+
+  # The tag rides an UNPROBED "key:value" micro-format: an empty value ("host:") or a
+  # colon-bearing value ("host:a:b") would be a silently wrong filter — reject both, value-free.
+  defp latest_tag_params({k, v}) do
+    key = name_string!(k)
+
+    cond do
+      Identifier.validate(key) != :ok -> {:error, :invalid_identifier}
+      not is_binary(v) -> raise ArgumentError, "the tag value must be a string"
+      v == "" -> raise ArgumentError, "the tag value must be a non-empty string"
+      String.contains?(v, ":") -> raise ArgumentError, "the tag value must not contain a colon"
+      true -> {:ok, [{"tag", "#{key}:#{v}"}]}
+    end
+  end
+
+  defp latest_tag_params(%{} = tags) when map_size(tags) > 1,
+    do:
+      raise(
+        ArgumentError,
+        "latest supports a single tag ({key, value}) — the server applies only the first tag filter"
+      )
+
+  defp latest_tag_params(%{} = tags) when map_size(tags) == 1,
+    do: tags |> Enum.at(0) |> latest_tag_params()
+
+  defp latest_tag_params(_),
+    do: raise(ArgumentError, "tag must be a {key, value} tuple")
 
   # Shared bang: :ok passthrough; {:ok, value} unwrap (consumed by query!/latest!/prom_*! in
   # later tasks — NOT dead code); exceptions reraise; bare atoms get a static message.
