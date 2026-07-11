@@ -133,4 +133,44 @@ defmodule Arcadic.QueryCommandTest do
     assert_received {[:arcadic, :command, :stop], ^ref, _m, %{in_transaction?: true}}
     :telemetry.detach(ref)
   end
+
+  describe "query_bookmarked / command_bookmarked (S10 G14a)" do
+    defp bm_conn(idx) do
+      Req.Test.stub(__MODULE__.BM, fn c ->
+        c = if idx, do: Plug.Conn.put_resp_header(c, "x-arcadedb-commit-index", idx), else: c
+        Req.Test.json(c, %{"result" => [%{"ok" => true}]})
+      end)
+
+      %{
+        Conn.new("http://a.invalid", "db",
+          auth: {"root", "x"},
+          consistency: :read_your_writes,
+          transport_options: [plug: {Req.Test, __MODULE__.BM}]
+        )
+        | read_after: 100
+      }
+    end
+
+    test "command_bookmarked returns {:ok, rows, conn'} and advances read_after monotonically" do
+      {:ok, [%{"ok" => true}], conn2} = Arcadic.command_bookmarked(bm_conn("128"), "CREATE (n)")
+      assert conn2.read_after == 128
+    end
+
+    test "a LOWER response index does NOT regress the bookmark (nil-safe monotone, not max/2 trap)" do
+      {:ok, _rows, conn2} = Arcadic.query_bookmarked(bm_conn("90"), "SELECT 1")
+      assert conn2.read_after == 100
+    end
+
+    test "a NIL response index (single-server) keeps the prior bookmark (max(100, nil) trap)" do
+      {:ok, _rows, conn2} = Arcadic.query_bookmarked(bm_conn(nil), "SELECT 1")
+
+      # Elixir sorts atom nil ABOVE integers, so a plain max(100, nil) would yield nil — must be 100.
+      assert conn2.read_after == 100
+    end
+
+    test "bang variant returns {rows, conn'} and raises on error" do
+      {[%{"ok" => true}], conn2} = Arcadic.command_bookmarked!(bm_conn("5"), "CREATE (n)")
+      assert conn2.read_after == 100
+    end
+  end
 end

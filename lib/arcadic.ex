@@ -95,6 +95,42 @@ defmodule Arcadic do
   end
 
   @doc """
+  Like `query/4` but returns `{:ok, rows, conn'}` where `conn'` carries the updated
+  read-your-writes bookmark (`X-ArcadeDB-Commit-Index`), monotonically advanced. Thread
+  `conn'` into the next call to observe your own writes. HTTP-only (`:not_supported`
+  otherwise). On a single-server the index is absent → the bookmark is unchanged.
+
+  Bookmarked calls target the primary host and do NOT participate in multi-host failover
+  (the bookmark is host-relative); point `base_url` at a load balancer, or use the
+  non-bookmarked `query/4`/`command/4` for availability failover.
+  """
+  @spec query_bookmarked(Conn.t(), String.t(), map(), keyword()) ::
+          {:ok, [map()], Conn.t()} | {:error, Exception.t()}
+  def query_bookmarked(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    run_bookmarked(conn, :read, statement, params, validate_opts!(opts, @query_opts))
+  end
+
+  @doc "Like `query_bookmarked/4` but returns `{rows, conn'}` or raises."
+  @spec query_bookmarked!(Conn.t(), String.t(), map(), keyword()) :: {[map()], Conn.t()}
+  def query_bookmarked!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang_bookmarked(query_bookmarked(conn, statement, params, opts))
+
+  @doc """
+  Like `command/4` but returns `{:ok, rows, conn'}` with the updated read-your-writes
+  bookmark. See `query_bookmarked/4`.
+  """
+  @spec command_bookmarked(Conn.t(), String.t(), map(), keyword()) ::
+          {:ok, [map()], Conn.t()} | {:error, Exception.t()}
+  def command_bookmarked(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+    run_bookmarked(conn, :write, statement, params, validate_opts!(opts, @command_opts))
+  end
+
+  @doc "Like `command_bookmarked/4` but returns `{rows, conn'}` or raises."
+  @spec command_bookmarked!(Conn.t(), String.t(), map(), keyword()) :: {[map()], Conn.t()}
+  def command_bookmarked!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+    do: bang_bookmarked(command_bookmarked(conn, statement, params, opts))
+
+  @doc """
   Return the execution plan for a statement WITHOUT running it: prepends `EXPLAIN `
   and returns `{:ok, %{plan: <human string>, plan_tree: <raw, transport-defined map>,
   rows: []}}`.
@@ -243,6 +279,54 @@ defmodule Arcadic do
       end
     end)
   end
+
+  # Bookmarked read/write: dispatch the optional execute_with_index/4 callback (guarded by
+  # function_exported?, like run_explain/5) — a transport without it gets a typed
+  # `:not_supported`, never an UndefinedFunctionError. The span dispatch is extracted to
+  # dispatch_bookmarked/5 so neither the guard nor the span nests too deep (credo max-depth 2).
+  defp run_bookmarked(conn, mode, statement, params, opts) do
+    validate_params!(params)
+
+    if Code.ensure_loaded?(conn.transport) and
+         function_exported?(conn.transport, :execute_with_index, 4) do
+      dispatch_bookmarked(conn, mode, statement, params, opts)
+    else
+      {:error,
+       %Arcadic.Error{
+         reason: :not_supported,
+         message: "transport does not support bookmarked reads/writes"
+       }}
+    end
+  end
+
+  # Runs the execute_with_index/4 span (mirroring run/5), monotonically advancing the bookmark and
+  # returning {:ok, rows, conn'}; op-label and start_meta match query/command per spec §10.
+  defp dispatch_bookmarked(conn, mode, statement, params, opts) do
+    language = opts[:language] || "cypher"
+    request = %{statement: statement, params: params, language: language}
+    op = if(mode == :read, do: :query, else: :command)
+
+    Telemetry.span(op, start_meta(mode, language, conn), fn ->
+      case conn.transport.execute_with_index(conn, mode, request, opts) do
+        {:ok, rows, index} ->
+          conn2 = %{conn | read_after: advance_bookmark(conn.read_after, index)}
+          {{:ok, rows, conn2}, %{http_status: 200, reason: :ok, row_count: length(rows)}}
+
+        {:error, err} = error ->
+          {error, %{reason: reason_of(err)}}
+      end
+    end)
+  end
+
+  # Nil-safe MONOTONE bookmark combine. A plain max(old, new) is a trap: Elixir term ordering
+  # sorts an atom (nil) ABOVE any integer, so max(100, nil) == nil would REGRESS the bookmark and
+  # silently break read-your-writes. Special-case nil BEFORE max.
+  defp advance_bookmark(old, nil), do: old
+  defp advance_bookmark(nil, new), do: new
+  defp advance_bookmark(old, new) when is_integer(old) and is_integer(new), do: max(old, new)
+
+  defp bang_bookmarked({:ok, rows, conn}), do: {rows, conn}
+  defp bang_bookmarked({:error, error}), do: raise(error)
 
   # Command spans carry `in_transaction?` (spec §10 telemetry table); query spans do not.
   defp start_meta(:write, language, conn),

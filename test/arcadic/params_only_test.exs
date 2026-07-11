@@ -78,4 +78,20 @@ defmodule Arcadic.ParamsOnlyTest do
     refute body["command"] =~ @secret
     assert body["params"]["q1"] == @secret
   end
+
+  test "query_bookmarked/4: the param value stays in params and never enters the statement" do
+    capture_body()
+    Arcadic.query_bookmarked(conn(), "MATCH (u {t: $t}) RETURN u", %{"t" => @secret})
+    assert_received {:body, body}
+    refute body["command"] =~ @secret
+    assert body["params"]["t"] == @secret
+  end
+
+  test "command_bookmarked/4: the param value stays in params and never enters the statement" do
+    capture_body()
+    Arcadic.command_bookmarked(conn(), "CREATE (u {t: $t})", %{"t" => @secret})
+    assert_received {:body, body}
+    refute body["command"] =~ @secret
+    assert body["params"]["t"] == @secret
+  end
 end
