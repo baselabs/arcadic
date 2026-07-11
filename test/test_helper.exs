@@ -4,6 +4,7 @@ ExUnit.start(
     :integration_ws,
     :integration_bolt,
     :integration_bolt_tls,
-    :integration_shutdown
+    :integration_shutdown,
+    :integration_ts
   ]
 )
