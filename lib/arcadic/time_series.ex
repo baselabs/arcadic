@@ -29,6 +29,10 @@ defmodule Arcadic.TimeSeries do
     mixed batch is silent. Verify with `query/3` or `Arcadic.Schema.types/1` when it matters.
   - **Unknown FIELD zero-fill.** A line whose field name is not on the type inserts a
     **zero-filled row** (204, no error).
+  - **int64 bound.** An integer field value or timestamp outside signed int64
+    (±9223372036854775807/8) is a 204 + **silent line drop** server-side (probed both signs) —
+    `write/3` raises value-free client-side instead, including on a `DateTime` whose converted
+    value overflows. This bound is part of the "syntactic validity by construction" guarantee.
   - **Unknown tag KEY fails open** on `query/3`/`latest/3` (the filter is ignored server-side).
   - `write_lines/3` (raw passthrough) additionally inherits the malformed-line silent-skip.
   """
@@ -207,6 +211,11 @@ defmodule Arcadic.TimeSeries do
   # escape for them (probed: a raw \n inside a quoted field parses the remainder as a NEW
   # measurement). Reject value-free wherever a caller string lands in a line.
   @control_bytes ~r/[\x00-\x1F\x7F]/
+
+  # Java Long: an out-of-range integer field value or timestamp is a 204 + SILENT line drop on
+  # the server (probed both signs on 26.7.2) — guard client-side, value-free, both positions.
+  @int64_min -9_223_372_036_854_775_808
+  @int64_max 9_223_372_036_854_775_807
 
   @doc """
   Writes structured `points` as InfluxDB line protocol (`POST /api/v1/ts/<db>/write`).
@@ -729,8 +738,16 @@ defmodule Arcadic.TimeSeries do
   end
 
   defp ts_fragment(nil, _unit), do: ""
-  defp ts_fragment(ts, _unit) when is_integer(ts), do: " #{ts}"
-  defp ts_fragment(%DateTime{} = dt, unit), do: " #{DateTime.to_unix(dt, unit)}"
+
+  defp ts_fragment(ts, _unit) when is_integer(ts) and ts >= @int64_min and ts <= @int64_max,
+    do: " #{ts}"
+
+  defp ts_fragment(ts, _unit) when is_integer(ts),
+    do: raise(ArgumentError, "timestamps must fit int64")
+
+  # Delegating the CONVERTED value through the integer clauses applies the int64 bound here too:
+  # DateTime CAN overflow (a year-2263+ DateTime at :ns converts past int64_max — verified).
+  defp ts_fragment(%DateTime{} = dt, unit), do: ts_fragment(DateTime.to_unix(dt, unit), unit)
 
   defp ts_fragment(_, _),
     do: raise(ArgumentError, "timestamp must be an integer, DateTime, or nil")
@@ -751,7 +768,11 @@ defmodule Arcadic.TimeSeries do
 
   defp escape_tag_value!(_), do: raise(ArgumentError, "tag values must be strings")
 
-  defp field_value!(v) when is_integer(v), do: "#{v}i"
+  defp field_value!(v) when is_integer(v) and v >= @int64_min and v <= @int64_max, do: "#{v}i"
+
+  defp field_value!(v) when is_integer(v),
+    do: raise(ArgumentError, "integer field values must fit int64")
+
   defp field_value!(v) when is_float(v), do: to_string(v)
   defp field_value!(v) when is_boolean(v), do: to_string(v)
 

@@ -526,6 +526,76 @@ defmodule Arcadic.TimeSeriesTest do
       end
     end
 
+    test "integer field values and timestamps outside int64 raise value-free (the server 204s and SILENTLY DROPS the line — probed both signs)" do
+      int64_max = 9_223_372_036_854_775_807
+      int64_min = -9_223_372_036_854_775_808
+
+      # Both boundaries PASS (the live T7 probe writes int64_max — don't break it).
+      expected = stub_write("a v=#{int64_max}i #{int64_max}")
+
+      assert :ok =
+               TimeSeries.write(conn(), [
+                 %{type: "a", fields: %{"v" => int64_max}, timestamp: int64_max}
+               ])
+
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+
+      expected_min = stub_write("a v=#{int64_min}i #{int64_min}")
+
+      assert :ok =
+               TimeSeries.write(conn(), [
+                 %{type: "a", fields: %{"v" => int64_min}, timestamp: int64_min}
+               ])
+
+      assert_received {:lines, body_min}
+      assert IO.iodata_to_binary(body_min) == expected_min
+
+      # One past the boundary raises value-free, BOTH signs, BOTH positions.
+      for bad <- [int64_max + 1, int64_min - 1] do
+        err =
+          assert_raise ArgumentError, fn ->
+            TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => bad}}])
+          end
+
+        assert err.message == "integer field values must fit int64"
+        refute Exception.message(err) =~ "#{abs(bad)}"
+
+        err2 =
+          assert_raise ArgumentError, fn ->
+            TimeSeries.write(conn(), [%{type: "a", fields: %{"v" => 1}, timestamp: bad}])
+          end
+
+        assert err2.message == "timestamps must fit int64"
+        refute Exception.message(err2) =~ "#{abs(bad)}"
+      end
+    end
+
+    test "a DateTime timestamp whose converted value overflows int64 raises value-free (year 2263+ at :ns)" do
+      # ~U[2263-01-01 00:00:00Z] at :nanosecond is 9.246e18 > int64_max — DateTime CAN overflow.
+      err =
+        assert_raise ArgumentError, fn ->
+          TimeSeries.write(conn(), [
+            %{type: "a", fields: %{"v" => 1}, timestamp: ~U[2263-01-01 00:00:00Z]}
+          ])
+        end
+
+      assert err.message == "timestamps must fit int64"
+
+      # The same DateTime at :s precision fits — the conversion unit decides.
+      expected = stub_write("a v=1i 9246182400", "precision=s")
+
+      assert :ok =
+               TimeSeries.write(
+                 conn(),
+                 [%{type: "a", fields: %{"v" => 1}, timestamp: ~U[2263-01-01 00:00:00Z]}],
+                 precision: :s
+               )
+
+      assert_received {:lines, body}
+      assert IO.iodata_to_binary(body) == expected
+    end
+
     test "control bytes are rejected value-free in tag values and string fields (record-split hazard)" do
       err =
         assert_raise ArgumentError, fn ->
