@@ -17,12 +17,15 @@ defmodule Arcadic.FunctionTest do
     end)
   end
 
-  describe "define/5" do
+  describe "define/4" do
     test "emits DEFINE FUNCTION with PARAMETERS and the language token" do
       capture()
 
       assert :ok =
-               Function.define(conn(), "math.sum", "return a + b", [:a, :b], language: :js)
+               Function.define(conn(), "math.sum", "return a + b",
+                 params: [:a, :b],
+                 language: :js
+               )
 
       assert_received {:body, %{"command" => cmd, "language" => "sql"}}
       assert cmd == ~s(DEFINE FUNCTION math.sum "return a + b" PARAMETERS [a, b] LANGUAGE js)
@@ -36,16 +39,27 @@ defmodule Arcadic.FunctionTest do
       refute cmd =~ "PARAMETERS"
     end
 
+    test "a bare keyword 4th arg is opts, not params (no positional footgun)" do
+      # Under the old `params \\ [], opts \\ []` signature this bound the keyword list to positional
+      # `params`, dropped :language, and returned {:error, :invalid_identifier}. Now the 4th arg is
+      # opts, so :language is honored and no PARAMETERS clause is emitted.
+      capture()
+      assert :ok = Function.define(conn(), "no.params", "return 1", language: :sql)
+      assert_received {:body, %{"command" => cmd}}
+      assert cmd == ~s(DEFINE FUNCTION no.params "return 1" LANGUAGE sql)
+      refute cmd =~ "PARAMETERS"
+    end
+
     test "language: :sql maps to the sql token" do
       capture()
-      assert :ok = Function.define(conn(), "l.f", "return 1", [], language: :sql)
+      assert :ok = Function.define(conn(), "l.f", "return 1", language: :sql)
       assert_received {:body, %{"command" => cmd}}
       assert cmd == ~s(DEFINE FUNCTION l.f "return 1" LANGUAGE sql)
     end
 
     test "language: :cypher maps to the cypher token" do
       capture()
-      assert :ok = Function.define(conn(), "l.f", "return 1", [], language: :cypher)
+      assert :ok = Function.define(conn(), "l.f", "return 1", language: :cypher)
       assert_received {:body, %{"command" => cmd}}
       assert cmd == ~s(DEFINE FUNCTION l.f "return 1" LANGUAGE cypher)
     end
@@ -54,14 +68,17 @@ defmodule Arcadic.FunctionTest do
       capture()
 
       assert {:error, :invalid_language} =
-               Function.define(conn(), "l.f", "return 1", [], language: :ruby)
+               Function.define(conn(), "l.f", "return 1", language: :ruby)
 
       refute_received {:body, _}
     end
 
     test "each param is Identifier.validate'd — a bad param returns invalid_identifier value-free" do
       capture()
-      assert {:error, :invalid_identifier} = Function.define(conn(), "l.f", "return 1", [:"1x"])
+
+      assert {:error, :invalid_identifier} =
+               Function.define(conn(), "l.f", "return 1", params: [:"1x"])
+
       refute_received {:body, _}
     end
 
@@ -70,14 +87,19 @@ defmodule Arcadic.FunctionTest do
       # clause: without it, an integer param FunctionClauseErrors and its blame echoes the args
       # (Rule 3), and this returns-not-raises assertion would go red.
       capture()
-      assert {:error, :invalid_identifier} = Function.define(conn(), "l.f", "return 1", [123])
-      assert {:error, :invalid_identifier} = Function.define(conn(), "l.f", "return 1", [{:a, 1}])
+
+      assert {:error, :invalid_identifier} =
+               Function.define(conn(), "l.f", "return 1", params: [123])
+
+      assert {:error, :invalid_identifier} =
+               Function.define(conn(), "l.f", "return 1", params: [{:a, 1}])
+
       refute_received {:body, _}
     end
 
     test "an unknown opt key is rejected value-free" do
       assert_raise ArgumentError, fn ->
-        Function.define(conn(), "l.f", "return 1", [], nope: 1)
+        Function.define(conn(), "l.f", "return 1", nope: 1)
       end
     end
   end
@@ -137,7 +159,7 @@ defmodule Arcadic.FunctionTest do
   describe "bang variants" do
     test "define! returns :ok on success" do
       capture()
-      assert :ok = Function.define!(conn(), "math.sum", "return a + b", [:a, :b])
+      assert :ok = Function.define!(conn(), "math.sum", "return a + b", params: [:a, :b])
     end
 
     test "delete! returns :ok on success" do

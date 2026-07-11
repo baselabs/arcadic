@@ -69,7 +69,8 @@ defmodule Arcadic.Integration.ProgrammabilityTest do
     lib = "it_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
 
     # Single-quoted, single-line JS body with PARAMETERS; callable via the backtick idiom.
-    assert :ok = Function.define(conn, "#{lib}.add", "return a + b", [:a, :b], language: :js)
+    assert :ok =
+             Function.define(conn, "#{lib}.add", "return a + b", params: [:a, :b], language: :js)
 
     assert {:ok, [%{"total" => 3}]} =
              Arcadic.query(conn, "SELECT `#{lib}.add`(:a, :b) AS total", %{"a" => 1, "b" => 2},

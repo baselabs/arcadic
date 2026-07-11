@@ -270,7 +270,7 @@ echoing the offending string. The admin surface follows the same convention:
 `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`,
 `Arcadic.Backup.backup/2` / `restore/3` return `{:error, :invalid_url}`, and
 `Arcadic.Security.create_user/2` returns `{:error, :invalid_user_spec}` for an unencodable
-user spec (e.g. a non-UTF-8 password) — all value-free. `Arcadic.Function.define/5` and
+user spec (e.g. a non-UTF-8 password) — all value-free. `Arcadic.Function.define/4` and
 `Arcadic.Trigger.create/4` return `{:error, :unencodable_body}` for a body ArcadeDB's
 quoted DDL literal can't hold (a literal `"`, a backslash, or a newline); `Arcadic.Changes`
 returns `{:error, :mint_web_socket_not_available}` from `start_link/1` when the optional

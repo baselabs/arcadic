@@ -51,12 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:error, :mint_web_socket_not_available}` without it, and validates the `:conn`
   value-free (`:invalid_auth` / `:invalid_url_scheme` / `:invalid_max_buffer` —
   an unrecognized URL scheme is refused, never downgraded to plaintext).
-- `Arcadic.Function` — `define/5` / `delete/2` (+ `!`) for ArcadeDB user-defined
+- `Arcadic.Function` — `define/4` / `delete/2` (+ `!`) for ArcadeDB user-defined
   functions (`DEFINE FUNCTION` / `DELETE FUNCTION`). A function name is a dotted
   `library.fn`; the body is a single-line, single-quoted literal (ArcadeDB's DDL
-  string literal has no escape); `:language` selects `:js` (default), `:sql`, or
-  `:cypher`. Call a defined function from an ordinary `query/4`/`command/4` via
-  the backtick idiom.
+  string literal has no escape). `define/4` takes a single trailing `opts` keyword
+  list — `:params` (a list of parameter names) and `:language` (`:js` default,
+  `:sql`, `:cypher`) — matching the other DDL helpers. Call a defined function from
+  an ordinary `query/4`/`command/4` via the backtick idiom.
 - `Arcadic.Trigger` — `create/4` / `drop/2` (+ `!`) for ArcadeDB triggers
   (`CREATE TRIGGER` / `DROP TRIGGER`), firing a `:timing` (`:before`/`:after`) ×
   `:event` (`:create`/`:delete`/`:update`/`:read`) action in `:sql`, `:javascript`,

@@ -26,35 +26,38 @@ defmodule Arcadic.Function do
   """
   alias Arcadic.{Conn, Identifier, Opts}
 
-  @define_opts [:language]
+  @define_opts [:params, :language]
 
   # Friendly language atom → the `LANGUAGE <token>` emitted into the DDL. `:js` is the default.
   @languages %{js: "js", sql: "sql", cypher: "cypher"}
 
   @doc """
-  Defines a function `name` (a dotted `library.fn`) with a `body` literal, optional `params`
-  (a list of parameter-name atoms/strings, each `Identifier`-validated), and `opts`:
-  `:language` (`:js` default | `:sql` | `:cypher`).
+  Defines a function `name` (a dotted `library.fn`) with a `body` literal and `opts`:
 
-  `params` and `opts` are **both positional**. To set only `opts` on a no-parameter function, pass
-  an explicit `[]` for `params`: `define(conn, name, body, [], language: :sql)`. A bare
-  `define(conn, name, body, language: :sql)` binds the keyword list to `params` (not `opts`) and
-  returns `{:error, :invalid_identifier}`.
+    * `:params` — a list of parameter-name atoms/strings, each `Identifier`-validated (default `[]`).
+    * `:language` — `:js` (default) | `:sql` | `:cypher`.
+
+  A single trailing `opts` keyword list (like every sibling DDL helper), so there is no
+  positional-argument ambiguity:
+
+      define(conn, "math.sum", "return a + b", params: [:a, :b], language: :sql)
+      define(conn, "lib.fn", "return 1")                      # no params, js
+      define(conn, "lib.fn", "return 1", language: :sql)      # opts, no params
 
   Emits `DEFINE FUNCTION lib.fn "body" [PARAMETERS [a, b]] LANGUAGE <lang>`. Value-free on a bad
   name (`:invalid_identifier`), a bad param (`:invalid_identifier`), an unencodable body
   (`:unencodable_body`), or an unknown language (`:invalid_language`) — none echo the offending
   value. A non-binary body is a caller-contract violation and raises `ArgumentError` value-free.
   """
-  @spec define(Conn.t(), String.t(), String.t(), [atom() | String.t()], keyword()) ::
+  @spec define(Conn.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def define(%Conn{} = conn, name, body, params \\ [], opts \\ []) do
+  def define(%Conn{} = conn, name, body, opts \\ []) do
     Opts.validate_keys!(opts, @define_opts)
 
     with {:ok, lang} <- resolve_language(opts),
          {:ok, _} <- validate_name(name),
          {:ok, body2} <- Arcadic.DDLBody.encode(body),
-         {:ok, names} <- validate_params(params) do
+         {:ok, names} <- validate_params(Keyword.get(opts, :params, [])) do
       command_ok(
         conn,
         "DEFINE FUNCTION #{name} \"#{body2}\"#{params_clause(names)} LANGUAGE #{lang}"
@@ -63,9 +66,9 @@ defmodule Arcadic.Function do
   end
 
   @doc "Defines a function, raising on error."
-  @spec define!(Conn.t(), String.t(), String.t(), [atom() | String.t()], keyword()) :: :ok
-  def define!(%Conn{} = conn, name, body, params \\ [], opts \\ []),
-    do: bang(define(conn, name, body, params, opts))
+  @spec define!(Conn.t(), String.t(), String.t(), keyword()) :: :ok
+  def define!(%Conn{} = conn, name, body, opts \\ []),
+    do: bang(define(conn, name, body, opts))
 
   @doc "Deletes a function `name` (a dotted `library.fn`); idempotent server-side once the library exists (deleting from a never-defined library errors). Value-free on a bad name."
   @spec delete(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}

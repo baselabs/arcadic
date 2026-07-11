@@ -173,10 +173,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   (`IF EXISTS`), both + `!`. The index sits on a **string property holding WKT**
   (ArcadeDB has no native `POINT` schema type) — see Geospatial indexing & functions
   below for the querying side.
-- **`Arcadic.Function`** — `DEFINE FUNCTION` / `DELETE FUNCTION` DDL: `define/5`
-  (`name` a dotted `library.fn`, validated per segment; `body`; optional `params`
-  atom/string list; `opts: [language: :js | :sql | :cypher]`, `:js` default) and
-  `delete/2`, both + `!`. There is no call wrapper (a query template, a charter
+- **`Arcadic.Function`** — `DEFINE FUNCTION` / `DELETE FUNCTION` DDL: `define/4`
+  (`name` a dotted `library.fn`, validated per segment; `body`; a single trailing
+  `opts` keyword list — `:params` an atom/string list, `:language` `:js` default |
+  `:sql` | `:cypher`) and `delete/2`, both + `!`. There is no call wrapper (a query template, a charter
   non-goal) — invoke a defined function inside an ordinary `query/4`/`command/4`
   via the backtick idiom: `` SELECT `lib.fn`(:a, :b) `` (SQL) — the name is
   interpolated behind the per-segment allowlist, arguments ride `params`. **Body is
@@ -303,7 +303,7 @@ call — restructure it (e.g. drop the newline, single-quote your JS strings)
 rather than trying to escape it.
 
 ```elixir
-:ok = Arcadic.Function.define(conn, "math.sum", "return a + b;", [:a, :b])
+:ok = Arcadic.Function.define(conn, "math.sum", "return a + b;", params: [:a, :b])
 
 :ok =
   Arcadic.Trigger.create(conn, "logCreate", "User",
@@ -520,7 +520,7 @@ surface); `{:error, :invalid_setting_key}` / `{:error, :invalid_setting_value}`
 password); and, from `Arcadic.Bulk.ingest/3`, `{:error, :invalid_record}` (a
 record that fails to encode), `{:error, :not_supported}` (the transport has no
 batch endpoint, e.g. Bolt), and `{:error, :unexpected_response}` (a non-map 2xx
-body — off-contract). `Arcadic.Function.define/5` / `Arcadic.Trigger.create/4`
+body — off-contract). `Arcadic.Function.define/4` / `Arcadic.Trigger.create/4`
 return `{:error, :unencodable_body}` for a body ArcadeDB's `"..."` DDL literal
 cannot hold (a literal `"`, a backslash, or a newline). `Arcadic.Changes`
 returns `{:error, :mint_web_socket_not_available}` from `start_link/1` (the

@@ -304,10 +304,10 @@ end
 
 ## Functions & triggers
 
-`Arcadic.Function.define!/5` emits `DEFINE FUNCTION` — a dotted `library.fn`
+`Arcadic.Function.define!/4` emits `DEFINE FUNCTION` — a dotted `library.fn`
 name, a single-line body (ArcadeDB's `"..."` body literal has no escape, so a
 multi-line or quote-carrying body is rejected client-side before any wire
-call), and optional named `params`. Redefining an existing function errors
+call), and `opts` (`:params`, `:language`). Redefining an existing function errors
 server-side, so the idempotent-safe shape is delete-then-define. Deleting a
 function twice within an existing library is idempotent, but on a fresh database
 the `ops` library doesn't exist yet, so the first delete errors — the `_ =`
@@ -321,7 +321,7 @@ _ = Arcadic.Function.delete(conn, "ops.celsius_to_fahrenheit")
     conn,
     "ops.celsius_to_fahrenheit",
     "return c * 9 / 5 + 32",
-    [:c],
+    params: [:c],
     language: :js
   )
 ```
