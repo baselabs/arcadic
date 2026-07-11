@@ -516,6 +516,41 @@ defmodule Arcadic.TransactionTest do
       assert Agent.get(begins, & &1) == 1
     end
 
+    test "rollback/2 with a retriable %Error{} reason is terminal under :retry — never retried (D7)" do
+      {:ok, begins} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        cond do
+          String.contains?(c.request_path, "/begin/") ->
+            Agent.update(begins, &(&1 + 1))
+
+            c
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "AS-1")
+            |> Plug.Conn.send_resp(204, "")
+
+          String.contains?(c.request_path, "/rollback/") ->
+            Plug.Conn.send_resp(c, 204, "")
+
+          true ->
+            Req.Test.json(c, %{"result" => []})
+        end
+      end)
+
+      # A DELIBERATE abort whose reason happens to be a retriable %Error{} must still be terminal —
+      # not confused with a commit/begin-phase server fault (D7: the abort reason is caller-chosen,
+      # never retried).
+      err = %Arcadic.Error{reason: :concurrent_modification, message: "conflict"}
+
+      assert {:error, %Arcadic.Error{reason: :concurrent_modification}} =
+               Arcadic.transaction(conn(), fn tx -> Transaction.rollback(tx, err) end,
+                 retry: [max_attempts: 3, base_backoff_ms: 1]
+               )
+
+      # begin ran EXACTLY ONCE — RED before the fix (the abort's %Error{} matched @retriable_commit
+      # and re-ran begin max_attempts times).
+      assert Agent.get(begins, & &1) == 1
+    end
+
     test "tx begin fails over to the next host on a pre-send connect error and pins the session to it" do
       Req.Test.stub(__MODULE__, fn c ->
         cond do

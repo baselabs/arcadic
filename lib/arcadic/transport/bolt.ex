@@ -633,9 +633,13 @@ if Code.ensure_loaded?(Boltx) do
     # any other unexpected term becomes a value-free transport error, never a raw
     # passthrough (the passthrough is the exact leak F6 closes).
     @doc false
-    @spec map_transaction_outcome(term()) :: {:ok, term()} | {:error, term()}
+    @spec map_transaction_outcome(term()) ::
+            {:ok, term()} | {:error, term()} | {:__rollback__, term()}
     def map_transaction_outcome({:ok, result}), do: {:ok, result}
-    def map_transaction_outcome({:error, {:arcadic_rollback, reason}}), do: {:error, reason}
+    # A deliberate rollback/2 abort is tagged so Arcadic.Transaction's retry loop treats it as
+    # terminal (D7), symmetric with the HTTP runner; Arcadic.Transaction.transaction/3 unwraps
+    # the tag to the public {:error, reason}.
+    def map_transaction_outcome({:error, {:arcadic_rollback, reason}}), do: {:__rollback__, reason}
     def map_transaction_outcome({:error, %Boltx.Error{} = e}), do: {:error, bolt_error(e)}
 
     def map_transaction_outcome({:error, :rollback}),

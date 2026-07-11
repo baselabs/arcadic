@@ -71,9 +71,11 @@ defmodule Arcadic.QueryStreamTest do
   end
 
   describe "Bolt.map_transaction_outcome/1 (F6)" do
-    test "passes through ok and intentional rollback reasons" do
+    test "passes through ok and tags an intentional rollback (unwrapped to {:error, reason} by transaction/3)" do
       assert Bolt.map_transaction_outcome({:ok, 42}) == {:ok, 42}
-      assert Bolt.map_transaction_outcome({:error, {:arcadic_rollback, :nope}}) == {:error, :nope}
+      # A deliberate abort is tagged {:__rollback__, reason} so the managed-retry loop treats it as
+      # terminal (D7); Arcadic.Transaction.transaction/3 unwraps it to the public {:error, reason}.
+      assert Bolt.map_transaction_outcome({:error, {:arcadic_rollback, :nope}}) == {:__rollback__, :nope}
     end
 
     test "maps DBConnection's bare :rollback commit-failure to a typed error" do

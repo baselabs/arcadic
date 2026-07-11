@@ -38,9 +38,17 @@ defmodule Arcadic.Transaction do
       result =
         if retry, do: run_with_retry(conn, fun, opts, retry, 1), else: dispatch(conn, fun, opts)
 
+      result = unwrap_abort(result)
       {result, %{reason: reason_tag(result)}}
     end)
   end
+
+  # A deliberate rollback/2 abort is tagged {:__rollback__, reason} by BOTH transport runners so the
+  # retry loop's `{:error, %Error{}}` retriable match never mistakes it for a server fault (D7: the
+  # abort reason is caller-chosen, never retried — even when it happens to be a retriable %Error{}).
+  # Unwrap it to the public {:error, reason} here.
+  defp unwrap_abort({:__rollback__, reason}), do: {:error, reason}
+  defp unwrap_abort(other), do: other
 
   # The default (no :retry) path — byte-identical to pre-S10: Bolt native transaction/3, else the
   # HTTP session runner. Extracted so retry wraps it without perturbing the default stacktrace.
@@ -143,7 +151,7 @@ defmodule Arcadic.Transaction do
       catch
         :throw, {@rollback_throw, reason} ->
           _ = safe_rollback(tx)
-          {:error, reason}
+          {:__rollback__, reason}
 
         # Any other non-local exit (a bare throw or an exit) must still roll the
         # session back before it propagates — otherwise the transaction leaks open.
