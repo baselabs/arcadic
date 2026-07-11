@@ -53,6 +53,10 @@ ArcadeDB").
   define server-side functions and triggers (`DEFINE FUNCTION` / `CREATE TRIGGER`);
   `Arcadic.MaterializedView` creates/drops materialized views from a raw `SELECT`;
   `Arcadic.Geo` adds `GEOSPATIAL` index DDL over WKT-string properties.
+- **Time-series** — `Arcadic.TimeSeries` wraps ArcadeDB's Influx-line-protocol
+  writes, JSON query/latest reads, and PromQL read family (instant, range,
+  labels, series) plus `TIMESERIES` DDL, downsampling policies, and continuous
+  aggregates. Requires ArcadeDB ≥ 26.7.2.
 - **Batteries included** — server, security, and backup admin (`Arcadic.Server`,
   `Arcadic.Security`, `Arcadic.Backup`), a migration runner, vector search,
   schema introspection, bulk import, allowlist-validated identifiers, and
@@ -213,6 +217,67 @@ end
 round out the DDL surface. See [`usage-rules.md`](usage-rules.md) for the full
 contract, including the single-line/single-quoted body limit shared by
 `Function`/`Trigger`.
+
+## Time-series
+
+`Arcadic.TimeSeries` is a client for ArcadeDB's time-series wire family (Influx
+line-protocol write, JSON query/latest, PromQL reads) plus the `TIMESERIES` DDL,
+downsampling policies, and continuous aggregates. **Requires ArcadeDB ≥ 26.7.2**
+— an older server answers every `/api/v1/ts` route with a plain 404
+(`%Arcadic.Error{http_status: 404}`).
+
+```elixir
+now_ms = System.system_time(:millisecond)  # write/query take epoch-MILLISECONDS
+now_s = div(now_ms, 1000)                  # the PromQL family takes epoch-SECONDS
+
+:ok =
+  Arcadic.TimeSeries.create_type!(conn, "sensor", "ts",
+    fields: [temperature: "DOUBLE", humidity: "DOUBLE"],
+    tags: [sensor_id: "STRING", location: "STRING"],
+    precision: :millisecond,
+    retention: {90, :days}
+  )
+
+:ok =
+  Arcadic.TimeSeries.write(
+    conn,
+    [
+      %{
+        type: "sensor",
+        tags: %{"sensor_id" => "s1", "location" => "lab-a"},
+        fields: %{"temperature" => 21.5, "humidity" => 45.0},
+        timestamp: now_ms
+      }
+    ],
+    precision: :ms
+  )
+
+{:ok, %{columns: columns, rows: rows, count: count}} =
+  Arcadic.TimeSeries.query(conn, "sensor", from: now_ms - 3_600_000, to: now_ms + 3_600_000)
+
+{:ok, %{columns: latest_columns, latest: latest}} =
+  Arcadic.TimeSeries.latest(conn, "sensor", tag: {"sensor_id", "s1"})
+
+{:ok, %{"resultType" => "vector", "result" => result}} =
+  Arcadic.TimeSeries.prom_query(conn, ~S(sensor{sensor_id="s1"}), time: now_s)
+```
+
+DDL and continuous aggregates (`create_aggregate/3`, `refresh_aggregate/2`,
+`drop_aggregate/2`) ride `Arcadic.command/4` SQL-only, like `Arcadic.Schema`;
+`write`/`write_lines`, `query`/`latest`, and the PromQL family ride four
+optional transport callbacks implemented by the HTTP transport only — Bolt
+returns `{:error, %Arcadic.Error{reason: :not_supported}}`. **Operational
+contract** (read before relying on retries or mixed-type batches): writes are
+**append-only and non-idempotent** (a lost response followed by a naive retry
+duplicates every point); a mixed-type batch **silently drops** any line naming
+an unknown type (204, no error) as long as at least one line's type exists; an
+unknown field name inserts a zero-filled row; an unknown tag key **fails open**
+(ignored, not rejected) on `query/3`/`latest/3`. See
+[`usage-rules.md`](usage-rules.md) for the full contract, the two distinct
+precision grammars (DDL vs wire), and the server's known `fields`-projection
+defect. The [`notebooks/timeseries.livemd`](notebooks/timeseries.livemd)
+notebook walks the full surface, including pointing Prometheus/Grafana at
+ArcadeDB.
 
 ## Options reference
 

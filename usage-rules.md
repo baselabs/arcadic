@@ -202,6 +202,17 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   process, a conflicting second subscriber gets `{:error, :subscriber_conflict}`).
   Delivers `{:arcadic_change, %Arcadic.Changes.Event{}}` to the subscriber pid. See
   Change events below for the reliability contract.
+- **`Arcadic.TimeSeries`** — ArcadeDB time-series client: `TIMESERIES` DDL
+  (`create_type/4`, `drop_type/2`, `add_downsampling/3`, `drop_downsampling/2`),
+  continuous aggregates (`create_aggregate/3`, `refresh_aggregate/2`,
+  `drop_aggregate/2`), Influx line-protocol writes (`write/3`, `write_lines/3`),
+  reads (`query/3`, `latest/3`), and the PromQL family (`prom_query/3`,
+  `prom_query_range/6`, `prom_labels/2`, `prom_label_values/3`, `prom_series/3`)
+  — all + `!`. Requires ArcadeDB ≥ 26.7.2 (an older server 404s every
+  `/api/v1/ts` route). DDL and continuous-aggregate statements ride `Arcadic.command/4`
+  SQL-only (like `Arcadic.Schema`); the write/query/PromQL wire family rides 4
+  optional transport callbacks, HTTP-only. See Time-series below for the full
+  operational contract.
 
 ## Bulk loading
 
@@ -426,6 +437,67 @@ Arcadic.command!(conn, "CREATE (p:Place {wkt: $wkt})", %{"wkt" => "POINT (-122.4
 {:ok, [%{"d" => meters}]} =
   Arcadic.query(conn, "RETURN distance(point(-122.4, 37.8), point(-122.0, 37.3)) AS d")
 ```
+
+## Time-series
+
+The write/read/PromQL wire family rides four optional transport callbacks
+(`ts_write/3`, `ts_query/3`, `ts_latest/3`, `ts_prom_get/4`) implemented by
+the HTTP transport only — Bolt returns
+`{:error, %Arcadic.Error{reason: :not_supported}}` for all four — and a
+pre-26.7.2 server's missing `/api/v1/ts` routes land as a plain
+`%Arcadic.Error{http_status: 404}` (the function surface and version floor
+are on the `Arcadic.TimeSeries` bullet in Public surface above).
+
+**Two distinct precision grammars — do not conflate them.** `create_type/4`'s
+`:precision` opt takes DDL tokens (`:second | :millisecond | :microsecond |
+:nanosecond`, omit → server default nanosecond); `write/3`/`write_lines/3`'s
+`:precision` opt takes wire tokens (`:ns` default | `:us | :ms | :s`) declaring
+the unit of the timestamps in the body — each rejects the other's tokens.
+
+**`query/3`'s `:from`/`:to` are always epoch-milliseconds** (integer or
+`DateTime`, converted), regardless of the type's declared DDL `:precision` —
+the raw wire 400s an ISO-8601 string (through `query/3` a string raises a
+client-side `ArgumentError` before any request), and an epoch value in the
+wrong unit (e.g. nanoseconds) silently returns an empty result, no error.
+`prom_query/3`'s
+`:time` and `prom_query_range/6`'s `from`/`to`/`step` are epoch-**seconds**
+(PromQL convention) — do not reuse `query/3`'s millisecond values there. A
+PromQL instant query's eval-time floor also matters: Prometheus excludes a
+sample written at or after the eval instant, so a sample written at epoch-ms
+`t0` needs `time: div(t0, 1000) + 1`, not `div(t0, 1000)`, to be visible.
+
+**`latest/3` takes at most one tag.** The server applies only the **first**
+`tag=k:v` query parameter and silently ignores the rest (order-dependent —
+probed both orders return different rows), so a multi-entry tags map would be
+a nondeterministic filter; `latest/3`'s `:tag` opt is a single `{key, value}`
+pair, rejected value-free if given more than one.
+
+**Operational contract — write path (every clause live-probed on 26.7.2):**
+- **Append-only, non-idempotent.** No dedup, no upsert, no server-assigned id:
+  the identical point written twice is TWO rows. A lost response followed by a
+  naive retry **duplicates every point in the body** (the same
+  non-confirmability class as `Arcadic.Bulk.ingest/3`). Verify with a windowed
+  `query/3` count before retrying an unconfirmed write.
+- **Mixed-body partial swallow.** When at least one line's type exists, lines
+  naming an UNKNOWN type are **silently dropped** (HTTP 204, no error). The
+  loud 400 `Unknown timeseries type(s)` fires only when every line's type is
+  unknown. `write/3` guarantees syntactic validity by construction but cannot
+  know server type existence (tenant-blind, no schema cache) — a typo'd
+  `type:` in a mixed batch is silent; verify with `query/3` or
+  `Arcadic.Schema.types/1`.
+- **Unknown FIELD zero-fill.** A line whose field name is not on the type
+  inserts a zero-filled row (204, no error).
+- **Unknown tag KEY fails open** on `query/3`/`latest/3` — the filter is
+  ignored server-side rather than rejected.
+- `write_lines/3` (raw passthrough) additionally inherits the malformed-line
+  silent-skip: a syntactically bad line is dropped, not rejected.
+
+**Known upstream defect (26.7.2) — `fields` projection.** `query/3`'s
+`:fields` projection returns a `columns` list carrying the right names but row
+*values* misaligned under a wrong-width header (pending an upstream fix).
+Until fixed, treat a `:fields`-projected
+query's row values as unverified — omit `:fields` (the
+default, full-width columns) when the values matter.
 
 ## Non-negotiable rules
 

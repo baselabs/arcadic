@@ -120,6 +120,7 @@ defmodule Arcadic.MixProject do
           Arcadic.MaterializedView,
           Arcadic.Geo
         ],
+        "Time-series": [Arcadic.TimeSeries],
         Transactions: [Arcadic.Transaction]
       ]
     ]

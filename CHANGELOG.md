@@ -68,6 +68,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Arcadic.Geo` — `create_index/4` / `drop_index/3` (+ `!`) for a `GEOSPATIAL`
   index over a string property holding WKT (this ArcadeDB build has no native
   `POINT` schema type). Geospatial querying rides ordinary `query/4`/`command/4`.
+- `Arcadic.TimeSeries` — a client for ArcadeDB's time-series wire family.
+  Requires ArcadeDB ≥ 26.7.2 (an older server 404s every `/api/v1/ts` route).
+  - `create_type/4` / `drop_type/2` (+ `!`) — `TIMESERIES` DDL (fields, tags,
+    precision, shards, retention, compaction interval); `add_downsampling/3` /
+    `drop_downsampling/2` (+ `!`) — downsampling policies.
+  - `create_aggregate/3` / `refresh_aggregate/2` / `drop_aggregate/2` (+ `!`) —
+    continuous aggregates (`CREATE`/`REFRESH`/`DROP CONTINUOUS AGGREGATE`),
+    materializing a raw `SELECT` as a document type.
+  - `write/3` / `write_lines/3` (+ `!`) — Influx line-protocol writes: `write/3`
+    builds the wire format from structured point maps (typed fields, string
+    tags, Identifier-validated names); `write_lines/3` is a raw passthrough for
+    an already-built line-protocol batch. Append-only, non-idempotent — see the
+    module's Operational contract before relying on retries or mixed-type
+    batches.
+  - `query/3` / `latest/3` (+ `!`) — JSON reads: `query/3` returns the raw
+    columnar shape or, with `:aggregation` + `:bucket_interval`, bucketed
+    aggregations; `latest/3` returns the newest point matching at most one tag.
+  - `prom_query/3`, `prom_query_range/6`, `prom_labels/2`, `prom_label_values/3`,
+    `prom_series/3` (+ `!`) — the PromQL read family (instant, range, labels,
+    label values, series matching), decoding the Prometheus `data` envelope.
+  - Four new optional `Arcadic.Transport` callbacks (`ts_write/3`, `ts_query/3`,
+    `ts_latest/3`, `ts_prom_get/4`) back the wire family, HTTP-only (Bolt
+    returns `{:error, %Arcadic.Error{reason: :not_supported}}`).
+  - New `notebooks/timeseries.livemd` — DDL, writes, query/latest, PromQL,
+    continuous aggregates, downsampling, and pointing Prometheus/Grafana at
+    ArcadeDB.
 
 ### Changed
 

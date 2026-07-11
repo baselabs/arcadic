@@ -105,21 +105,23 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 ## Next action
 
 The client surface and the Phase-1 completion design (S1–S6) are shipped and
-closed. Current work is **Phase 2 — gap closure (S7–S12)**: see the local working
+closed. Current work is **Phase 2 — gap closure (S7–S13)**: see the local working
 docs `docs/superpowers/ROADMAP.md` (detail) and `docs/superpowers/BACKLOG.md`
-(status). S7 (correctness + docs currency) shipped; **S8 (admin & operations —
-G2–G7, G15, G18 + new `Arcadic.Security`/`Arcadic.Backup`) is EXECUTED +
-CLOSED** — closeout `/review-autopilot --fix` complete 2026-07-10 at **100/100**
-(closeout fixes on top of exec; final unit 361/0, dialyzer 0, credo 609/0). The
-closeout added the 11 spec-required `Server.*!` bang variants, closed a Rule-3
-`create_user`/`with_bearer` `FunctionClauseError` secret-leak (value-free
-fallbacks), and relaxed the setting-value guard to allow non-ASCII printable.
-**S9 (ingest & retrieval / graphRAG — G9–G12, G19 + new `Arcadic.Param`/`FullText`/`Bulk`,
-heterogeneous `Vector.fuse/3`, an optional `batch_ingest/3` transport callback, and
-`notebooks/graphrag.livemd`) is EXECUTED + closeout `/review-autopilot --fix` 2026-07-10**
-(exec `53129e0..3c7acf5` + closeout fixes). The env-gated live suite corrected the `/batch`
-edge contract — edges resolve by a structural `@id` temp key (NOT `?idProperty`, probed inert
-and dropped), and the response's `idMapping` (temp `@id` → real RID) is surfaced; closeout
-hardened the batch response envelope (require counts), opt-value guards, empty-property-list
-guards, and the README quickstart. Next: `/brainstorm-autopilot` S10 (managed-retry
-transaction G13 + HA/read-consistency G14).
+(status). S7 (correctness + docs), S8 (admin & operations), S9 (ingest &
+retrieval / graphRAG), S10 (reliability & HA parity), and S11 (events & server
+programmability — `Arcadic.Changes`/`Function`/`Trigger`/`MaterializedView`/`Geo`)
+are all **EXECUTED + CLOSEOUT 100/100**. **S13 (time-series — the Influx/PromQL
+wire family split from G16 at the S11 spec) is EXECUTED** (commits
+`f1fa54b..bcf53bb`, 8 build tasks): new `Arcadic.TimeSeries` — `TIMESERIES` DDL +
+downsampling policies + continuous aggregates (`create_type`/`drop_type`,
+`add_downsampling`/`drop_downsampling`, `create_aggregate`/`refresh_aggregate`/
+`drop_aggregate`, DDL rides `Arcadic.command/4` SQL-only), Influx line-protocol
+ingest (`write`/`write_lines`), reads (`query`/`latest`), and the PromQL family
+(`prom_query`/`prom_query_range`/`prom_labels`/`prom_label_values`/`prom_series`)
+— all + `!` — plus four new optional `Arcadic.Transport` callbacks (HTTP-only)
+and `notebooks/timeseries.livemd`. Requires ArcadeDB ≥ 26.7.2. Sweep: unit
+654/0 + 4 doctests (94 excluded), live `:integration_ts` 9/0 across 2 seeds.
+Not yet closed — closeout review pending. S12 (transport horizon — gRPC spike)
+remains not started. Next: `/review-autopilot` S13 closeout to 100/100, then
+cut release **0.6.0** (the lifecycle release gate — S13 closes a
+consumer-facing capability).
