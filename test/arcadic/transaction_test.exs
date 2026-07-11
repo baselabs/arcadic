@@ -287,6 +287,120 @@ defmodule Arcadic.TransactionTest do
       end
     end
 
+    test "a commit-phase :timeout is post-commit-ambiguous → NOT retried, returned once (D3)" do
+      {:ok, commits} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        cond do
+          String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "AS-1")
+            |> Plug.Conn.send_resp(204, "")
+
+          String.contains?(c.request_path, "/commit/") ->
+            Agent.update(commits, &(&1 + 1))
+
+            c
+            |> Plug.Conn.put_status(500)
+            |> Req.Test.json(%{"error" => "t", "exception" => "com.arcadedb.exception.TimeoutException"})
+
+          true ->
+            Req.Test.json(c, %{"result" => [%{"ok" => true}]})
+        end
+      end)
+
+      assert {:error, %Arcadic.Error{reason: :timeout}} =
+               Arcadic.transaction(conn(), fn tx -> Arcadic.command!(tx, "CREATE (n)") end,
+                 retry: [max_attempts: 3, base_backoff_ms: 1, max_backoff_ms: 2]
+               )
+
+      # commit called EXACTLY ONCE: a commit-phase :timeout is NOT in @retriable_commit
+      # (post-commit-ambiguous — the coordinator may have applied then timed out reporting →
+      # replay could double-apply a non-idempotent write). RED if :timeout is added to that set.
+      assert Agent.get(commits, & &1) == 1
+    end
+
+    test "a commit-phase :not_leader IS retried and succeeds (D3/D15 in the tx path)" do
+      {:ok, commits} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        cond do
+          String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "AS-1")
+            |> Plug.Conn.send_resp(204, "")
+
+          String.contains?(c.request_path, "/commit/") ->
+            n = Agent.get_and_update(commits, &{&1, &1 + 1})
+
+            if n < 2 do
+              c
+              |> Plug.Conn.put_status(400)
+              |> Req.Test.json(%{
+                "error" => "x",
+                "exception" => "com.arcadedb.network.binary.ServerIsNotTheLeaderException"
+              })
+            else
+              Plug.Conn.send_resp(c, 204, "")
+            end
+
+          true ->
+            Req.Test.json(c, %{"result" => [%{"ok" => true}]})
+        end
+      end)
+
+      assert {:ok, [%{"ok" => true}]} =
+               Arcadic.transaction(conn(), fn tx -> Arcadic.command!(tx, "CREATE (n)") end,
+                 retry: [max_attempts: 5, base_backoff_ms: 1, max_backoff_ms: 2]
+               )
+
+      # 2 :not_leader commit rejections + 1 success — RED if :not_leader removed from @retriable_commit.
+      assert Agent.get(commits, & &1) == 3
+    end
+
+    test "a RAISED pre-commit :not_leader (command! rejection) IS retried and succeeds (D3/D4)" do
+      {:ok, cmds} = Agent.start_link(fn -> 0 end)
+
+      Req.Test.stub(__MODULE__, fn c ->
+        cond do
+          String.contains?(c.request_path, "/begin/") ->
+            c
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "AS-1")
+            |> Plug.Conn.send_resp(204, "")
+
+          String.contains?(c.request_path, "/command/") ->
+            n = Agent.get_and_update(cmds, &{&1, &1 + 1})
+
+            if n < 2 do
+              c
+              |> Plug.Conn.put_status(400)
+              |> Req.Test.json(%{
+                "error" => "x",
+                "exception" => "com.arcadedb.network.binary.ServerIsNotTheLeaderException"
+              })
+            else
+              Req.Test.json(c, %{"result" => [%{"ok" => true}]})
+            end
+
+          String.contains?(c.request_path, "/commit/") or
+              String.contains?(c.request_path, "/rollback/") ->
+            Plug.Conn.send_resp(c, 204, "")
+
+          true ->
+            Req.Test.json(c, %{"result" => []})
+        end
+      end)
+
+      assert {:ok, [%{"ok" => true}]} =
+               Arcadic.transaction(conn(), fn tx -> Arcadic.command!(tx, "CREATE (n)") end,
+                 retry: [max_attempts: 5, base_backoff_ms: 1, max_backoff_ms: 2]
+               )
+
+      # command! raised :not_leader twice (pre-commit, rolled back) then succeeded —
+      # RED if :not_leader removed from @retriable_precommit.
+      assert Agent.get(cmds, & &1) == 3
+    end
+
     # --- The RAISED pre-commit arm (the D3 fix). flaky_command_stub fails the /command/ so
     # command! RAISES inside the closure (rolled back = pre-commit). Counts /command/ calls.
     defp flaky_command_stub(fail_cmds) do
