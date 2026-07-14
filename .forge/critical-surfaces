@@ -7,8 +7,9 @@
 # at the moment a security-load-bearing file is touched — it does not block the work.
 #
 # Format: one case-glob per line; `#` comments and blank lines ignored; `*` matches any chars
-# INCLUDING `/`; each glob must match the FULL repo-relative path. Enforced by
-# ~/.claude/hooks/critical-surface-gauge.sh (registered PreToolUse + git-pre-commit).
+# INCLUDING `/`; each glob must match the FULL repo-relative path. Enforced by the PreToolUse
+# Bash hook ~/.claude/hooks/critical-surface-gauge.sh in Claude Code sessions; a raw-terminal
+# `git commit` in this repo bypasses it (there is no git-level pre-commit hook here).
 #
 # Arcadic is a tenant-blind DB client, so the classic migrations/tenancy/money surfaces do not
 # apply here. Its real critical classes are: boundary REDACTION (the value-free error contract),
