@@ -201,9 +201,9 @@ defmodule Arcadic.Integration.GrpcTest do
     assert {:ok, true} = Grpc.ready?(c)
   end
 
-  test "admin/transactional surface is :not_supported (use an HTTP conn)", %{grpc: c} do
-    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.begin(c, [])
-    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.commit(c)
+  # Admin reads are still :not_supported here — wired in T5 (list_databases/database_exists?).
+  # begin/commit are NOW supported (T1) — proven by the transaction tests below.
+  test "admin reads are :not_supported until wired (use an HTTP conn)", %{grpc: c} do
     assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.list_databases(c)
     assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.database_exists?(c, "x")
   end
@@ -236,5 +236,97 @@ defmodule Arcadic.Integration.GrpcTest do
     rendered = inspect(err, structs: false) <> " " <> Exception.message(err)
     refute rendered =~ secret
     refute rendered =~ "NoSuchType"
+  end
+
+  # --- T1: transactions (begin/commit/rollback + tx-context) ---
+
+  # PIVOTAL (T1): the gRPC tx_id is portable across SEPARATE per-call channels — begin (channel A,
+  # closed), write (channel B, closed), read-sees-uncommitted (channel C), commit — all distinct
+  # connections. This is the load-bearing property for the per-call-connect tx model (and the pool).
+  test "transaction/3 commits across separate per-call channels; a read in-tx sees the uncommitted write",
+       %{grpc: c} do
+    :ok = create_type!(c, "TxDoc")
+    marker = "txok_#{System.unique_integer([:positive])}"
+
+    assert {:ok, :committed} =
+             Arcadic.transaction(c, fn tx ->
+               Arcadic.command!(tx, "INSERT INTO TxDoc SET name = :n", %{"n" => marker},
+                 language: "sql"
+               )
+
+               # read INSIDE the tx (another per-call channel) sees the uncommitted write
+               assert {:ok, [%{"c" => 1}]} =
+                        Arcadic.query(
+                          tx,
+                          "SELECT count(*) AS c FROM TxDoc WHERE name = :n",
+                          %{"n" => marker},
+                          language: "sql"
+                        )
+
+               :committed
+             end)
+
+    # after commit, visible outside the tx
+    assert {:ok, [%{"c" => 1}]} =
+             Arcadic.query(c, "SELECT count(*) AS c FROM TxDoc WHERE name = :n", %{"n" => marker},
+               language: "sql"
+             )
+  end
+
+  test "transaction/3 rollback discards the write", %{grpc: c} do
+    :ok = create_type!(c, "TxRoll")
+    marker = "roll_#{System.unique_integer([:positive])}"
+
+    assert {:error, :aborted} =
+             Arcadic.transaction(c, fn tx ->
+               Arcadic.command!(tx, "INSERT INTO TxRoll SET name = :n", %{"n" => marker},
+                 language: "sql"
+               )
+
+               Arcadic.Transaction.rollback(tx, :aborted)
+             end)
+
+    assert {:ok, [%{"c" => 0}]} =
+             Arcadic.query(c, "SELECT count(*) AS c FROM TxRoll WHERE name = :n", %{"n" => marker},
+               language: "sql"
+             )
+  end
+
+  test "nested transaction raises (no savepoint contract)", %{grpc: c} do
+    assert_raise ArgumentError, fn ->
+      Arcadic.transaction(c, fn tx ->
+        Arcadic.transaction(tx, fn _ -> :never end)
+      end)
+    end
+  end
+
+  test "transaction/3 accepts an isolation option", %{grpc: c} do
+    :ok = create_type!(c, "TxIso")
+    marker = "iso_#{System.unique_integer([:positive])}"
+
+    assert {:ok, :ok} =
+             Arcadic.transaction(
+               c,
+               fn tx ->
+                 Arcadic.command!(tx, "INSERT INTO TxIso SET name = :n", %{"n" => marker},
+                   language: "sql"
+                 )
+
+                 :ok
+               end,
+               isolation: :repeatable_read
+             )
+  end
+
+  defp create_type!(c, type) do
+    {:ok, _} =
+      Grpc.execute(
+        c,
+        :write,
+        %{statement: "CREATE DOCUMENT TYPE #{type} IF NOT EXISTS", params: %{}, language: "sql"},
+        []
+      )
+
+    :ok
   end
 end

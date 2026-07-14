@@ -11,8 +11,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     **real server cursor** — the server runs the query once and streams `batch_size`-sized
     batches as the client iterates (O(n), server-paced), where the HTTP transport can only
     offset-page (O(n²) in the general case) and Bolt streams Cypher only. `execute/4` covers
-    the unary read/write path; everything admin/transactional is `:not_supported` (use an HTTP
-    `Conn` for those, exactly as the Bolt transport does).
+    the unary read/write path, and `begin`/`commit`/`rollback` run gRPC session transactions
+    (tx-scoped reads/writes carry the `transaction_id`). The remaining HTTP-shaped admin/server
+    surface (server settings, users, login/logout) stays `:not_supported` — use an HTTP `Conn`.
 
     ## Selecting it
 
@@ -53,6 +54,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     alias Com.Arcadedb.Grpc.{
       ArcadeDbAdminService,
       ArcadeDbService,
+      BeginTransactionRequest,
+      CommitTransactionRequest,
       DatabaseCredentials,
       ExecuteCommandRequest,
       ExecuteQueryRequest,
@@ -60,7 +63,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       GrpcMap,
       GrpcValue,
       PingRequest,
-      StreamQueryRequest
+      RollbackTransactionRequest,
+      StreamQueryRequest,
+      TransactionContext
     }
 
     @impl true
@@ -70,7 +75,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         query: stmt,
         parameters: encode_params(params),
         language: normalize_language(lang),
-        credentials: credentials(conn)
+        credentials: credentials(conn),
+        transaction: transaction_context(conn)
       }
 
       with_channel(conn, fn ch ->
@@ -91,7 +97,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         parameters: encode_params(params),
         language: normalize_language(lang),
         return_rows: true,
-        credentials: credentials(conn)
+        credentials: credentials(conn),
+        transaction: transaction_context(conn)
       }
 
       with_channel(conn, fn ch ->
@@ -114,7 +121,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         language: normalize_language(lang),
         batch_size: batch,
         retrieval_mode: :CURSOR,
-        credentials: credentials(conn)
+        credentials: credentials(conn),
+        transaction: transaction_context(conn)
       }
 
       # Lazy end-to-end: connect, open the server cursor, then Stream.transform maps each wire
@@ -149,13 +157,64 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     @impl true
     def health?(%Conn{} = conn), do: ping(conn)
 
-    # --- Admin / transactional surface: not this transport's job (use an HTTP Conn) ---
+    # --- Transactions (BeginTransaction/CommitTransaction/RollbackTransaction, DATA plane) ---
+    # The gRPC tx is a server-side `transaction_id` (portable across separate channels — proven live:
+    # begin/execute/commit each ran over their own per-call connection). `execute`/`query_stream`
+    # carry it as a `TransactionContext` when `conn.session_id` is set (see transaction_context/1).
     @impl true
-    def begin(%Conn{}, _opts), do: {:error, %Error{reason: :not_supported}}
+    def begin(%Conn{} = conn, opts) do
+      req = %BeginTransactionRequest{
+        database: conn.database,
+        credentials: credentials(conn),
+        isolation: isolation(opts[:isolation])
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.begin_transaction(ch, req, metadata: metadata(conn)) do
+          {:ok, %{transaction_id: id}} when is_binary(id) and id != "" -> {:ok, id}
+          {:ok, _} -> {:error, %Error{reason: :transaction_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
     @impl true
-    def commit(%Conn{}), do: {:error, %Error{reason: :not_supported}}
+    def commit(%Conn{session_id: sid} = conn) when is_binary(sid) do
+      req = %CommitTransactionRequest{
+        transaction: %TransactionContext{transaction_id: sid, database: conn.database},
+        credentials: credentials(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.commit_transaction(ch, req, metadata: metadata(conn)) do
+          {:ok, %{success: true}} -> :ok
+          {:ok, _} -> {:error, %Error{reason: :transaction_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    def commit(%Conn{}), do: {:error, %Error{reason: :transaction_error}}
+
     @impl true
-    def rollback(%Conn{}), do: {:error, %Error{reason: :not_supported}}
+    def rollback(%Conn{session_id: sid} = conn) when is_binary(sid) do
+      req = %RollbackTransactionRequest{
+        transaction: %TransactionContext{transaction_id: sid, database: conn.database},
+        credentials: credentials(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.rollback_transaction(ch, req, metadata: metadata(conn)) do
+          {:ok, %{success: true}} -> :ok
+          {:ok, _} -> {:error, %Error{reason: :transaction_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    def rollback(%Conn{}), do: {:error, %Error{reason: :transaction_error}}
+
+    # --- Admin / server surface not this transport's job (use an HTTP Conn) ---
     @impl true
     def server_command(%Conn{}, _command), do: {:error, %Error{reason: :not_supported}}
     @impl true
@@ -287,6 +346,30 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp normalize_language(nil), do: "sql"
     defp normalize_language(lang) when is_atom(lang), do: Atom.to_string(lang)
     defp normalize_language(lang) when is_binary(lang), do: lang
+
+    # A read/write inside `transaction/3` carries the session's tx_id (stored in `conn.session_id`
+    # by the Transaction facade) so the server runs it in the open transaction; nil (no session) →
+    # the request's `transaction` field stays unset (autocommit), exactly as before.
+    defp transaction_context(%Conn{session_id: sid, database: db}) when is_binary(sid),
+      do: %TransactionContext{transaction_id: sid, database: db}
+
+    defp transaction_context(%Conn{}), do: nil
+
+    # `:isolation` maps to the TransactionIsolation enum; nil leaves the server default. Unknown is
+    # rejected value-free (mirrors the HTTP transport's isolation_body — echo the allowed set, never
+    # the offending value).
+    defp isolation(nil), do: nil
+    defp isolation(:read_uncommitted), do: :READ_UNCOMMITTED
+    defp isolation(:read_committed), do: :READ_COMMITTED
+    defp isolation(:repeatable_read), do: :REPEATABLE_READ
+    defp isolation(:serializable), do: :SERIALIZABLE
+
+    defp isolation(_other),
+      do:
+        raise(
+          ArgumentError,
+          "unknown isolation; allowed: [:read_uncommitted, :read_committed, :repeatable_read, :serializable]"
+        )
 
     # --- value codec (Elixir <-> GrpcValue) ---
 
