@@ -104,6 +104,9 @@ defmodule Arcadic.Conn do
   def with_bearer(%__MODULE__{transport: Arcadic.Transport.Bolt}, _token),
     do: raise(ArgumentError, "bearer auth requires the HTTP transport")
 
+  def with_bearer(%__MODULE__{transport: Arcadic.Transport.Grpc}, _token),
+    do: raise(ArgumentError, "bearer auth requires the HTTP transport")
+
   def with_bearer(%__MODULE__{} = conn, token) when is_binary(token),
     do: %{conn | auth: {:bearer, token}, session_id: nil}
 
@@ -129,9 +132,14 @@ defmodule Arcadic.Conn do
     end
   end
 
-  # Bolt authenticates from transport_options (:username/:password), never conn.auth, so a
-  # {:bearer, _} conn on Bolt would silently ignore the token — reject value-free at construction.
+  # Bolt and gRPC authenticate from their own credential channels (Bolt: transport_options
+  # :username/:password; gRPC: {user, pass} → x-arcade-* metadata), never a bearer token, so a
+  # {:bearer, _} conn on either would SILENTLY drop the token and send blank/no creds — a fail-open.
+  # Reject value-free at construction.
   defp validate_auth!({:bearer, _}, Arcadic.Transport.Bolt),
+    do: raise(ArgumentError, "bearer auth requires the HTTP transport")
+
+  defp validate_auth!({:bearer, _}, Arcadic.Transport.Grpc),
     do: raise(ArgumentError, "bearer auth requires the HTTP transport")
 
   defp validate_auth!(_auth, _transport), do: :ok

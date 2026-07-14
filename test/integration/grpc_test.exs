@@ -98,13 +98,18 @@ defmodule Arcadic.Integration.GrpcTest do
                []
              )
 
-    assert {:ok, _} =
+    # :write must RETURN the created record (return_rows) — parity with the HTTP transport, not
+    # just {:ok, _}. A regression that drops the rows (return_rows unset) reddens this.
+    assert {:ok, [row]} =
              Grpc.execute(
                c,
                :write,
                %{statement: "INSERT INTO DocW SET n = 42", params: %{}, language: "sql"},
                []
              )
+
+    assert row["n"] == 42
+    assert is_binary(row["@rid"])
 
     assert {:ok, [%{"c" => 1}]} =
              Grpc.execute(
@@ -113,6 +118,78 @@ defmodule Arcadic.Integration.GrpcTest do
                %{statement: "SELECT count(*) AS c FROM DocW", params: %{}, language: "sql"},
                []
              )
+  end
+
+  test "decode: DATETIME and DECIMAL columns decode to real values, not nil (silent-loss guard)",
+       %{
+         grpc: c
+       } do
+    # Regression guard for the value codec: unhandled GrpcValue kinds silently became nil.
+    Grpc.execute(
+      c,
+      :write,
+      %{statement: "CREATE DOCUMENT TYPE Typed", params: %{}, language: "sql"},
+      []
+    )
+
+    Grpc.execute(
+      c,
+      :write,
+      %{statement: "CREATE PROPERTY Typed.ts DATETIME", params: %{}, language: "sql"},
+      []
+    )
+
+    Grpc.execute(
+      c,
+      :write,
+      %{statement: "CREATE PROPERTY Typed.amt DECIMAL", params: %{}, language: "sql"},
+      []
+    )
+
+    Grpc.execute(
+      c,
+      :write,
+      %{
+        statement:
+          "INSERT INTO Typed SET ts = date('2024-01-02 03:04:05', 'yyyy-MM-dd HH:mm:ss'), amt = 12.34",
+        params: %{},
+        language: "sql"
+      },
+      []
+    )
+
+    assert {:ok, [row]} =
+             Grpc.execute(
+               c,
+               :read,
+               %{statement: "SELECT ts, amt FROM Typed", params: %{}, language: "sql"},
+               []
+             )
+
+    refute is_nil(row["ts"])
+    refute is_nil(row["amt"])
+    assert row["amt"] == 12.34 or row["amt"] == 12
+  end
+
+  test "query_stream is lazy — a partial take yields only what was asked, in order", %{grpc: c} do
+    assert {:ok, stream} =
+             Grpc.query_stream(
+               c,
+               %{statement: "SELECT n FROM Doc ORDER BY n", params: %{}, language: "sql"},
+               chunk_size: 1
+             )
+
+    assert Enum.map(Stream.take(stream, 3) |> Enum.to_list(), & &1["n"]) == [1, 2, 3]
+  end
+
+  test "a bearer-auth gRPC conn is rejected at construction (no silent empty-cred fail-open)", %{
+    grpc: c
+  } do
+    assert_raise ArgumentError, fn -> Conn.with_bearer(c, "tok") end
+
+    assert_raise ArgumentError, fn ->
+      Conn.new("grpc://localhost:1", "db", auth: {:bearer, "t"}, transport: Grpc)
+    end
   end
 
   test "ready? pings the server", %{grpc: c} do

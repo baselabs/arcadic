@@ -22,16 +22,28 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
             auth: {"root", System.fetch_env!("PW")}
           )
 
-    Requires the optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. The endpoint
-    is taken from the `Conn.base_url` host/port (any scheme; `grpc://` reads best); credentials
-    from `Conn.auth` (`{user, pass}`). TLS: pass `transport_options: [tls: true]` (verify_peer via
-    `:castore`); plaintext otherwise.
+    Requires the optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. The endpoint host
+    and port come from `Conn.base_url`; credentials from `Conn.auth` (`{user, pass}` only — a bearer
+    conn is rejected at construction, as with Bolt). Admin RPCs (Ping) authenticate by the request
+    `credentials` field; data RPCs by `x-arcade-user`/`-password`/`-database` metadata.
 
-    ## Redaction
+    ## TLS
+
+    Enabled by a secure URL scheme (`grpcs://` / `grpc+tls://` / `https://`) or
+    `transport_options: [tls: true]`; plaintext otherwise. Because credentials travel on the wire,
+    prefer a secure scheme in production. When TLS is on it ALWAYS verifies the server certificate
+    against the OS trust store (`verify_peer` + `:public_key.cacerts_get/0`) — never `verify_none`;
+    an untrusted cert fails the handshake.
+
+    ## Redaction & value handling
 
     A gRPC `RPCError.message` can echo the offending statement or value. This transport maps every
     failure to an atom-only `Arcadic.Error`/`Arcadic.TransportError` reason and NEVER surfaces the
-    raw wire message — the value-free contract the HTTP/Bolt transports honor.
+    raw wire message — the value-free contract the HTTP/Bolt transports honor. **Caveat:** the
+    underlying `:grpc` library emits `[:grpc, :client, :rpc, *]` telemetry whose metadata carries the
+    full request (including bound params) — a consumer that attaches a handler and logs that metadata
+    would surface param values OUTSIDE arcadic's redaction boundary. DECIMAL columns decode to a
+    float (lossy for very large scales), since arcadic takes no arbitrary-decimal dependency.
     """
     @behaviour Arcadic.Transport
 
@@ -77,6 +89,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         command: stmt,
         parameters: encode_params(params),
         language: normalize_language(lang),
+        return_rows: true,
         credentials: credentials(conn)
       }
 
@@ -103,18 +116,31 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         credentials: credentials(conn)
       }
 
-      # Stream.resource keeps the channel open across enumeration and closes it (disconnect)
-      # when the consumer finishes or the process crashes — the server cursor lives for exactly
-      # that window. Each element yielded upstream is a QueryResult batch; we flat-map its records.
-      stream =
-        Stream.resource(
-          fn -> start_stream(conn, req) end,
-          &next_batch/1,
-          &close_stream/1
-        )
-
-      {:ok, stream}
+      # Lazy end-to-end: connect, open the server cursor, then Stream.transform maps each wire
+      # batch to its rows AS THE CONSUMER PULLS (no eager drain — that would defeat the cursor and
+      # buffer the whole result in memory). Its after-fun disconnects the channel on normal
+      # completion, early `Stream.take` halt, OR a raise mid-enumeration, so the server cursor lives
+      # exactly the consume window and the channel never leaks.
+      case connect(conn) do
+        {:ok, ch} -> open_cursor(conn, ch, req)
+        {:error, e} -> {:error, e}
+      end
     end
+
+    defp open_cursor(conn, ch, req) do
+      case ArcadeDbService.Stub.stream_query(ch, req, metadata: metadata(conn)) do
+        {:ok, grpc_stream} ->
+          {:ok,
+           Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &safe_disconnect/1)}
+
+        {:error, e} ->
+          safe_disconnect(ch)
+          {:error, map_error(e)}
+      end
+    end
+
+    defp stream_reducer({:ok, %{records: recs}}, ch), do: {Enum.map(recs, &decode_record/1), ch}
+    defp stream_reducer({:error, e}, ch), do: {[{:error, map_error(e)}], ch}
 
     @impl true
     def ready?(%Conn{} = conn), do: ping(conn)
@@ -155,38 +181,6 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
-    defp start_stream(conn, req) do
-      case connect(conn) do
-        {:ok, ch} ->
-          case ArcadeDbService.Stub.stream_query(ch, req, metadata: metadata(conn)) do
-            {:ok, grpc_stream} -> {:cont, ch, grpc_stream}
-            {:error, e} -> {:halt_err, ch, map_error(e)}
-          end
-
-        {:error, e} ->
-          {:halt_err, nil, e}
-      end
-    end
-
-    defp next_batch({:halt_err, ch, err}), do: {[{:error, err}], {:done, ch}}
-    defp next_batch({:done, _ch} = acc), do: {:halt, acc}
-
-    defp next_batch({:cont, ch, grpc_stream}) do
-      # Pull the whole gRPC stream once (it is itself lazy on the wire); flat-map records.
-      # A per-batch error is surfaced as a single {:error, _} element, never a raised value.
-      rows =
-        Enum.flat_map(grpc_stream, fn
-          {:ok, %{records: recs}} -> Enum.map(recs, &decode_record/1)
-          {:error, e} -> [{:error, map_error(e)}]
-        end)
-
-      {rows, {:done, ch}}
-    end
-
-    defp close_stream({_tag, nil}), do: :ok
-    defp close_stream({_tag, ch}), do: safe_disconnect(ch)
-    defp close_stream(_), do: :ok
-
     defp with_channel(conn, fun) do
       case connect(conn) do
         {:ok, ch} ->
@@ -211,11 +205,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       ensure_client_supervisor()
       uri = URI.parse(conn.base_url)
       endpoint = "#{uri.host || "localhost"}:#{uri.port || 50051}"
-
-      opts =
-        if Keyword.get(conn.transport_options, :tls, false),
-          do: [cred: GRPC.Credential.new(ssl: [])],
-          else: []
+      opts = if tls?(conn, uri), do: [cred: tls_credential()], else: []
 
       case GRPC.Stub.connect(endpoint, opts) do
         {:ok, ch} ->
@@ -228,6 +218,22 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         {:error, _reason} ->
           {:error, %TransportError{reason: :connect_failed}}
       end
+    end
+
+    # TLS is enabled by a secure URL scheme (`grpcs://`, `grpc+tls://`, `https://`) or an explicit
+    # `transport_options: [tls: true]`. Plaintext otherwise — the endpoint is credential-bearing, so
+    # prefer a secure scheme in production. When on, TLS ALWAYS verifies the server certificate
+    # against the OS trust store (`verify_peer` + `:public_key.cacerts_get/0`); it never falls back
+    # to `verify_none`. An untrusted/self-signed server cert fails the handshake (fail-closed).
+    defp tls?(%Conn{} = conn, %URI{scheme: scheme}),
+      do:
+        scheme in ["grpcs", "grpc+tls", "https"] or
+          Keyword.get(conn.transport_options, :tls, false)
+
+    defp tls_credential do
+      GRPC.Credential.new(
+        ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
+      )
     end
 
     # grpc 0.11 routes client connections through a global `GRPC.Client.Supervisor` that its
@@ -293,11 +299,25 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp to_grpc_value(v) when is_integer(v), do: %GrpcValue{kind: {:int64_value, v}}
     defp to_grpc_value(v) when is_float(v), do: %GrpcValue{kind: {:double_value, v}}
     defp to_grpc_value(v) when is_binary(v), do: %GrpcValue{kind: {:string_value, v}}
+    defp to_grpc_value(nil), do: %GrpcValue{}
+
+    # Temporal structs bind as ISO-8601 strings (what the HTTP transport's Jason encoding also
+    # sends) — a struct would otherwise fall into the `is_map` clause below and serialize its
+    # `__struct__`/fields as a nonsense map. Handle them BEFORE the generic map clause.
+    defp to_grpc_value(%Date{} = d), do: %GrpcValue{kind: {:string_value, Date.to_iso8601(d)}}
+
+    defp to_grpc_value(%DateTime{} = d),
+      do: %GrpcValue{kind: {:string_value, DateTime.to_iso8601(d)}}
+
+    defp to_grpc_value(%NaiveDateTime{} = d),
+      do: %GrpcValue{kind: {:string_value, NaiveDateTime.to_iso8601(d)}}
 
     defp to_grpc_value(v) when is_list(v),
       do: %GrpcValue{kind: {:list_value, %GrpcList{values: Enum.map(v, &to_grpc_value/1)}}}
 
-    defp to_grpc_value(v) when is_map(v) do
+    # Plain (non-struct) maps only — a struct param not handled above is a caller error, and
+    # raising loudly beats silently shipping a `__struct__`-bearing map to the server.
+    defp to_grpc_value(v) when is_map(v) and not is_struct(v) do
       %GrpcValue{
         kind:
           {:map_value,
@@ -305,13 +325,15 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
     end
 
-    defp to_grpc_value(nil), do: %GrpcValue{}
-
     defp decode_record(%{properties: props} = rec) do
-      base = Map.new(props, fn {k, gv} -> {k, from_grpc_value(gv)} end)
-      base = if rec.rid not in [nil, ""], do: Map.put(base, "@rid", rec.rid), else: base
-      if rec.type not in [nil, ""], do: Map.put(base, "@type", rec.type), else: base
+      props
+      |> Map.new(fn {k, gv} -> {k, from_grpc_value(gv)} end)
+      |> put_identity("@rid", rec.rid)
+      |> put_identity("@type", rec.type)
     end
+
+    defp put_identity(map, _key, v) when v in [nil, ""], do: map
+    defp put_identity(map, key, v), do: Map.put(map, key, v)
 
     defp from_grpc_value(%GrpcValue{kind: kind}), do: from_kind(kind)
     defp from_grpc_value(_), do: nil
@@ -329,8 +351,23 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       do: Map.new(es, fn {k, gv} -> {k, from_grpc_value(gv)} end)
 
     defp from_kind({:link_value, link}), do: link.rid
+
+    # A DATETIME column arrives as a google.protobuf.Timestamp (seconds + nanos) → decode to a
+    # DateTime rather than dropping it to nil (the silent-data-loss class).
+    defp from_kind({:timestamp_value, %{seconds: s, nanos: n}}),
+      do: DateTime.from_unix!(s * 1_000_000_000 + n, :nanosecond)
+
+    # An exact DECIMAL arrives as unscaled + scale. Elixir has no built-in arbitrary decimal and
+    # arcadic takes no Decimal dep, so surface it as a float (unscaled × 10^-scale) — lossy for
+    # very large scales, but a real number beats a silent nil. Documented in the moduledoc.
+    defp from_kind({:decimal_value, %{unscaled: u, scale: sc}}), do: u / :math.pow(10, sc)
+
+    # An embedded document → a nested plain map (same shape a map_value decodes to).
+    defp from_kind({:embedded_value, %{fields: f}}),
+      do: Map.new(f, fn {k, gv} -> {k, from_grpc_value(gv)} end)
+
     defp from_kind(nil), do: nil
-    # Embedded/timestamp/decimal: fall through to nil rather than leak a raw struct into a row.
+    # Any genuinely unknown/unset kind → nil (an absent oneof, not a droppable value).
     defp from_kind(_), do: nil
 
     # --- error mapping (value-free: an atom reason, never the wire message) ---
