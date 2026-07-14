@@ -3,13 +3,17 @@ defmodule Arcadic.Integration.CapabilityTest do
   Release capability contract: one live smoke over the public HTTP surface, proving a
   published tarball exposes and can call the whole client contract in a single place —
   readiness, database create/drop/exists?/list, query, command, transaction, migration,
-  query_stream, and backup/list/restore. Optional Bolt v4 is proven by the
-  `:integration_bolt` suite (`test/integration/bolt_test.exs`).
+  query_stream, backup/list/restore, and the 0.6.0 HTTP surfaces (managed-retry
+  transaction, read-consistency + bookmarked read, and the Function/Geo/Trigger/
+  MaterializedView programmability DDL). Optional Bolt v4 is proven by the
+  `:integration_bolt` suite (`test/integration/bolt_test.exs`); TimeSeries (needs a
+  ≥26.7.2 substrate) by `:integration_ts` and the live `/ws` change feed by
+  `:integration_ws`.
   """
   use ExUnit.Case, async: false
   @moduletag :integration
 
-  alias Arcadic.{Backup, Conn, Migrator, Server}
+  alias Arcadic.{Backup, Conn, Function, Geo, MaterializedView, Migrator, Server, Trigger}
 
   defmodule CapMigration do
     @behaviour Arcadic.Migration
@@ -102,5 +106,62 @@ defmodule Arcadic.Integration.CapabilityTest do
 
     # restore/3 is callable and validates value-free (no wire) on a bad URL
     assert {:error, :invalid_url} = Backup.restore(conn, "ok_name", "file:///a\nDROP")
+
+    # --- 0.6.0 surfaces (HTTP only; TimeSeries → :integration_ts, live Changes → :integration_ws) ---
+
+    # S10 managed-retry transaction: the opt-in :retry path commits the happy path
+    assert {:ok, _} =
+             Arcadic.transaction(
+               conn,
+               fn tx ->
+                 Arcadic.command!(tx, "CREATE (v:CapNode {name:$n})", %{"n" => "retry"})
+               end,
+               retry: true
+             )
+
+    # S10 read-consistency conn + bookmarked read (single-server: the bookmark stays nil)
+    rw = Conn.with_consistency(conn, :read_your_writes)
+
+    assert {:ok, _rows, bm_conn} =
+             Arcadic.query_bookmarked(rw, "MATCH (v:CapNode) RETURN count(v) AS c", %{})
+
+    assert bm_conn.read_after == nil
+
+    # S11 programmability DDL on a throwaway type
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE CapSrc", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY CapSrc.wkt STRING", %{}, language: "sql")
+    Arcadic.command!(conn, "INSERT INTO CapSrc SET wkt = 'POINT (1 1)'", %{}, language: "sql")
+
+    assert :ok = Geo.create_index(conn, "CapSrc", "wkt")
+
+    caplib = "caplib_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+
+    assert :ok =
+             Function.define(conn, "#{caplib}.add", "return a + b",
+               params: [:a, :b],
+               language: :js
+             )
+
+    assert {:ok, [%{"t" => 3}]} =
+             Arcadic.query(conn, "SELECT `#{caplib}.add`(:a, :b) AS t", %{"a" => 1, "b" => 2},
+               language: "sql"
+             )
+
+    assert :ok = Function.delete(conn, "#{caplib}.add")
+
+    cap_tg = "cap_tg_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+
+    assert :ok =
+             Trigger.create(conn, cap_tg, "CapSrc",
+               timing: :before,
+               event: :create,
+               execute: {:sql, "return"}
+             )
+
+    assert :ok = Trigger.drop(conn, cap_tg)
+
+    cap_mv = "cap_mv_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    assert :ok = MaterializedView.create(conn, cap_mv, "SELECT FROM CapSrc")
+    assert :ok = MaterializedView.drop(conn, cap_mv)
   end
 end

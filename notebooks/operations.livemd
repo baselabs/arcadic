@@ -41,7 +41,7 @@ defaults match the `docker run` above.
 > **Requires an unreleased arcadic build.** `Arcadic.Changes`, `Arcadic.Function`,
 > `Arcadic.Trigger`, `Arcadic.MaterializedView`, and `Arcadic.Geo` — everything
 > from **Change events** onward below — are not in any published release yet.
-> Concretely, as of this writing: Hex hosts only `0.4.0`, so the `~> 0.5`
+> Concretely, as of this writing: Hex hosts only `0.4.0`, so the `~> 0.6`
 > requirement below doesn't resolve at all (`Mix.install` fails immediately with
 > `version solving failed`, not a silent downgrade to `0.4.0`); the modules also
 > aren't yet on the `main` branch on GitHub, so `{:arcadic, github:
@@ -49,11 +49,11 @@ defaults match the `docker run` above.
 > to run this notebook today is a local path dependency against a checkout that
 > has these modules, e.g. `{:arcadic, path: "/path/to/your/arcadic/checkout"}` in
 > place of the pin below. Once a release carrying them is published (and pushed),
-> the `~> 0.5` pin resolves normally and this note no longer applies.
+> the `~> 0.6` pin resolves normally and this note no longer applies.
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.5"},
+  {:arcadic, "~> 0.6"},
   {:mint_web_socket, "~> 1.0"},
   {:kino, "~> 0.14"}
 ])
