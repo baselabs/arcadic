@@ -84,6 +84,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       ExecuteCommandRequest,
       ExecuteQueryRequest,
       ExistsDatabaseRequest,
+      GetDatabaseInfoRequest,
       GetServerInfoRequest,
       GraphBatchChunk,
       GraphBatchOptions,
@@ -685,6 +686,28 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         case ArcadeDbAdminService.Stub.exists_database(ch, req) do
           {:ok, %{exists: exists}} -> {:ok, exists}
           {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    @impl true
+    def database_info(%Conn{} = conn) do
+      with_channel(conn, fn ch ->
+        req = %GetDatabaseInfoRequest{credentials: credentials(conn), name: conn.database}
+
+        case ArcadeDbAdminService.Stub.get_database_info(ch, req) do
+          {:ok, info} ->
+            {:ok,
+             %{
+               database: info.database,
+               type: info.type,
+               records: info.records,
+               classes: info.classes,
+               size_bytes: info.size_bytes
+             }}
+
+          {:error, e} ->
+            {:error, map_error(e)}
         end
       end)
     end

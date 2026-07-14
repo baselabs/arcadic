@@ -227,6 +227,17 @@ defmodule Arcadic.Integration.GrpcTest do
     assert is_binary(info["version"]) and info["version"] != ""
   end
 
+  test "Server.database_info over gRPC returns db type + record/class counts (GetDatabaseInfo)",
+       %{
+         grpc: c
+       } do
+    assert {:ok, info} = Arcadic.Server.database_info(c)
+    assert info.database == c.database
+    assert is_binary(info.type)
+    assert is_integer(info.records) and info.records >= 0
+    assert is_integer(info.classes) and info.classes >= 0
+  end
+
   test "explain over gRPC returns a plan", %{grpc: c} do
     assert {:ok, %{plan: plan}} = Arcadic.explain(c, "SELECT FROM Doc", %{}, language: "sql")
     assert is_binary(plan) and plan != ""

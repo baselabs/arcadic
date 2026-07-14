@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Arcadic.Server.database_info/1` — database-level info (`%{database, type, records, classes,
+  size_bytes}`) for the connection's database. Over gRPC it maps to `GetDatabaseInfo` (all fields);
+  over HTTP to `SELECT FROM schema:database` (name/size; record and class counts are `nil`, not
+  cheaply available on that transport).
 - `Arcadic.Transport.Grpc` — an optional third transport over ArcadeDB's gRPC plugin, behind the
   new optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. Its headline is streaming:
   `StreamQuery` in `CURSOR` mode is a real server cursor (O(n), server-paced, language-agnostic),
@@ -23,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `:chunk_size`), returning insert-summary counts.
   - **`Arcadic.Record`** — single-record create/lookup/update/delete by `@rid` (raw maps).
   - **Admin** — `Arcadic.Server` database management (`list_databases`/`database_exists?`/`create_database`/
-    `drop_database`/`info`) and `Arcadic.explain`/`profile`.
+    `drop_database`/`info`/`database_info`) and `Arcadic.explain`/`profile`.
   - **`Arcadic.Transport.Grpc.ChannelPool`** — an opt-in, caller-supervised shared-channel cache; add
     it to your supervision tree for channel reuse (absent, a fresh channel per call is used).
 

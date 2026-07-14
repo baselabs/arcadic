@@ -55,6 +55,15 @@ defmodule Arcadic.Server do
   @spec ready?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
   def ready?(%Conn{} = conn), do: Admin.span(:ready?, fn -> conn.transport.ready?(conn) end)
 
+  @doc """
+  Database-level info for `conn.database` — `%{database, type, records, classes, size_bytes}`. Fields a
+  transport can't cheaply provide are `nil` (HTTP gives name/size; gRPC gives all). `:not_supported` on
+  a transport without the callback (e.g. Bolt).
+  """
+  @spec database_info(Conn.t()) :: {:ok, map()} | {:error, atom() | Exception.t()}
+  def database_info(%Conn{} = conn),
+    do: Admin.span(:database_info, fn -> Admin.call(conn, :database_info) end)
+
   @modes ~w(basic default cluster)a
 
   @doc "Server info map. `:mode` ∈ #{inspect(@modes)} (default `:basic`); `:default`/`:cluster` add metrics/settings."

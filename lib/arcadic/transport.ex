@@ -55,6 +55,15 @@ defmodule Arcadic.Transport do
   @callback database_exists?(Conn.t(), name :: String.t()) ::
               {:ok, boolean()} | {:error, Error.t() | TransportError.t()}
 
+  @doc """
+  Database-level info for `conn.database` — `%{database, type, records, classes, size_bytes}`. Fields a
+  transport can't cheaply provide are `nil` (HTTP's `schema:database` gives name/size but not record/class
+  counts; gRPC `GetDatabaseInfo` gives all). Optional — HTTP and gRPC implement it.
+  """
+  @callback database_info(Conn.t()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks database_info: 1
+
   @doc "Server readiness."
   @callback ready?(Conn.t()) :: {:ok, boolean()} | {:error, TransportError.t()}
 

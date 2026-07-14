@@ -860,6 +860,26 @@ defmodule Arcadic.Transport.HTTP do
   end
 
   @impl true
+  def database_info(%Conn{} = conn) do
+    # HTTP has no dedicated db-info endpoint; `SELECT FROM schema:database` returns the row. Records
+    # and class COUNTS aren't in that row (they are in gRPC's GetDatabaseInfo) → `nil` here, so the
+    # normalized shape is consistent across transports (nil = not cheaply available on this transport).
+    req = %{statement: "SELECT FROM schema:database", params: %{}, language: "sql"}
+
+    case execute(conn, :read, req, []) do
+      {:ok, [row | _]} ->
+        {:ok,
+         %{database: row["name"], type: nil, records: nil, classes: nil, size_bytes: row["size"]}}
+
+      {:ok, []} ->
+        {:error, %Error{reason: :not_found}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @impl true
   def execute_async(%Conn{} = conn, request, opts) do
     body = request |> build_body(opts) |> Map.put(:awaitResponse, false)
 

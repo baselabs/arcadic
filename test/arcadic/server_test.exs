@@ -39,6 +39,17 @@ defmodule Arcadic.ServerTest do
     assert {:ok, ["commercegraph", "mydb"]} = Server.list_databases(conn())
   end
 
+  test "database_info over HTTP normalizes the schema:database row (records/classes nil)" do
+    Req.Test.stub(__MODULE__, fn c ->
+      Req.Test.json(c, %{
+        "result" => [%{"name" => "mydb", "size" => 4096, "mode" => "READ_WRITE"}]
+      })
+    end)
+
+    assert {:ok, info} = Server.database_info(conn())
+    assert info == %{database: "mydb", type: nil, records: nil, classes: nil, size_bytes: 4096}
+  end
+
   test "ready? returns {:ok, true} on 204 and {:error, _} on transport failure" do
     Req.Test.stub(__MODULE__, fn c -> Plug.Conn.send_resp(c, 204, "") end)
     assert {:ok, true} = Server.ready?(conn())
