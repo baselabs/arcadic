@@ -42,3 +42,4 @@ priv/plts/
 /docs/
 
 .forge/
+graphify-out/
