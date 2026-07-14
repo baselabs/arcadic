@@ -1,0 +1,47 @@
+# Arcadic critical surfaces — the forge gauge tripwire.
+#
+# A `git commit` that STAGES any file matching a glob below is a T2 track by default
+# (design note + security & gate-integrity closeout lenses; ~/.claude/skills/forge/SKILL.md § T2).
+# The commit is DENIED unless the message carries a `track: T2` trailer line, or the author
+# deliberately gauged it lower and set FORGE_GAUGE_ACK=1. This forces a conscious gauge decision
+# at the moment a security-load-bearing file is touched — it does not block the work.
+#
+# Format: one case-glob per line; `#` comments and blank lines ignored; `*` matches any chars
+# INCLUDING `/`; each glob must match the FULL repo-relative path. Enforced by
+# ~/.claude/hooks/critical-surface-gauge.sh (registered PreToolUse + git-pre-commit).
+#
+# Arcadic is a tenant-blind DB client, so the classic migrations/tenancy/money surfaces do not
+# apply here. Its real critical classes are: boundary REDACTION (the value-free error contract),
+# AUTH/credentials, statement INJECTION (interpolated identifiers + typed value markers),
+# TRANSPORT security (TLS defaults, BOLT_* env hijack), and SSRF on import/export URLs. Each glob
+# below is one of those classes. Conservative-complete for the known escape classes; widen on a
+# traced escape, never speculatively.
+
+# Boundary redaction — the value-free error contract. The recurring Rule-3 value-echo leak class
+# (9x across S7-S13: FunctionClauseError/coercion-raise blame echoing params) lives at this boundary.
+lib/arcadic/error.ex
+lib/arcadic/transport_error.ex
+
+# Auth / identity — login/logout, users, groups, API tokens, session credentials.
+lib/arcadic/security.ex
+
+# Connection — basic/bearer auth, TLS scheme selection (bolt+s secure-default), consistency headers.
+lib/arcadic/conn.ex
+
+# Injection — the allowlist/shape validation for identifiers that reach a statement by interpolation
+# (index refs, order keys, groupBy) rather than as bound params.
+lib/arcadic/identifier.ex
+
+# Typed param value-wrappers ($int8/$bytes) — client-side range validation is the value-free/fail-loud
+# guard that keeps an out-of-range value out of the server 400 that would echo it.
+lib/arcadic/param.ex
+
+# Transport security — BOLT_* env-var credential/port hijack, TLS verify_peer default, leak_safe_connect
+# chokepoint; HTTP auth headers, TLS, and URL construction.
+lib/arcadic/transport/bolt.ex
+lib/arcadic/transport/bolt/*
+lib/arcadic/transport/http.ex
+
+# SSRF discriminator — IMPORT/EXPORT DATABASE URL handling and its allowlist validation.
+lib/arcadic/import.ex
+lib/arcadic/export.ex
