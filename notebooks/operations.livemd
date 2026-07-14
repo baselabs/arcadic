@@ -53,7 +53,7 @@ defaults match the `docker run` above.
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.6"},
+  {:arcadic, "~> 0.7"},
   {:mint_web_socket, "~> 1.0"},
   {:kino, "~> 0.14"}
 ])
