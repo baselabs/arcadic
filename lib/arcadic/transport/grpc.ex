@@ -42,10 +42,20 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     failure to an atom-only `Arcadic.Error`/`Arcadic.TransportError` reason and NEVER surfaces the
     raw wire message — the value-free contract the HTTP/Bolt transports honor. **Caveat:** the
     underlying `:grpc` library emits `[:grpc, :client, :rpc, *]` telemetry whose metadata carries the
-    full request (including bound params) — a consumer that attaches a handler and logs that metadata
-    would surface param values OUTSIDE arcadic's redaction boundary. DECIMAL columns decode to a
+    full request (bound params, AND for `batch_ingest`/ingest the whole record batch) — a consumer
+    that attaches a handler and logs that metadata would surface those values OUTSIDE arcadic's
+    redaction boundary. Values are encoded value-free: any value with no gRPC representation (an
+    integer outside int64, a non-UTF-8 binary) yields `{:error, :invalid_params | :invalid_record}`,
+    never a `Protobuf.EncodeError` that echoes it — so gRPC rejects a few large-integer values HTTP
+    accepts as JSON text (a documented, mechanically-forced divergence). DECIMAL columns decode to a
     float (lossy for large scales; an out-of-range scale decodes to `nil` rather than crashing the
     row), since arcadic takes no arbitrary-decimal dependency.
+
+    `batch_ingest` (graph vertex/edge bulk) maps to the gRPC `GraphBatchLoad` stream — the twin of
+    HTTP `POST /api/v1/batch`. Because `GraphBatchChunk` carries no transaction field, a batch CANNOT
+    join an open `transaction/3`; called on a session-bearing conn it **fails closed**
+    (`:transaction_unsupported`) rather than silently auto-commit outside the caller's tx (on HTTP the
+    same batch rides the session). Use the document-ingest arm or an `UNWIND $rows` statement in a tx.
     """
     @behaviour Arcadic.Transport
 
@@ -59,6 +69,10 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       DatabaseCredentials,
       ExecuteCommandRequest,
       ExecuteQueryRequest,
+      GraphBatchChunk,
+      GraphBatchOptions,
+      GraphBatchRecord,
+      GraphBatchResult,
       GrpcList,
       GrpcMap,
       GrpcValue,
@@ -70,10 +84,20 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     @impl true
     def execute(%Conn{} = conn, :read, %{statement: stmt, params: params, language: lang}, _opts) do
+      with {:ok, encoded} <- safe_encode_params(params),
+           do: run_query(conn, stmt, encoded, lang)
+    end
+
+    def execute(%Conn{} = conn, :write, %{statement: stmt, params: params, language: lang}, _opts) do
+      with {:ok, encoded} <- safe_encode_params(params),
+           do: run_command(conn, stmt, encoded, lang)
+    end
+
+    defp run_query(conn, stmt, encoded, lang) do
       req = %ExecuteQueryRequest{
         database: conn.database,
         query: stmt,
-        parameters: encode_params(params),
+        parameters: encoded,
         language: normalize_language(lang),
         credentials: credentials(conn),
         transaction: transaction_context(conn)
@@ -90,11 +114,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
-    def execute(%Conn{} = conn, :write, %{statement: stmt, params: params, language: lang}, _opts) do
+    defp run_command(conn, stmt, encoded, lang) do
       req = %ExecuteCommandRequest{
         database: conn.database,
         command: stmt,
-        parameters: encode_params(params),
+        parameters: encoded,
         language: normalize_language(lang),
         return_rows: true,
         credentials: credentials(conn),
@@ -114,25 +138,27 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     def query_stream(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, opts) do
       batch = Keyword.get(opts, :chunk_size, 100)
 
-      req = %StreamQueryRequest{
-        database: conn.database,
-        query: stmt,
-        parameters: encode_params(params),
-        language: normalize_language(lang),
-        batch_size: batch,
-        retrieval_mode: :CURSOR,
-        credentials: credentials(conn),
-        transaction: transaction_context(conn)
-      }
+      with {:ok, encoded} <- safe_encode_params(params) do
+        req = %StreamQueryRequest{
+          database: conn.database,
+          query: stmt,
+          parameters: encoded,
+          language: normalize_language(lang),
+          batch_size: batch,
+          retrieval_mode: :CURSOR,
+          credentials: credentials(conn),
+          transaction: transaction_context(conn)
+        }
 
-      # Lazy end-to-end: connect, open the server cursor, then Stream.transform maps each wire
-      # batch to its rows AS THE CONSUMER PULLS (no eager drain — that would defeat the cursor and
-      # buffer the whole result in memory). Its after-fun disconnects the channel on normal
-      # completion, early `Stream.take` halt, OR a raise mid-enumeration, so the server cursor lives
-      # exactly the consume window and the channel never leaks.
-      case connect(conn) do
-        {:ok, ch} -> open_cursor(conn, ch, req)
-        {:error, e} -> {:error, e}
+        # Lazy end-to-end: connect, open the server cursor, then Stream.transform maps each wire
+        # batch to its rows AS THE CONSUMER PULLS (no eager drain — that would defeat the cursor and
+        # buffer the whole result in memory). Its after-fun disconnects the channel on normal
+        # completion, early `Stream.take` halt, OR a raise mid-enumeration, so the server cursor lives
+        # exactly the consume window and the channel never leaks.
+        case connect(conn) do
+          {:ok, ch} -> open_cursor(conn, ch, req)
+          {:error, e} -> {:error, e}
+        end
       end
     end
 
@@ -150,6 +176,105 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp stream_reducer({:ok, %{records: recs}}, ch), do: {Enum.map(recs, &decode_record/1), ch}
     defp stream_reducer({:error, e}, ch), do: {[{:error, map_error(e)}], ch}
+
+    # --- Bulk graph ingest → GraphBatchLoad (client-streaming; the twin of HTTP POST /api/v1/batch) ---
+    @impl true
+    # GraphBatchChunk carries NO `transaction` field — a batch cannot join an open tx. Fail CLOSED
+    # when the conn holds a session, rather than silently auto-commit the batch OUTSIDE the caller's
+    # transaction (a silent-atomicity divergence from HTTP, which rides the session header). A caller
+    # in a tx uses the document-ingest arm (InsertChunk carries a tx) or an `UNWIND $rows` statement.
+    def batch_ingest(%Conn{session_id: sid}, _ndjson, _opts) when is_binary(sid),
+      do: {:error, %Error{reason: :transaction_unsupported}}
+
+    def batch_ingest(%Conn{} = conn, ndjson, opts) do
+      # Build + VALIDATE all records value-free BEFORE opening the channel: an unencodable value
+      # (int > int64, non-UTF-8) → {:error, :invalid_record} with NO value echoed, and no mid-send
+      # raise. The re-parse is safe — Bulk only hands us NDJSON it just encoded (bulk.ex).
+      with {:ok, records} <- ndjson_to_graph_records(ndjson),
+           do: run_graph_batch(conn, records, opts)
+    end
+
+    defp run_graph_batch(conn, records, opts) do
+      chunk = %GraphBatchChunk{
+        database: conn.database,
+        credentials: credentials(conn),
+        options: graph_batch_options(opts),
+        records: records
+      }
+
+      with_channel(conn, fn ch ->
+        stream = ArcadeDbService.Stub.graph_batch_load(ch, metadata: metadata(conn))
+        GRPC.Stub.send_request(stream, chunk, end_stream: true)
+
+        case GRPC.Stub.recv(stream) do
+          {:ok, %GraphBatchResult{} = r} -> {:ok, graph_result_to_http_shape(r)}
+          {:ok, _other} -> {:error, %Error{reason: :server_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    defp ndjson_to_graph_records(ndjson) do
+      ndjson
+      |> IO.iodata_to_binary()
+      |> String.split("\n", trim: true)
+      |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+        with {:ok, map} <- Jason.decode(line),
+             {:ok, rec} <- map_to_graph_record(map) do
+          {:cont, {:ok, [rec | acc]}}
+        else
+          _ -> {:halt, {:error, %Error{reason: :invalid_record}}}
+        end
+      end)
+      |> case do
+        {:ok, recs} -> {:ok, Enum.reverse(recs)}
+        {:error, _} = err -> err
+      end
+    end
+
+    # Map a caller vertex/edge map → GraphBatchRecord: structural keys become typed fields, the rest
+    # become value-free-encoded properties (safe_map_entries → :error on an unencodable value).
+    defp map_to_graph_record(map) when is_map(map) do
+      {structural, props} = Map.split(map, ["@type", "@class", "@id", "@from", "@to"])
+
+      case safe_map_entries(props) do
+        {:ok, prop_entries} ->
+          {:ok,
+           %GraphBatchRecord{
+             kind: if(Map.get(structural, "@type") == "edge", do: :EDGE, else: :VERTEX),
+             type_name: Map.get(structural, "@class"),
+             temp_id: Map.get(structural, "@id"),
+             from_ref: Map.get(structural, "@from"),
+             to_ref: Map.get(structural, "@to"),
+             properties: prop_entries
+           }}
+
+        :error ->
+          :error
+      end
+    end
+
+    defp map_to_graph_record(_), do: :error
+
+    defp graph_batch_options(opts) do
+      light = Keyword.get(opts, :light_edges)
+      commit = Keyword.get(opts, :commit_every)
+
+      if is_nil(light) and is_nil(commit),
+        do: nil,
+        else: %GraphBatchOptions{light_edges: light || false, commit_every: commit || 0}
+    end
+
+    # Re-key the atom-keyed GraphBatchResult → the string-keyed map `Arcadic.Bulk.shape/1` requires
+    # (`is_map_key(body, "verticesCreated")`), so Bulk.ingest is transport-transparent across HTTP/gRPC.
+    defp graph_result_to_http_shape(%GraphBatchResult{} = r) do
+      %{
+        "verticesCreated" => r.vertices_created,
+        "edgesCreated" => r.edges_created,
+        "elapsedMs" => r.elapsed_ms,
+        "idMapping" => r.id_mapping || %{}
+      }
+    end
 
     @impl true
     def ready?(%Conn{} = conn), do: ping(conn)
@@ -371,42 +496,95 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
           "unknown isolation; allowed: [:read_uncommitted, :read_committed, :repeatable_read, :serializable]"
         )
 
-    # --- value codec (Elixir <-> GrpcValue) ---
+    # --- value codec (Elixir <-> GrpcValue), VALUE-FREE (Rule 3) ---
+    #
+    # `safe_to_grpc_value/1` returns `{:ok, %GrpcValue{}} | :error` and NEVER raises on caller data:
+    # an integer outside int64, a non-UTF-8 binary, or an unhandled struct returns `:error` (total
+    # fallback) so the caller surfaces a value-free `:invalid_params`/`:invalid_record` rather than a
+    # `Protobuf.EncodeError` whose message ECHOES the offending value (the recurring facade-leak class).
+    # ONE encoder feeds every arm — params (execute/query_stream), batch_ingest records, and (later)
+    # document-ingest/record rows — so a guard added here protects all of them.
 
-    defp encode_params(params) when is_map(params) do
-      Map.new(params, fn {k, v} -> {to_string(k), to_grpc_value(v)} end)
+    @int64_min -0x8000000000000000
+    @int64_max 0x7FFFFFFFFFFFFFFF
+
+    defp safe_encode_params(params) when is_map(params) do
+      Enum.reduce_while(params, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
+        case safe_to_grpc_value(v) do
+          {:ok, gv} -> {:cont, {:ok, Map.put(acc, to_string(k), gv)}}
+          :error -> {:halt, {:error, %Error{reason: :invalid_params}}}
+        end
+      end)
     end
 
-    defp encode_params(_), do: %{}
+    defp safe_encode_params(_), do: {:ok, %{}}
 
-    defp to_grpc_value(v) when is_boolean(v), do: %GrpcValue{kind: {:bool_value, v}}
-    defp to_grpc_value(v) when is_integer(v), do: %GrpcValue{kind: {:int64_value, v}}
-    defp to_grpc_value(v) when is_float(v), do: %GrpcValue{kind: {:double_value, v}}
-    defp to_grpc_value(v) when is_binary(v), do: %GrpcValue{kind: {:string_value, v}}
-    defp to_grpc_value(nil), do: %GrpcValue{}
+    defp safe_to_grpc_value(v) when is_boolean(v), do: {:ok, %GrpcValue{kind: {:bool_value, v}}}
 
-    # Temporal structs bind as ISO-8601 strings (what the HTTP transport's Jason encoding also
-    # sends) — a struct would otherwise fall into the `is_map` clause below and serialize its
-    # `__struct__`/fields as a nonsense map. Handle them BEFORE the generic map clause.
-    defp to_grpc_value(%Date{} = d), do: %GrpcValue{kind: {:string_value, Date.to_iso8601(d)}}
+    defp safe_to_grpc_value(v) when is_integer(v) and v >= @int64_min and v <= @int64_max,
+      do: {:ok, %GrpcValue{kind: {:int64_value, v}}}
 
-    defp to_grpc_value(%DateTime{} = d),
-      do: %GrpcValue{kind: {:string_value, DateTime.to_iso8601(d)}}
+    # An int outside int64 has no proto representation (unlike HTTP's JSON text). Reject value-free.
+    defp safe_to_grpc_value(v) when is_integer(v), do: :error
 
-    defp to_grpc_value(%NaiveDateTime{} = d),
-      do: %GrpcValue{kind: {:string_value, NaiveDateTime.to_iso8601(d)}}
+    defp safe_to_grpc_value(v) when is_float(v), do: {:ok, %GrpcValue{kind: {:double_value, v}}}
 
-    defp to_grpc_value(v) when is_list(v),
-      do: %GrpcValue{kind: {:list_value, %GrpcList{values: Enum.map(v, &to_grpc_value/1)}}}
+    defp safe_to_grpc_value(v) when is_binary(v) do
+      if String.valid?(v), do: {:ok, %GrpcValue{kind: {:string_value, v}}}, else: :error
+    end
 
-    # Plain (non-struct) maps only — a struct param not handled above is a caller error, and
-    # raising loudly beats silently shipping a `__struct__`-bearing map to the server.
-    defp to_grpc_value(v) when is_map(v) and not is_struct(v) do
-      %GrpcValue{
-        kind:
-          {:map_value,
-           %GrpcMap{entries: Map.new(v, fn {k, val} -> {to_string(k), to_grpc_value(val)} end)}}
-      }
+    defp safe_to_grpc_value(nil), do: {:ok, %GrpcValue{}}
+
+    # Temporal structs bind as ISO-8601 strings (matching the HTTP transport's Jason encoding);
+    # handle them BEFORE the generic map clause so they don't serialize `__struct__` as a map.
+    defp safe_to_grpc_value(%Date{} = d),
+      do: {:ok, %GrpcValue{kind: {:string_value, Date.to_iso8601(d)}}}
+
+    defp safe_to_grpc_value(%DateTime{} = d),
+      do: {:ok, %GrpcValue{kind: {:string_value, DateTime.to_iso8601(d)}}}
+
+    defp safe_to_grpc_value(%NaiveDateTime{} = d),
+      do: {:ok, %GrpcValue{kind: {:string_value, NaiveDateTime.to_iso8601(d)}}}
+
+    defp safe_to_grpc_value(v) when is_list(v) do
+      case safe_reduce(v, &safe_to_grpc_value/1) do
+        {:ok, vals} -> {:ok, %GrpcValue{kind: {:list_value, %GrpcList{values: vals}}}}
+        :error -> :error
+      end
+    end
+
+    defp safe_to_grpc_value(v) when is_map(v) and not is_struct(v) do
+      case safe_map_entries(v) do
+        {:ok, entries} -> {:ok, %GrpcValue{kind: {:map_value, %GrpcMap{entries: entries}}}}
+        :error -> :error
+      end
+    end
+
+    # Total fallback: any unhandled struct/term → value-free error (never a `__struct__`-bearing map
+    # nor a raise that echoes the value).
+    defp safe_to_grpc_value(_), do: :error
+
+    defp safe_reduce(list, fun) do
+      list
+      |> Enum.reduce_while({:ok, []}, fn v, {:ok, acc} ->
+        case fun.(v) do
+          {:ok, gv} -> {:cont, {:ok, [gv | acc]}}
+          :error -> {:halt, :error}
+        end
+      end)
+      |> case do
+        {:ok, acc} -> {:ok, Enum.reverse(acc)}
+        :error -> :error
+      end
+    end
+
+    defp safe_map_entries(map) do
+      Enum.reduce_while(map, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
+        case safe_to_grpc_value(v) do
+          {:ok, gv} -> {:cont, {:ok, Map.put(acc, to_string(k), gv)}}
+          :error -> {:halt, :error}
+        end
+      end)
     end
 
     defp decode_record(%{properties: props} = rec) do

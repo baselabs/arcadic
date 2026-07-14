@@ -287,7 +287,10 @@ defmodule Arcadic.Integration.GrpcTest do
              end)
 
     assert {:ok, [%{"c" => 0}]} =
-             Arcadic.query(c, "SELECT count(*) AS c FROM TxRoll WHERE name = :n", %{"n" => marker},
+             Arcadic.query(
+               c,
+               "SELECT count(*) AS c FROM TxRoll WHERE name = :n",
+               %{"n" => marker},
                language: "sql"
              )
   end
@@ -328,5 +331,130 @@ defmodule Arcadic.Integration.GrpcTest do
       )
 
     :ok
+  end
+
+  # --- T2: GraphBatchLoad → Arcadic.Bulk.ingest (graph ingest), transport-transparent with HTTP ---
+
+  defp create_graph_types!(c) do
+    for ddl <- ["CREATE VERTEX TYPE Person IF NOT EXISTS", "CREATE EDGE TYPE Knows IF NOT EXISTS"] do
+      {:ok, _} = Grpc.execute(c, :write, %{statement: ddl, params: %{}, language: "sql"}, [])
+    end
+
+    :ok
+  end
+
+  test "Bulk.ingest over gRPC: counts + idMapping, and read-back proves property values + types (non-vacuous)",
+       %{grpc: c} do
+    :ok = create_graph_types!(c)
+    a = "alice_#{System.unique_integer([:positive])}"
+    b = "bob_#{System.unique_integer([:positive])}"
+
+    assert {:ok, %{vertices_created: 2, edges_created: 1, id_mapping: idm}} =
+             Arcadic.Bulk.ingest(c, [
+               %{
+                 "@type" => "vertex",
+                 "@class" => "Person",
+                 "@id" => "p1",
+                 "name" => a,
+                 "age" => 30
+               },
+               %{"@type" => "vertex", "@class" => "Person", "@id" => "p2", "name" => b},
+               %{"@type" => "edge", "@class" => "Knows", "@from" => "p1", "@to" => "p2"}
+             ])
+
+    assert is_binary(idm["p1"]) and is_binary(idm["p2"])
+
+    # NON-VACUOUS: read the ingested vertex back and assert the property VALUE + runtime TYPE
+    # survived (a count-only assertion can't see a type/serialization divergence).
+    assert {:ok, [row]} =
+             Grpc.execute(
+               c,
+               :read,
+               %{
+                 statement: "SELECT name, age FROM Person WHERE name = :n",
+                 params: %{"n" => a},
+                 language: "sql"
+               },
+               []
+             )
+
+    assert row["name"] == a
+    assert row["age"] == 30 and is_integer(row["age"])
+  end
+
+  test "Bulk.ingest over gRPC: an edge referencing an existing vertex's real @rid resolves", %{
+    grpc: c
+  } do
+    :ok = create_graph_types!(c)
+    seed = "seed_#{System.unique_integer([:positive])}"
+
+    assert {:ok, %{id_mapping: %{"s1" => rid}}} =
+             Arcadic.Bulk.ingest(c, [
+               %{"@type" => "vertex", "@class" => "Person", "@id" => "s1", "name" => seed}
+             ])
+
+    # second batch: an edge from the EXISTING vertex's real #bucket:pos rid to a new temp-id vertex
+    assert {:ok, %{vertices_created: 1, edges_created: 1}} =
+             Arcadic.Bulk.ingest(c, [
+               %{"@type" => "vertex", "@class" => "Person", "@id" => "n1", "name" => "linked"},
+               %{"@type" => "edge", "@class" => "Knows", "@from" => rid, "@to" => "n1"}
+             ])
+  end
+
+  test "batch_ingest FAILS CLOSED when the conn is in a transaction (GraphBatchChunk carries no tx)",
+       %{grpc: c} do
+    # A session-bearing conn (as inside transaction/3) must be REFUSED value-free, never silently
+    # auto-committed outside the caller's tx. Guard is on the transport callback directly.
+    tx_conn = %{c | session_id: "tx_pinned_fake"}
+    ndjson = [~s({"@type":"vertex","@class":"Person","@id":"t1","name":"intx"}), "\n"]
+
+    assert {:error, %Arcadic.Error{reason: :transaction_unsupported}} =
+             Grpc.batch_ingest(tx_conn, ndjson, [])
+
+    # And through the facade inside a real tx: the ingest refuses (the empty tx commits, but NO
+    # rows were auto-committed — the fail-closed guarantee).
+    assert {:ok, {:error, %Arcadic.Error{reason: :transaction_unsupported}}} =
+             Arcadic.transaction(c, fn tx ->
+               Arcadic.Bulk.ingest(tx, [
+                 %{"@type" => "vertex", "@class" => "Person", "@id" => "t1", "name" => "intx"}
+               ])
+             end)
+  end
+
+  # TRIPWIRE (redaction, RED-first): a property value outside int64 encodes fine through the facade's
+  # Jason (HTTP would accept it as text) but the gRPC int64 codec must reject it VALUE-FREE — never a
+  # protobuf-encode raise echoing the value (the Rule-3 coercion-raise class).
+  test "Bulk.ingest over gRPC: an unencodable (>int64) value is rejected value-free, no raise", %{
+    grpc: c
+  } do
+    :ok = create_graph_types!(c)
+    secret = 99_999_999_999_999_999_999_999_999
+
+    assert {:error, err} =
+             Arcadic.Bulk.ingest(c, [
+               %{"@type" => "vertex", "@class" => "Person", "@id" => "x1", "big" => secret}
+             ])
+
+    assert match?(%Arcadic.Error{reason: :invalid_record}, err)
+    refute inspect(err, structs: false) =~ "99999999999999999999999999"
+  end
+
+  # The same shared codec protects the params path: a >int64 PARAM must surface a value-free error,
+  # not a raise that echoes it (pre-existing leak on execute/query_stream, closed by the shared encoder).
+  test "execute over gRPC: a >int64 param is rejected value-free, no raise", %{grpc: c} do
+    secret = 88_888_888_888_888_888_888_888_888
+
+    assert {:error, err} =
+             Grpc.execute(
+               c,
+               :read,
+               %{statement: "SELECT :p AS p", params: %{"p" => secret}, language: "sql"},
+               []
+             )
+
+    assert match?(%Arcadic.Error{reason: :invalid_params}, err) or
+             match?(%Arcadic.TransportError{}, err)
+
+    refute inspect(err, structs: false) =~ "88888888888888888888888888"
   end
 end
