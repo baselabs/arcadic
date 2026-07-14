@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     it to your supervision tree for channel reuse (absent, a fresh channel per call is used).
 
   Errors are value-free (an atom reason, never the gRPC wire message; per-row ingest errors surface
-  only a row index + a categorical code). TLS is `verify_peer` by default (secure `grpcs://` scheme or
-  `transport_options: [tls: true]`). A few operations are intentionally HTTP-only: server settings,
+  only a row index + a categorical code). Transport is plaintext by default; enabling TLS (a secure
+  `grpcs://` scheme or `transport_options: [tls: true]`) verifies the server certificate against the OS
+  trust store (`verify_peer`, never `verify_none`). A few operations are intentionally HTTP-only: server settings,
   user management (the server itself does not implement it over gRPC), token login/logout, time-series,
   and HA read-consistency — use an HTTP `Conn` for those. Select it with
   `transport: Arcadic.Transport.Grpc` and a `grpc://host:port` URL; credentials come from `Conn.auth`.

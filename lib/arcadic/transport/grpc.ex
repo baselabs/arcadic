@@ -219,19 +219,20 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         # completion, early `Stream.take` halt, OR a raise mid-enumeration, so the server cursor lives
         # exactly the consume window and the channel never leaks.
         case connect(conn) do
-          {:ok, ch} -> open_cursor(conn, ch, req)
+          {:ok, ch, mode} -> open_cursor(conn, ch, req, mode)
           {:error, e} -> {:error, e}
         end
       end
     end
 
-    defp open_cursor(conn, ch, req) do
+    defp open_cursor(conn, ch, req, mode) do
       case ArcadeDbService.Stub.stream_query(ch, req, metadata: metadata(conn)) do
         {:ok, grpc_stream} ->
-          {:ok, Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &release/1)}
+          {:ok,
+           Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &release(&1, mode))}
 
         {:error, e} ->
-          release(ch)
+          release(ch, mode)
           {:error, map_error(e)}
       end
     end
@@ -352,9 +353,24 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       # A `:chunk_size` opt streams the rows via InsertStream (client-streaming, chunked send) instead
       # of the unary BulkInsert — the two share the same InsertSummary result shape.
       with {:ok, grpc_rows} <- encode_rows(rows) do
-        case Keyword.get(opts, :chunk_size) do
-          nil -> run_bulk_insert(conn, target_class, grpc_rows, opts)
-          size -> run_insert_stream(conn, target_class, grpc_rows, size, opts)
+        cond do
+          # Empty rows never hit the wire (defense-in-depth: the facade already short-circuits, but a
+          # direct callback caller must not stall — an empty InsertStream sends no chunk + never
+          # half-closes, so `recv` would block forever).
+          grpc_rows == [] ->
+            {:ok, %{received: 0, inserted: 0, updated: 0, ignored: 0, failed: 0, errors: []}}
+
+          Keyword.get(opts, :chunk_size) ->
+            run_insert_stream(
+              conn,
+              target_class,
+              grpc_rows,
+              Keyword.fetch!(opts, :chunk_size),
+              opts
+            )
+
+          true ->
+            run_bulk_insert(conn, target_class, grpc_rows, opts)
         end
       end
     end
@@ -452,8 +468,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       do:
         raise(ArgumentError, "unknown conflict_mode; allowed: [:error, :update, :ignore, :abort]")
 
-    # Value-free: the per-row error carries only `row_index` + the categorical `code` (a server enum
-    # string) — NEVER the InsertError `message`/`field`, which can echo the offending value (Rule 3).
+    # Value-free: the per-row error carries only `row_index` + a categorical `code` — NEVER the
+    # InsertError `message`/`field`, which echo the offending value (Rule 3). `code` is proto-typed a
+    # free-form `:string`, so it is NOT trusted verbatim: `safe_code/1` passes it through ONLY if it
+    # matches a categorical-token shape (upper-snake, bounded), else `nil` — so a value-bearing `code`
+    # for some rejection type cannot leak, regardless of server behavior.
     defp insert_summary_to_map(%InsertSummary{} = s) do
       %{
         received: s.received,
@@ -461,9 +480,15 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         updated: s.updated,
         ignored: s.ignored,
         failed: s.failed,
-        errors: Enum.map(s.errors, fn e -> %{row_index: e.row_index, code: e.code} end)
+        errors: Enum.map(s.errors, fn e -> %{row_index: e.row_index, code: safe_code(e.code)} end)
       }
     end
+
+    defp safe_code(code) when is_binary(code) do
+      if Regex.match?(~r/\A[A-Z][A-Z0-9_]{0,63}\z/, code), do: code, else: nil
+    end
+
+    defp safe_code(_), do: nil
 
     # --- Single-record CRUD (CreateRecord/LookupByRid/UpdateRecord/DeleteRecord; raw maps) ---
     @impl true
@@ -772,11 +797,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp with_channel(conn, fun) do
       case connect(conn) do
-        {:ok, ch} ->
+        {:ok, ch, mode} ->
           try do
             fun.(ch)
           after
-            release(ch)
+            release(ch, mode)
           end
 
         {:error, e} ->
@@ -785,20 +810,29 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     # When the caller-supervised ChannelPool is running, reuse its shared endpoint channel; otherwise
-    # open a fresh per-call channel (the default). `release/1` mirrors this: a pooled channel is left
-    # open (the pool owns its lifetime), a per-call channel is disconnected. The pool is expected to be
-    # started at boot, so connect/release see a consistent pool state within a call.
+    # open a fresh per-call channel (the default). `connect/1` returns the MODE (`:pooled | :per_call`)
+    # so `release/2` mirrors the SAME decision even if the pool starts/stops/crashes between connect and
+    # release: a pooled channel is left open (the pool owns its lifetime), a per-call channel is
+    # disconnected. Deciding at release-time instead would leak a per-call channel (pool started midway)
+    # or tear a shared channel out from concurrent callers (pool crashed midway).
     defp connect(%Conn{} = conn) do
       ensure_client_supervisor()
 
-      if pool_running?(),
-        do: ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end),
-        else: raw_connect(conn, 1)
+      if pool_running?() do
+        tag_mode(
+          ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end),
+          :pooled
+        )
+      else
+        tag_mode(raw_connect(conn, 1), :per_call)
+      end
     end
 
-    defp release(ch) do
-      if pool_running?(), do: :ok, else: safe_disconnect(ch)
-    end
+    defp tag_mode({:ok, ch}, mode), do: {:ok, ch, mode}
+    defp tag_mode({:error, _} = err, _mode), do: err
+
+    defp release(_ch, :pooled), do: :ok
+    defp release(ch, :per_call), do: safe_disconnect(ch)
 
     defp pool_running?, do: Process.whereis(ChannelPool) != nil
 
@@ -933,14 +967,23 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp safe_encode_params(params) when is_map(params) do
       Enum.reduce_while(params, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
-        case safe_to_grpc_value(v) do
-          {:ok, gv} -> {:cont, {:ok, Map.put(acc, to_string(k), gv)}}
+        with {:ok, key} <- safe_key(k), {:ok, gv} <- safe_to_grpc_value(v) do
+          {:cont, {:ok, Map.put(acc, key, gv)}}
+        else
           :error -> {:halt, {:error, %Error{reason: :invalid_params}}}
         end
       end)
     end
 
     defp safe_encode_params(_), do: {:ok, %{}}
+
+    # A map KEY is coerced value-free too (not just the value): a non-String.Chars key (tuple, pid,
+    # map, …) would raise `Protocol.UndefinedError` echoing the key, breaking the no-raise-on-caller-
+    # data invariant. Allow the JSON-ish key shapes; anything else → `:error` (value-free).
+    defp safe_key(k) when is_binary(k), do: {:ok, k}
+    defp safe_key(k) when is_atom(k), do: {:ok, Atom.to_string(k)}
+    defp safe_key(k) when is_integer(k), do: {:ok, Integer.to_string(k)}
+    defp safe_key(_), do: :error
 
     defp safe_to_grpc_value(v) when is_boolean(v), do: {:ok, %GrpcValue{kind: {:bool_value, v}}}
 
@@ -1003,8 +1046,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp safe_map_entries(map) do
       Enum.reduce_while(map, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
-        case safe_to_grpc_value(v) do
-          {:ok, gv} -> {:cont, {:ok, Map.put(acc, to_string(k), gv)}}
+        with {:ok, key} <- safe_key(k), {:ok, gv} <- safe_to_grpc_value(v) do
+          {:cont, {:ok, Map.put(acc, key, gv)}}
+        else
           :error -> {:halt, :error}
         end
       end)
@@ -1016,6 +1060,10 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       |> put_identity("@rid", rec.rid)
       |> put_identity("@type", rec.type)
     end
+
+    # Total fallback: a server that returns `found: true` with an unset `record` (proto3 → nil), or any
+    # other unexpected shape, decodes to an empty map rather than a FunctionClauseError (value-free).
+    defp decode_record(_), do: %{}
 
     defp put_identity(map, _key, v) when v in [nil, ""], do: map
     defp put_identity(map, key, v), do: Map.put(map, key, v)

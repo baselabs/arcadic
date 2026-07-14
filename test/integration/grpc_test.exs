@@ -16,6 +16,7 @@ defmodule Arcadic.Integration.GrpcTest do
 
   alias Arcadic.{Conn, Server}
   alias Arcadic.Transport.Grpc
+  alias Arcadic.Transport.Grpc.ChannelPool
 
   setup_all do
     grpc_url =
@@ -489,6 +490,23 @@ defmodule Arcadic.Integration.GrpcTest do
     refute inspect(err, structs: false) =~ "88888888888888888888888888"
   end
 
+  # The encoder guards KEYS too, not just values: a non-String.Chars key would otherwise raise a
+  # Protocol.UndefinedError echoing the key (closeout finding — the redaction invariant covers keys).
+  test "execute over gRPC: a non-coercible param KEY is rejected value-free, no raise", %{grpc: c} do
+    assert {:error, err} =
+             Grpc.execute(
+               c,
+               :read,
+               %{statement: "SELECT 1", params: %{{:apikey, 99} => "x"}, language: "sql"},
+               []
+             )
+
+    assert match?(%Arcadic.Error{reason: :invalid_params}, err) or
+             match?(%Arcadic.TransportError{}, err)
+
+    refute inspect(err, structs: false) =~ "apikey"
+  end
+
   # --- T3: document ingest → Arcadic.Ingest.insert (gRPC BulkInsert) ---
 
   test "Ingest.insert over gRPC: rows land in the target class; read-back proves values + types",
@@ -678,7 +696,7 @@ defmodule Arcadic.Integration.GrpcTest do
   test "operations work through the ChannelPool (transparency) and reuse one shared channel", %{
     grpc: c
   } do
-    {:ok, pool} = Arcadic.Transport.Grpc.ChannelPool.start_link([])
+    {:ok, pool} = ChannelPool.start_link([])
     on_exit(fn -> if Process.alive?(pool), do: GenServer.stop(pool) end)
 
     # a mix of unary read, a server-cursor stream, and a ping all work through the pooled channel
@@ -702,24 +720,35 @@ defmodule Arcadic.Integration.GrpcTest do
     assert length(Enum.to_list(stream)) == 5
     assert {:ok, true} = Grpc.ready?(c)
 
-    # CONCURRENCY-STRESS (review #2): many concurrent calls multiplex over the ONE shared channel —
-    # no corruption, no mid-stream teardown, no supervisor race (NOT an async:false 10/0 proof).
+    # CONCURRENCY-STRESS (review #2): many concurrent calls multiplex over the ONE shared channel.
+    # Each task queries a DISTINCT row (WHERE n = i) and asserts it got back ITS OWN result — so a
+    # response demux mix-up (cross-talk) reddens, not just a crash. Doc holds n = 1..5.
     results =
       1..25
       |> Task.async_stream(
-        fn _ ->
-          Grpc.execute(
-            c,
-            :read,
-            %{statement: "SELECT n FROM Doc", params: %{}, language: "sql"},
-            []
-          )
+        fn i ->
+          target = rem(i - 1, 5) + 1
+
+          {target,
+           Grpc.execute(
+             c,
+             :read,
+             %{
+               statement: "SELECT n FROM Doc WHERE n = :t",
+               params: %{"t" => target},
+               language: "sql"
+             },
+             []
+           )}
         end,
         max_concurrency: 25,
         timeout: 15_000
       )
       |> Enum.map(fn {:ok, r} -> r end)
 
-    assert Enum.all?(results, &match?({:ok, list} when length(list) == 5, &1))
+    # every task's response is exactly the row it asked for — no cross-talk
+    assert Enum.all?(results, fn {target, res} ->
+             match?({:ok, [%{"n" => ^target}]}, res)
+           end)
   end
 end
