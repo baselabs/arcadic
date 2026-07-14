@@ -9,19 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Arcadic.Transport.Grpc` — an optional third transport over ArcadeDB's gRPC plugin,
-  behind the new optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. Its reason
-  to exist is streaming: ArcadeDB's `StreamQuery` in `CURSOR` mode is a real server cursor
-  (O(n), server-paced, language-agnostic), where HTTP result streaming offset-pages (O(n²) in
-  the general case) and Bolt streams Cypher only. `execute/4` (reads via `ExecuteQuery`, writes
-  via `ExecuteCommand`), `query_stream/4` (the CURSOR win), and `ready?/1`/`health?/1` (Ping) are
-  implemented; admin and transactional callbacks return `{:error, %Arcadic.Error{reason:
-  :not_supported}}` — use an HTTP `Conn` for those, exactly as the Bolt transport does. Errors
-  are value-free (an atom reason, never the gRPC wire message). Select it with
-  `transport: Arcadic.Transport.Grpc` and a `grpc://host:port` URL; credentials come from
-  `Conn.auth`. **HTTP/Bolt-only consumers are unaffected**: the transport and its generated
-  protobuf stubs are compile-guarded on the optional deps, so a consumer that doesn't add
-  `:grpc`/`:protobuf` compiles and ships without them.
+- `Arcadic.Transport.Grpc` — an optional third transport over ArcadeDB's gRPC plugin, behind the
+  new optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. Its headline is streaming:
+  `StreamQuery` in `CURSOR` mode is a real server cursor (O(n), server-paced, language-agnostic),
+  where HTTP result streaming offset-pages (O(n²) in the general case) and Bolt streams Cypher only.
+  The transport implements the full surface it can support:
+  - **Reads/writes** — `execute/4` (`ExecuteQuery`/`ExecuteCommand`) and `query_stream/4` (the CURSOR win).
+  - **Transactions** — `begin`/`commit`/`rollback`, so `Arcadic.transaction/3` and tx-scoped
+    reads/writes work over gRPC.
+  - **Bulk graph ingest** — `Arcadic.Bulk.ingest/3` (via `GraphBatchLoad`), the gRPC twin of the HTTP
+    `/batch` endpoint (same counts/`id_mapping` result; transport-transparent).
+  - **`Arcadic.Ingest`** — document bulk-insert into a class (`BulkInsert`, or `InsertStream` via
+    `:chunk_size`), returning insert-summary counts.
+  - **`Arcadic.Record`** — single-record create/lookup/update/delete by `@rid` (raw maps).
+  - **Admin** — `Arcadic.Server` database management (`list_databases`/`database_exists?`/`create_database`/
+    `drop_database`/`info`) and `Arcadic.explain`/`profile`.
+  - **`Arcadic.Transport.Grpc.ChannelPool`** — an opt-in, caller-supervised shared-channel cache; add
+    it to your supervision tree for channel reuse (absent, a fresh channel per call is used).
+
+  Errors are value-free (an atom reason, never the gRPC wire message; per-row ingest errors surface
+  only a row index + a categorical code). TLS is `verify_peer` by default (secure `grpcs://` scheme or
+  `transport_options: [tls: true]`). A few operations are intentionally HTTP-only: server settings,
+  user management (the server itself does not implement it over gRPC), token login/logout, time-series,
+  and HA read-consistency — use an HTTP `Conn` for those. Select it with
+  `transport: Arcadic.Transport.Grpc` and a `grpc://host:port` URL; credentials come from `Conn.auth`.
+  **HTTP/Bolt-only consumers are unaffected**: the transport and its generated protobuf stubs are
+  compile-guarded on the optional deps, so a consumer that doesn't add `:grpc`/`:protobuf` compiles and
+  ships without them.
 
 ## [0.6.0] - 2026-07-14
 

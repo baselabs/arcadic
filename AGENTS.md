@@ -120,9 +120,19 @@ downsampling policies + continuous aggregates (`create_type`/`drop_type`,
 ingest (`write`/`write_lines`), reads (`query`/`latest`), and the PromQL family
 (`prom_query`/`prom_query_range`/`prom_labels`/`prom_label_values`/`prom_series`)
 — all + `!` — plus four new optional `Arcadic.Transport` callbacks (HTTP-only)
-and `notebooks/timeseries.livemd`. Requires ArcadeDB ≥ 26.7.2. Sweep: unit
-654/0 + 4 doctests (94 excluded), live `:integration_ts` 9/0 across 2 seeds.
-Not yet closed — closeout review pending. S12 (transport horizon — gRPC spike)
-remains not started. Next: `/review-autopilot` S13 closeout to 100/100, then
-cut release **0.6.0** (the lifecycle release gate — S13 closes a
-consumer-facing capability).
+and `notebooks/timeseries.livemd`. Requires ArcadeDB ≥ 26.7.2. **S13 CLOSED
+2026-07-13; release 0.6.0 cut + tagged (held before publish).**
+
+**S12 (transport horizon — gRPC) is EXECUTED 2026-07-14** (`Arcadic.Transport.Grpc`
+completed from the thin StreamQuery slice to the full surface): reads/writes,
+`query_stream` CURSOR, transactions (`begin`/`commit`/`rollback` + tx-scoped ops),
+bulk graph ingest (`Arcadic.Bulk.ingest` via GraphBatchLoad), document ingest
+(`Arcadic.Ingest` via BulkInsert/InsertStream), single-record CRUD (`Arcadic.Record`),
+admin (`Arcadic.Server` db-management + `explain`/`profile`), and an opt-in
+caller-supervised channel pool (`Arcadic.Transport.Grpc.ChannelPool`, charter CA-1).
+Value-free redaction, `verify_peer` TLS, tenant-blind throughout. Server settings,
+user management (server-unimplemented over gRPC), login/logout, time-series, and HA
+read-consistency remain HTTP-only. Live suite `:integration_grpc` (needs an ArcadeDB
+with the gRPC plugin — see `docs/handoffs/` for the substrate recipe). Next: T2
+closeout (fresh-context lenses + cross-vendor review + runtime smoke), then the
+release-version decision (0.7.0 including gRPC vs publish 0.6.0 first).
