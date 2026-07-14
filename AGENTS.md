@@ -123,16 +123,18 @@ ingest (`write`/`write_lines`), reads (`query`/`latest`), and the PromQL family
 and `notebooks/timeseries.livemd`. Requires ArcadeDB ≥ 26.7.2. **S13 CLOSED
 2026-07-13; release 0.6.0 cut + tagged (held before publish).**
 
-**S12 (transport horizon — gRPC) is EXECUTED 2026-07-14** (`Arcadic.Transport.Grpc`
-completed from the thin StreamQuery slice to the full surface): reads/writes,
-`query_stream` CURSOR, transactions (`begin`/`commit`/`rollback` + tx-scoped ops),
-bulk graph ingest (`Arcadic.Bulk.ingest` via GraphBatchLoad), document ingest
+**S12 (transport horizon — gRPC) is EXECUTED + CLOSED + RELEASED 0.7.0 2026-07-14**
+(`Arcadic.Transport.Grpc` completed from the thin StreamQuery slice to the full surface):
+reads/writes, `query_stream` CURSOR, transactions (`begin`/`commit`/`rollback` + tx-scoped
+ops), bulk graph ingest (`Arcadic.Bulk.ingest` via GraphBatchLoad), document ingest
 (`Arcadic.Ingest` via BulkInsert/InsertStream), single-record CRUD (`Arcadic.Record`),
-admin (`Arcadic.Server` db-management + `explain`/`profile`), and an opt-in
+admin (`Arcadic.Server` db-management + `database_info` + `explain`/`profile`), and an opt-in
 caller-supervised channel pool (`Arcadic.Transport.Grpc.ChannelPool`, charter CA-1).
 Value-free redaction, `verify_peer` TLS, tenant-blind throughout. Server settings,
 user management (server-unimplemented over gRPC), login/logout, time-series, and HA
 read-consistency remain HTTP-only. Live suite `:integration_grpc` (needs an ArcadeDB
-with the gRPC plugin — see `docs/handoffs/` for the substrate recipe). Next: T2
-closeout (fresh-context lenses + cross-vendor review + runtime smoke), then the
-release-version decision (0.7.0 including gRPC vs publish 0.6.0 first).
+with the gRPC plugin — recreate the throwaway `arcadic-grpc-probe` container per the
+`docs/handoffs/` recipe; `qor-arcadedb` has no gRPC plugin). Closeout: 2 fresh-context
+Claude lenses + delta re-review (all findings fixed), runtime smoke PASS, cross-vendor
+Codex named skip (vendor-blocked). **arcadic Phase 2 (G1–G20) is CLOSED and feature-complete;
+forward work is consumer-side (`ash_arcadic` pins `~> 0.7`).**

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-14
+
+### Changed
+
+- Docs: the README and `usage-rules.md` now document the **gRPC transport** (`Arcadic.Transport.Grpc`)
+  alongside HTTP and Bolt — the 0.7.0 release shipped the transport but the README/hexdocs still
+  described only HTTP + Bolt. No code change (maintenance release for documentation currency).
+
 ## [0.7.0] - 2026-07-14
 
 ### Added

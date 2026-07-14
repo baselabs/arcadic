@@ -5,8 +5,8 @@
 [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbaselabs%2Farcadic%2Fmain%2Fnotebooks%2Fgetting_started.livemd)
 
 A lean, framework-agnostic Elixir client for [ArcadeDB](https://arcadedb.com)
-over the **HTTP Cypher command API**, with an optional Bolt transport for the
-query hot path.
+over the **HTTP Cypher command API**, with optional **Bolt** and **gRPC**
+transports for the query hot path, streaming, and bulk ingest.
 
 Arcadic is the "`postgrex` of ArcadeDB" — it ships Cypher/SQL to ArcadeDB and
 manages connections, sessions, and transactions, and nothing more. It is
@@ -26,8 +26,13 @@ ArcadeDB").
   never enter an error message, log line, or `inspect/1` output.
 - **Session transactions** — `transaction/3` opens an ArcadeDB session and commits
   on normal return, rolls back and reraises on exception (postgrex semantics).
-- **Pluggable transport** — HTTP (Req/Finch) by default, with an optional Bolt v4
-  transport for the query hot path and lazy result streaming.
+- **Pluggable transport** — HTTP (Req/Finch) by default, plus two optional transports:
+  **Bolt** v4 (`boltx`) for the query hot path and lazy streaming, and **gRPC**
+  (`Arcadic.Transport.Grpc`, behind optional `:grpc`/`:protobuf` deps) — a real
+  server-cursor `query_stream`, transactions, graph + document bulk ingest
+  (`Arcadic.Bulk`/`Arcadic.Ingest`), single-record CRUD (`Arcadic.Record`), admin, and
+  an opt-in shared-channel pool. Select with `transport: Arcadic.Transport.Grpc` and a
+  `grpc://` URL; HTTP-only consumers are unaffected (the transport is compile-guarded).
 - **Vector search** — dense (`LSM_VECTOR`) and sparse (`LSM_SPARSE_VECTOR`) index
   DDL plus nearest-neighbour, sparse, and hybrid-fusion query builders
   (`Arcadic.Vector`) with a candidate-set `filter` and `group_by`/`group_size`
@@ -266,8 +271,8 @@ now_s = div(now_ms, 1000) + 1              # the PromQL family takes epoch-SECON
 DDL and continuous aggregates (`create_aggregate/3`, `refresh_aggregate/2`,
 `drop_aggregate/2`) ride `Arcadic.command/4` SQL-only, like `Arcadic.Schema`;
 `write`/`write_lines`, `query`/`latest`, and the PromQL family ride four
-optional transport callbacks implemented by the HTTP transport only — Bolt
-returns `{:error, %Arcadic.Error{reason: :not_supported}}`. **Operational
+optional transport callbacks implemented by the HTTP transport only — Bolt and
+gRPC return `{:error, %Arcadic.Error{reason: :not_supported}}`. **Operational
 contract** (read before relying on retries or mixed-type batches): writes are
 **append-only and non-idempotent** (a lost response followed by a naive retry
 duplicates every point); a mixed-type batch **silently drops** any line naming

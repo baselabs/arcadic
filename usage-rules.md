@@ -146,7 +146,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   does not), so a clean probe proves nothing — and upgrade. Tracked at
   [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
-  (Req/Finch) is the default, `Arcadic.Transport.Bolt` is the optional Bolt one.
+  (Req/Finch) is the default, with two optional transports: `Arcadic.Transport.Bolt`
+  (Bolt v4 via `boltx`) and `Arcadic.Transport.Grpc` (via `:grpc`/`:protobuf`).
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
 - **`Arcadic.Telemetry`** — value-free `:telemetry.span/3` spans.
 - **`Arcadic.Identifier`** — allowlist identifier validation.
@@ -671,5 +672,38 @@ precedence over arcadic's explicit config and re-reads them at connect time, so 
 set after startup would otherwise silently override the connection or its credentials;
 the connect-time reject closes that window. Unset the var and pass
 `:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
+
+## gRPC transport (optional)
+
+`Arcadic.Transport.Grpc` runs over ArcadeDB's gRPC plugin (`GrpcServerPlugin`), behind the optional
+`{:grpc, "~> 0.11"}` + `{:protobuf, "~> 0.17"}` deps (the transport and its vendored protobuf stubs are
+compile-guarded — HTTP/Bolt-only consumers who don't add them are unaffected). Select it with a
+`grpc://host:port` URL (or `grpcs://` for TLS) and `transport: Arcadic.Transport.Grpc`; credentials come
+from `Conn.auth` (`{user, pass}` — a bearer conn is rejected, as with Bolt).
+
+    conn = Arcadic.connect("grpc://localhost:50051", "mydb",
+             transport: Arcadic.Transport.Grpc, auth: {"root", pw})
+
+Its reason to exist is `query_stream/4` — a **real server cursor** (`StreamQuery` CURSOR: O(n),
+server-paced, language-agnostic), where HTTP streaming offset-pages (O(n²) general case) and Bolt streams
+Cypher only. It implements the full surface it can: `execute`/`query_stream`, transactions
+(`begin`/`commit`/`rollback` + tx-scoped reads/writes), graph bulk ingest (`Arcadic.Bulk.ingest` via
+`GraphBatchLoad`), document ingest (`Arcadic.Ingest` via `BulkInsert`/`InsertStream`), single-record CRUD
+(`Arcadic.Record`), admin (`Arcadic.Server` `list_databases`/`database_exists?`/`create_database`/
+`drop_database`/`info`/`database_info` + `Arcadic.explain`/`profile`).
+
+- **Value-free** — errors carry an atom reason, never the gRPC wire message; per-row ingest errors surface
+  only `%{row_index, code}` (a categorical code), never the value.
+- **Auth planes** — data-plane RPCs authenticate by `x-arcade-*` metadata; admin-plane RPCs by the body
+  `credentials` field. **TLS** is `verify_peer` when enabled (secure scheme or `transport_options: [tls: true]`);
+  plaintext otherwise, so prefer a secure scheme in production (credentials travel on the wire).
+- **Transactions fail closed for bulk ingest** — `Bulk.ingest`/`Ingest.insert` inside `transaction/3`
+  return `{:error, %Arcadic.Error{reason: :transaction_unsupported}}` (BulkInsert/GraphBatchLoad do not
+  honor an outer session tx), rather than silently auto-commit outside it; single-record CRUD DOES join
+  the tx. Use an `UNWIND $rows`/`INSERT` statement for transactional bulk writes.
+- **Channel pooling** — add `{Arcadic.Transport.Grpc.ChannelPool, []}` to your supervision tree to reuse
+  one long-lived HTTP/2-multiplexed channel per endpoint; absent it, each call opens a fresh channel.
+- **HTTP-only** — server settings, user management (unimplemented server-side over gRPC), token
+  login/logout, time-series, and HA read-consistency return `:not_supported`; use an HTTP conn for those.
 
 See `AGENTS.md` for the full working rules and the verified ArcadeDB HTTP contract.
