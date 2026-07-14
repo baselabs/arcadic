@@ -457,4 +457,109 @@ defmodule Arcadic.Integration.GrpcTest do
 
     refute inspect(err, structs: false) =~ "88888888888888888888888888"
   end
+
+  # --- T3: document ingest → Arcadic.Ingest.insert (gRPC BulkInsert) ---
+
+  test "Ingest.insert over gRPC: rows land in the target class; read-back proves values + types",
+       %{
+         grpc: c
+       } do
+    :ok = create_type!(c, "Metric")
+    tag = "m_#{System.unique_integer([:positive])}"
+
+    assert {:ok, %{received: 2, inserted: 2}} =
+             Arcadic.Ingest.insert(c, "Metric", [
+               %{"tag" => tag, "value" => 1},
+               %{"tag" => tag, "value" => 2}
+             ])
+
+    assert {:ok, [%{"c" => 2}]} =
+             Grpc.execute(
+               c,
+               :read,
+               %{
+                 statement: "SELECT count(*) AS c FROM Metric WHERE tag = :t",
+                 params: %{"t" => tag},
+                 language: "sql"
+               },
+               []
+             )
+  end
+
+  # BulkInsert manages its own transaction and does NOT honor an outer session tx (live-proven), so
+  # like batch_ingest it FAILS CLOSED inside transaction/3 rather than silently auto-commit outside it.
+  test "Ingest.insert FAILS CLOSED inside a transaction (BulkInsert does not honor a session tx)",
+       %{
+         grpc: c
+       } do
+    tx_conn = %{c | session_id: "tx_pinned_fake"}
+
+    assert {:error, %Arcadic.Error{reason: :transaction_unsupported}} =
+             Arcadic.Ingest.insert(tx_conn, "Metric", [%{"tag" => "x"}])
+  end
+
+  test "Ingest.insert guards bad-shape input value-free (Rule 3 total fallback)", %{grpc: c} do
+    e1 =
+      assert_raise(ArgumentError, fn -> Arcadic.Ingest.insert(c, "Metric", %{"secret" => 42}) end)
+
+    refute Exception.message(e1) =~ "secret"
+
+    assert_raise(ArgumentError, fn -> Arcadic.Ingest.insert(c, :not_a_binary, []) end)
+  end
+
+  test "Ingest.insert on a non-gRPC transport is :not_supported", %{grpc: c} do
+    http = %{c | transport: Arcadic.Transport.HTTP}
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} =
+             Arcadic.Ingest.insert(http, "X", [%{}])
+  end
+
+  test "Ingest.insert with :chunk_size streams via InsertStream (all rows land across chunks)", %{
+    grpc: c
+  } do
+    :ok = create_type!(c, "MetricStream")
+    tag = "ms_#{System.unique_integer([:positive])}"
+    rows = for i <- 1..5, do: %{"tag" => tag, "n" => i}
+
+    assert {:ok, %{received: 5, inserted: 5}} =
+             Arcadic.Ingest.insert(c, "MetricStream", rows, chunk_size: 2)
+
+    assert {:ok, [%{"c" => 5}]} =
+             Grpc.execute(
+               c,
+               :read,
+               %{
+                 statement: "SELECT count(*) AS c FROM MetricStream WHERE tag = :t",
+                 params: %{"t" => tag},
+                 language: "sql"
+               },
+               []
+             )
+  end
+
+  # TRIPWIRE (redaction, RED-capable): a per-row server InsertError.message ECHOES the offending VALUE
+  # ("Duplicated key [<value>] found on index ..." — live-verified), so the summary must surface ONLY
+  # {row_index, code} and NEVER the message/field. Mapping `message: e.message` would leak the value
+  # and redden this. NON-VACUOUS: the raw server message provably contains the secret.
+  test "Ingest.insert redaction: a per-row server error surfaces no value (only row_index + code)",
+       %{
+         grpc: c
+       } do
+    :ok = create_type!(c, "UniqT")
+
+    for ddl <- ["CREATE PROPERTY UniqT.k STRING", "CREATE INDEX ON UniqT (k) UNIQUE"] do
+      {:ok, _} = Grpc.execute(c, :write, %{statement: ddl, params: %{}, language: "sql"}, [])
+    end
+
+    secret = "dupkey_#{System.unique_integer([:positive])}"
+
+    assert {:ok, summary} =
+             Arcadic.Ingest.insert(c, "UniqT", [%{"k" => secret}, %{"k" => secret}])
+
+    assert summary.failed == 1
+    assert [%{row_index: _, code: code}] = summary.errors
+    assert is_binary(code)
+    # the offending value must NOT appear anywhere in the surfaced summary
+    refute inspect(summary, structs: false) =~ secret
+  end
 end

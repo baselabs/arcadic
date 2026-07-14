@@ -65,6 +65,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       ArcadeDbAdminService,
       ArcadeDbService,
       BeginTransactionRequest,
+      BulkInsertRequest,
       CommitTransactionRequest,
       DatabaseCredentials,
       ExecuteCommandRequest,
@@ -75,7 +76,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       GraphBatchResult,
       GrpcList,
       GrpcMap,
+      GrpcRecord,
       GrpcValue,
+      InsertChunk,
+      InsertOptions,
+      InsertSummary,
       PingRequest,
       RollbackTransactionRequest,
       StreamQueryRequest,
@@ -273,6 +278,133 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         "edgesCreated" => r.edges_created,
         "elapsedMs" => r.elapsed_ms,
         "idMapping" => r.id_mapping || %{}
+      }
+    end
+
+    # --- Document ingest → BulkInsert (unary; rows into a target class, InsertSummary counts) ---
+    @impl true
+    # BulkInsert manages its OWN transaction (PER_REQUEST) and does NOT honor an outer session tx —
+    # live-proven: a BulkInsert inside `transaction/3` survives the rollback (transaction_mode NONE +
+    # a passed TransactionContext did not change this). So, like batch_ingest, FAIL CLOSED inside a tx
+    # rather than silently auto-commit outside the caller's transaction (tx symmetry, review #2).
+    def insert_rows(%Conn{session_id: sid}, _target_class, _rows, _opts) when is_binary(sid),
+      do: {:error, %Error{reason: :transaction_unsupported}}
+
+    def insert_rows(%Conn{} = conn, target_class, rows, opts) do
+      # Encode + validate rows value-free BEFORE the wire (same shared encoder as batch_ingest).
+      # A `:chunk_size` opt streams the rows via InsertStream (client-streaming, chunked send) instead
+      # of the unary BulkInsert — the two share the same InsertSummary result shape.
+      with {:ok, grpc_rows} <- encode_rows(rows) do
+        case Keyword.get(opts, :chunk_size) do
+          nil -> run_bulk_insert(conn, target_class, grpc_rows, opts)
+          size -> run_insert_stream(conn, target_class, grpc_rows, size, opts)
+        end
+      end
+    end
+
+    defp run_bulk_insert(conn, target_class, grpc_rows, opts) do
+      req = %BulkInsertRequest{
+        database: conn.database,
+        credentials: credentials(conn),
+        options: insert_options(conn, target_class, opts),
+        rows: grpc_rows
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.bulk_insert(ch, req, metadata: metadata(conn)) do
+          {:ok, %InsertSummary{} = s} -> {:ok, insert_summary_to_map(s)}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    # InsertStream (client-streaming): send the rows as `size`-sized InsertChunks, `last: true` on the
+    # final chunk, then one InsertSummary reply. `options.database` is required (same as BulkInsert).
+    defp run_insert_stream(conn, target_class, grpc_rows, size, opts) do
+      opts_msg = insert_options(conn, target_class, opts)
+      chunks = Enum.chunk_every(grpc_rows, max(size, 1))
+      last_index = length(chunks) - 1
+
+      with_channel(conn, fn ch ->
+        stream = ArcadeDbService.Stub.insert_stream(ch, metadata: metadata(conn))
+
+        chunks
+        |> Enum.with_index()
+        |> Enum.each(fn {chunk_rows, i} ->
+          last? = i == last_index
+
+          msg = %InsertChunk{
+            database: conn.database,
+            credentials: credentials(conn),
+            options: opts_msg,
+            rows: chunk_rows,
+            last: last?
+          }
+
+          GRPC.Stub.send_request(stream, msg, end_stream: last?)
+        end)
+
+        case GRPC.Stub.recv(stream) do
+          {:ok, %InsertSummary{} = s} -> {:ok, insert_summary_to_map(s)}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    defp encode_rows(rows) do
+      rows
+      |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+        case row_to_grpc_record(row) do
+          {:ok, rec} -> {:cont, {:ok, [rec | acc]}}
+          :error -> {:halt, {:error, %Error{reason: :invalid_record}}}
+        end
+      end)
+      |> case do
+        {:ok, recs} -> {:ok, Enum.reverse(recs)}
+        {:error, _} = err -> err
+      end
+    end
+
+    defp row_to_grpc_record(row) when is_map(row) do
+      case safe_map_entries(row) do
+        {:ok, entries} -> {:ok, %GrpcRecord{properties: entries}}
+        :error -> :error
+      end
+    end
+
+    defp row_to_grpc_record(_), do: :error
+
+    # `database` is required in the options (the BulkInsert path reads it there, not only top-level —
+    # an unset options.database → "Invalid database name: name is required", live-probed).
+    defp insert_options(%Conn{} = conn, target_class, opts) do
+      %InsertOptions{
+        database: conn.database,
+        target_class: target_class,
+        key_columns: Keyword.get(opts, :key_columns, []),
+        conflict_mode: conflict_mode(Keyword.get(opts, :conflict_mode))
+      }
+    end
+
+    defp conflict_mode(nil), do: :CONFLICT_ERROR
+    defp conflict_mode(:error), do: :CONFLICT_ERROR
+    defp conflict_mode(:update), do: :CONFLICT_UPDATE
+    defp conflict_mode(:ignore), do: :CONFLICT_IGNORE
+    defp conflict_mode(:abort), do: :CONFLICT_ABORT
+
+    defp conflict_mode(_),
+      do:
+        raise(ArgumentError, "unknown conflict_mode; allowed: [:error, :update, :ignore, :abort]")
+
+    # Value-free: the per-row error carries only `row_index` + the categorical `code` (a server enum
+    # string) — NEVER the InsertError `message`/`field`, which can echo the offending value (Rule 3).
+    defp insert_summary_to_map(%InsertSummary{} = s) do
+      %{
+        received: s.received,
+        inserted: s.inserted,
+        updated: s.updated,
+        ignored: s.ignored,
+        failed: s.failed,
+        errors: Enum.map(s.errors, fn e -> %{row_index: e.row_index, code: e.code} end)
       }
     end
 

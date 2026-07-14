@@ -116,6 +116,16 @@ defmodule Arcadic.Transport do
   @optional_callbacks batch_ingest: 3
 
   @doc """
+  Bulk-insert `rows` (property maps) into `target_class` — document/table ingest (gRPC `BulkInsert`),
+  distinct from `batch_ingest`'s graph vertex/edge batch. `opts` carries `:conflict_mode`/`:key_columns`.
+  Returns the `InsertSummary`-shaped counts map (per-row errors surfaced value-free as `%{row_index, code}`).
+  Optional — gRPC implements it; HTTP/Bolt do not.
+  """
+  @callback insert_rows(Conn.t(), target_class :: String.t(), rows :: [map()], opts :: keyword()) ::
+              {:ok, map()} | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks insert_rows: 4
+
+  @doc """
   Write raw InfluxDB line protocol to `POST /api/v1/ts/<db>/write` (204 on success). `lines` is
   already-built line-protocol iodata; `opts[:precision]` is the validated `"ns"|"us"|"ms"|"s"`
   string (the FACADE validates — an invalid value is silently ignored server-side, probed 26.7.2).
