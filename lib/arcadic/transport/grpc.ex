@@ -978,9 +978,14 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp safe_encode_params(_), do: {:ok, %{}}
 
     # A map KEY is coerced value-free too (not just the value): a non-String.Chars key (tuple, pid,
-    # map, …) would raise `Protocol.UndefinedError` echoing the key, breaking the no-raise-on-caller-
-    # data invariant. Allow the JSON-ish key shapes; anything else → `:error` (value-free).
-    defp safe_key(k) when is_binary(k), do: {:ok, k}
+    # map, …) would raise `Protocol.UndefinedError` echoing the key, and a non-UTF-8 binary key would
+    # raise `Protobuf.EncodeError` echoing the bytes — both break the no-raise-on-caller-data invariant.
+    # Allow the JSON-ish key shapes (UTF-8 binary / atom / integer); anything else → `:error`
+    # (value-free). The `String.valid?` guard mirrors the value encoder — symmetric key/value redaction.
+    defp safe_key(k) when is_binary(k) do
+      if String.valid?(k), do: {:ok, k}, else: :error
+    end
+
     defp safe_key(k) when is_atom(k), do: {:ok, Atom.to_string(k)}
     defp safe_key(k) when is_integer(k), do: {:ok, Integer.to_string(k)}
     defp safe_key(_), do: :error

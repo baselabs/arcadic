@@ -507,6 +507,23 @@ defmodule Arcadic.Integration.GrpcTest do
     refute inspect(err, structs: false) =~ "apikey"
   end
 
+  # A non-UTF-8 binary KEY must be rejected value-free too — else it raises Protobuf.EncodeError
+  # echoing the bytes (the key path must mirror the value path's String.valid? guard).
+  test "execute over gRPC: a non-UTF-8 binary param KEY is rejected value-free, no raise", %{
+    grpc: c
+  } do
+    assert {:error, err} =
+             Grpc.execute(
+               c,
+               :read,
+               %{statement: "SELECT 1", params: %{<<0xFF, 0xFE>> => "x"}, language: "sql"},
+               []
+             )
+
+    assert match?(%Arcadic.Error{reason: :invalid_params}, err) or
+             match?(%Arcadic.TransportError{}, err)
+  end
+
   # --- T3: document ingest → Arcadic.Ingest.insert (gRPC BulkInsert) ---
 
   test "Ingest.insert over gRPC: rows land in the target class; read-back proves values + types",
