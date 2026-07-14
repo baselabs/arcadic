@@ -138,3 +138,11 @@ with the gRPC plugin — recreate the throwaway `arcadic-grpc-probe` container p
 Claude lenses + delta re-review (all findings fixed), runtime smoke PASS, cross-vendor
 Codex named skip (vendor-blocked). **arcadic Phase 2 (G1–G20) is CLOSED and feature-complete;
 forward work is consumer-side (`ash_arcadic` pins `~> 0.7`).**
+
+## graphify (code knowledge graph)
+
+`graphify-out/graph.json` maps this repo (tree-sitter AST; rebuilt by the git post-commit hook; gitignored).
+
+- For orientation ("where is X handled", "what connects A to B", "explain module M"), prefer `graphify query "<question>"` / `graphify explain "<Module>"` / `graphify path "<A>" "<B>"` over grep/Read fan-outs — one call returns a scoped subgraph with file:line hits.
+- Graph output is NAVIGATION, never evidence. Edges reflect the last build, not the working tree, and cross-module call edges can be incomplete (Elixir: file-local only — alias-mediated calls are NOT resolved). Consumer sweeps and every load-bearing claim (review finding, plan anchor) still verify against live code: grep + file:line read.
+- After large uncommitted changes, `graphify update .` refreshes the graph (AST-only, no API cost, no key).
