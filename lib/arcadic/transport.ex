@@ -125,6 +125,20 @@ defmodule Arcadic.Transport do
               {:ok, map()} | {:error, Error.t() | TransportError.t()}
   @optional_callbacks insert_rows: 4
 
+  @doc "Create a single record of `type` from a property map (gRPC `CreateRecord`). Returns the `@rid`."
+  @callback create_record(Conn.t(), type :: String.t(), props :: map(), opts :: keyword()) ::
+              {:ok, String.t()} | {:error, Error.t() | TransportError.t()}
+  @doc "Look up a single record by `rid` (gRPC `LookupByRid`). `{:ok, map}` or `{:ok, nil}` if absent."
+  @callback lookup_record(Conn.t(), rid :: String.t(), opts :: keyword()) ::
+              {:ok, map() | nil} | {:error, Error.t() | TransportError.t()}
+  @doc "Update a single record by `rid` (gRPC `UpdateRecord`; partial merge, or `replace: true`)."
+  @callback update_record(Conn.t(), rid :: String.t(), props :: map(), opts :: keyword()) ::
+              :ok | {:error, Error.t() | TransportError.t()}
+  @doc "Delete a single record by `rid` (gRPC `DeleteRecord`)."
+  @callback delete_record(Conn.t(), rid :: String.t(), opts :: keyword()) ::
+              :ok | {:error, Error.t() | TransportError.t()}
+  @optional_callbacks create_record: 4, lookup_record: 3, update_record: 4, delete_record: 3
+
   @doc """
   Write raw InfluxDB line protocol to `POST /api/v1/ts/<db>/write` (204 on success). `lines` is
   already-built line-protocol iodata; `opts[:precision]` is the validated `"ns"|"us"|"ms"|"s"`

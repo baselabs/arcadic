@@ -67,7 +67,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       BeginTransactionRequest,
       BulkInsertRequest,
       CommitTransactionRequest,
+      CreateRecordRequest,
       DatabaseCredentials,
+      DeleteRecordRequest,
       ExecuteCommandRequest,
       ExecuteQueryRequest,
       GraphBatchChunk,
@@ -81,10 +83,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       InsertChunk,
       InsertOptions,
       InsertSummary,
+      LookupByRidRequest,
       PingRequest,
+      PropertiesUpdate,
       RollbackTransactionRequest,
       StreamQueryRequest,
-      TransactionContext
+      TransactionContext,
+      UpdateRecordRequest
     }
 
     @impl true
@@ -187,7 +192,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # GraphBatchChunk carries NO `transaction` field — a batch cannot join an open tx. Fail CLOSED
     # when the conn holds a session, rather than silently auto-commit the batch OUTSIDE the caller's
     # transaction (a silent-atomicity divergence from HTTP, which rides the session header). A caller
-    # in a tx uses the document-ingest arm (InsertChunk carries a tx) or an `UNWIND $rows` statement.
+    # in a tx uses an `UNWIND $rows` / `INSERT` statement (document ingest also fails closed in a tx).
     def batch_ingest(%Conn{session_id: sid}, _ndjson, _opts) when is_binary(sid),
       do: {:error, %Error{reason: :transaction_unsupported}}
 
@@ -406,6 +411,116 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         failed: s.failed,
         errors: Enum.map(s.errors, fn e -> %{row_index: e.row_index, code: e.code} end)
       }
+    end
+
+    # --- Single-record CRUD (CreateRecord/LookupByRid/UpdateRecord/DeleteRecord; raw maps) ---
+    @impl true
+    def create_record(%Conn{} = conn, type, props, _opts) do
+      with {:ok, entries} <- safe_props(props),
+           do: run_create_record(conn, type, entries)
+    end
+
+    defp run_create_record(conn, type, entries) do
+      req = %CreateRecordRequest{
+        database: conn.database,
+        credentials: credentials(conn),
+        type: type,
+        record: %GrpcRecord{properties: entries},
+        transaction: transaction_context(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.create_record(ch, req, metadata: metadata(conn)) do
+          {:ok, %{rid: rid}} when is_binary(rid) and rid != "" -> {:ok, rid}
+          {:ok, _} -> {:error, %Error{reason: :server_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    @impl true
+    def lookup_record(%Conn{} = conn, rid, _opts) do
+      req = %LookupByRidRequest{
+        database: conn.database,
+        credentials: credentials(conn),
+        rid: rid,
+        transaction: transaction_context(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        ch
+        |> ArcadeDbService.Stub.lookup_by_rid(req, metadata: metadata(conn))
+        |> lookup_result()
+      end)
+    end
+
+    # An absent record surfaces EITHER as `found: false` OR a NOT_FOUND gRPC status (deleted rid) —
+    # both are "absent" (`{:ok, nil}`), so lookup is idempotent; any other error propagates value-free.
+    defp lookup_result({:ok, %{found: true, record: rec}}), do: {:ok, decode_record(rec)}
+    defp lookup_result({:ok, %{found: false}}), do: {:ok, nil}
+
+    defp lookup_result({:error, e}) do
+      case map_error(e) do
+        %Error{reason: :not_found} -> {:ok, nil}
+        err -> {:error, err}
+      end
+    end
+
+    @impl true
+    def update_record(%Conn{} = conn, rid, props, opts) do
+      with {:ok, entries} <- safe_props(props),
+           do: run_update_record(conn, rid, entries, opts)
+    end
+
+    defp run_update_record(conn, rid, entries, opts) do
+      # oneof `payload` is a tagged tuple (like GrpcValue.kind): `replace: true` replaces the whole
+      # record; the default merges properties (partial update via PropertiesUpdate).
+      payload =
+        if Keyword.get(opts, :replace, false),
+          do: {:record, %GrpcRecord{properties: entries}},
+          else: {:partial, %PropertiesUpdate{properties: entries}}
+
+      req = %UpdateRecordRequest{
+        database: conn.database,
+        credentials: credentials(conn),
+        rid: rid,
+        payload: payload,
+        transaction: transaction_context(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.update_record(ch, req, metadata: metadata(conn)) do
+          {:ok, %{success: true}} -> :ok
+          {:ok, _} -> {:error, %Error{reason: :server_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    @impl true
+    def delete_record(%Conn{} = conn, rid, _opts) do
+      req = %DeleteRecordRequest{
+        database: conn.database,
+        rid: rid,
+        credentials: credentials(conn),
+        transaction: transaction_context(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.delete_record(ch, req, metadata: metadata(conn)) do
+          {:ok, %{success: true}} -> :ok
+          {:ok, _} -> {:error, %Error{reason: :server_error}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    # Value-free: an unencodable property value → {:error, :invalid_record}, no echo (Rule 3).
+    defp safe_props(props) do
+      case safe_map_entries(props) do
+        {:ok, entries} -> {:ok, entries}
+        :error -> {:error, %Error{reason: :invalid_record}}
+      end
     end
 
     @impl true

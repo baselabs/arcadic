@@ -562,4 +562,83 @@ defmodule Arcadic.Integration.GrpcTest do
     # the offending value must NOT appear anywhere in the surfaced summary
     refute inspect(summary, structs: false) =~ secret
   end
+
+  # --- T4: single-record CRUD → Arcadic.Record (CreateRecord/LookupByRid/UpdateRecord/DeleteRecord) ---
+
+  test "Record CRUD over gRPC: create → lookup → update(partial) → lookup → delete → lookup(nil)",
+       %{
+         grpc: c
+       } do
+    :ok = create_type!(c, "Rec")
+    name = "rec_#{System.unique_integer([:positive])}"
+
+    assert {:ok, rid} = Arcadic.Record.create(c, "Rec", %{"name" => name, "age" => 30})
+    assert is_binary(rid)
+
+    assert {:ok, row} = Arcadic.Record.lookup(c, rid)
+    assert row["name"] == name
+    assert row["age"] == 30 and is_integer(row["age"])
+    assert row["@rid"] == rid
+
+    assert :ok = Arcadic.Record.update(c, rid, %{"age" => 31})
+    assert {:ok, updated} = Arcadic.Record.lookup(c, rid)
+    # partial merge: age changed, name preserved
+    assert updated["age"] == 31
+    assert updated["name"] == name
+
+    assert :ok = Arcadic.Record.delete(c, rid)
+    assert {:ok, nil} = Arcadic.Record.lookup(c, rid)
+  end
+
+  test "Record ops guard bad-shape input value-free (Rule 3)", %{grpc: c} do
+    # non-map props / non-binary rid|type raise a STATIC message, never a FunctionClauseError echo.
+    e = assert_raise(ArgumentError, fn -> Arcadic.Record.create(c, "Rec", "secret-42") end)
+    refute Exception.message(e) =~ "secret-42"
+    assert_raise(ArgumentError, fn -> Arcadic.Record.lookup(c, :not_binary) end)
+    assert_raise(ArgumentError, fn -> Arcadic.Record.create(c, :not_binary, %{}) end)
+  end
+
+  test "Record CRUD on a non-gRPC transport is :not_supported", %{grpc: c} do
+    http = %{c | transport: Arcadic.Transport.HTTP}
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} =
+             Arcadic.Record.create(http, "X", %{})
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} = Arcadic.Record.lookup(http, "#1:0")
+  end
+
+  # TRIPWIRE (redaction): a bad-value property must surface a value-free error, never echo the value.
+  test "Record.create with an unencodable value is rejected value-free", %{grpc: c} do
+    :ok = create_type!(c, "RecBad")
+    secret = 77_777_777_777_777_777_777_777_777
+
+    assert {:error, err} = Arcadic.Record.create(c, "RecBad", %{"big" => secret})
+    assert match?(%Arcadic.Error{reason: :invalid_record}, err)
+    refute inspect(err, structs: false) =~ "77777777777777777777777777"
+  end
+
+  # Record CRUD carries the tx-context; a create inside transaction/3 must be DISCARDED on rollback
+  # (join the tx), never silently auto-committed outside it (tx symmetry, plan review #2).
+  test "Record.create inside a transaction is discarded on rollback (tx symmetry)", %{grpc: c} do
+    :ok = create_type!(c, "RecTx")
+    name = "rectx_#{System.unique_integer([:positive])}"
+
+    assert {:error, :abort} =
+             Arcadic.transaction(c, fn tx ->
+               {:ok, _} = Arcadic.Record.create(tx, "RecTx", %{"name" => name})
+               Arcadic.Transaction.rollback(tx, :abort)
+             end)
+
+    assert {:ok, [%{"c" => 0}]} =
+             Grpc.execute(
+               c,
+               :read,
+               %{
+                 statement: "SELECT count(*) AS c FROM RecTx WHERE name = :n",
+                 params: %{"n" => name},
+                 language: "sql"
+               },
+               []
+             )
+  end
 end
