@@ -43,7 +43,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     underlying `:grpc` library emits `[:grpc, :client, :rpc, *]` telemetry whose metadata carries the
     full request (including bound params) — a consumer that attaches a handler and logs that metadata
     would surface param values OUTSIDE arcadic's redaction boundary. DECIMAL columns decode to a
-    float (lossy for very large scales), since arcadic takes no arbitrary-decimal dependency.
+    float (lossy for large scales; an out-of-range scale decodes to `nil` rather than crashing the
+    row), since arcadic takes no arbitrary-decimal dependency.
     """
     @behaviour Arcadic.Transport
 
@@ -359,8 +360,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     # An exact DECIMAL arrives as unscaled + scale. Elixir has no built-in arbitrary decimal and
     # arcadic takes no Decimal dep, so surface it as a float (unscaled × 10^-scale) — lossy for
-    # very large scales, but a real number beats a silent nil. Documented in the moduledoc.
-    defp from_kind({:decimal_value, %{unscaled: u, scale: sc}}), do: u / :math.pow(10, sc)
+    # large scales, but a real number beats a silent nil. Scale is bounded to a sane range so a
+    # pathological/hostile value cannot raise `ArithmeticError` and crash the whole row decode
+    # (ArcadeDB DECIMAL scale is ≤ 38); out-of-range → nil rather than a crash.
+    defp from_kind({:decimal_value, %{unscaled: u, scale: sc}}) when sc in 0..38,
+      do: u / :math.pow(10, sc)
+
+    defp from_kind({:decimal_value, _}), do: nil
 
     # An embedded document → a nested plain map (same shape a map_value decodes to).
     defp from_kind({:embedded_value, %{fields: f}}),

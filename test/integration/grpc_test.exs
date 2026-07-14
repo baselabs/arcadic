@@ -171,7 +171,12 @@ defmodule Arcadic.Integration.GrpcTest do
     assert row["amt"] == 12.34 or row["amt"] == 12
   end
 
-  test "query_stream is lazy — a partial take yields only what was asked, in order", %{grpc: c} do
+  # Gates partial-consumption CORRECTNESS (a Stream.take over multiple wire batches yields the
+  # requested prefix in order). NOTE: this does NOT gate server-side laziness — a client cannot
+  # distinguish "pulled one batch" from "drained the cursor then sliced" without server-batch
+  # instrumentation (both yield the same rows). Laziness is guaranteed structurally by the
+  # Stream.transform implementation (per-demand pull) and verified in code review, not here.
+  test "query_stream supports partial consumption across batches, preserving order", %{grpc: c} do
     assert {:ok, stream} =
              Grpc.query_stream(
                c,
