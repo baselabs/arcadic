@@ -28,6 +28,14 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     conn is rejected at construction, as with Bolt). Admin RPCs (Ping) authenticate by the request
     `credentials` field; data RPCs by `x-arcade-user`/`-password`/`-database` metadata.
 
+    ## Connection pooling
+
+    By default each call opens a fresh channel. For channel reuse, add the caller-supervised
+    `{Arcadic.Transport.Grpc.ChannelPool, []}` to your supervision tree — the transport then reuses one
+    long-lived, HTTP/2-multiplexed channel per `{host, port, tls?}` endpoint across all calls (a gRPC
+    channel multiplexes concurrent streams). Absent the pool, the per-call connect is used (no behavior
+    change). Tenant-blind — the pool keys on the endpoint only.
+
     ## TLS
 
     Enabled by a secure URL scheme (`grpcs://` / `grpc+tls://` / `https://`) or
@@ -60,6 +68,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     @behaviour Arcadic.Transport
 
     alias Arcadic.{Conn, Error, TransportError}
+    alias Arcadic.Transport.Grpc.ChannelPool
 
     alias Com.Arcadedb.Grpc.{
       ArcadeDbAdminService,
@@ -219,11 +228,10 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp open_cursor(conn, ch, req) do
       case ArcadeDbService.Stub.stream_query(ch, req, metadata: metadata(conn)) do
         {:ok, grpc_stream} ->
-          {:ok,
-           Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &safe_disconnect/1)}
+          {:ok, Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &release/1)}
 
         {:error, e} ->
-          safe_disconnect(ch)
+          release(ch)
           {:error, map_error(e)}
       end
     end
@@ -768,7 +776,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
           try do
             fun.(ch)
           after
-            safe_disconnect(ch)
+            release(ch)
           end
 
         {:error, e} ->
@@ -776,16 +784,35 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    defp connect(%Conn{} = conn), do: connect(conn, 1)
+    # When the caller-supervised ChannelPool is running, reuse its shared endpoint channel; otherwise
+    # open a fresh per-call channel (the default). `release/1` mirrors this: a pooled channel is left
+    # open (the pool owns its lifetime), a per-call channel is disconnected. The pool is expected to be
+    # started at boot, so connect/release see a consistent pool state within a call.
+    defp connect(%Conn{} = conn) do
+      ensure_client_supervisor()
+
+      if pool_running?(),
+        do: ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end),
+        else: raw_connect(conn, 1)
+    end
+
+    defp release(ch) do
+      if pool_running?(), do: :ok, else: safe_disconnect(ch)
+    end
+
+    defp pool_running?, do: Process.whereis(ChannelPool) != nil
+
+    defp endpoint_key(%Conn{} = conn) do
+      uri = URI.parse(conn.base_url)
+      {uri.host || "localhost", uri.port || 50_051, tls?(conn, uri)}
+    end
 
     # Retry the channel open ONCE on a transient failure. Opening a fresh gun HTTP/2 connection
-    # per call can race the first-connect on a cold client supervisor; the retry (no RPC has run,
-    # so nothing has a side effect yet) makes the transport stable under connect churn without a
-    # persistent pool. A pooled/reused channel is the perf+robustness follow-up (see moduledoc).
-    defp connect(%Conn{} = conn, retries) do
-      ensure_client_supervisor()
+    # can race the first-connect on a cold client supervisor; the retry (no RPC has run, so nothing
+    # has a side effect yet) makes the per-call path stable under connect churn.
+    defp raw_connect(%Conn{} = conn, retries) do
       uri = URI.parse(conn.base_url)
-      endpoint = "#{uri.host || "localhost"}:#{uri.port || 50051}"
+      endpoint = "#{uri.host || "localhost"}:#{uri.port || 50_051}"
       opts = if tls?(conn, uri), do: [cred: tls_credential()], else: []
 
       case GRPC.Stub.connect(endpoint, opts) do
@@ -794,7 +821,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
         {:error, _reason} when retries > 0 ->
           Process.sleep(25)
-          connect(conn, retries - 1)
+          raw_connect(conn, retries - 1)
 
         {:error, _reason} ->
           {:error, %TransportError{reason: :connect_failed}}

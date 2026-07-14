@@ -672,4 +672,54 @@ defmodule Arcadic.Integration.GrpcTest do
                []
              )
   end
+
+  # --- T6: operations are transparent through the managed ChannelPool + safe under concurrency ---
+
+  test "operations work through the ChannelPool (transparency) and reuse one shared channel", %{
+    grpc: c
+  } do
+    {:ok, pool} = Arcadic.Transport.Grpc.ChannelPool.start_link([])
+    on_exit(fn -> if Process.alive?(pool), do: GenServer.stop(pool) end)
+
+    # a mix of unary read, a server-cursor stream, and a ping all work through the pooled channel
+    assert {:ok, rows} =
+             Grpc.execute(
+               c,
+               :read,
+               %{statement: "SELECT n FROM Doc ORDER BY n", params: %{}, language: "sql"},
+               []
+             )
+
+    assert length(rows) == 5
+
+    assert {:ok, stream} =
+             Grpc.query_stream(
+               c,
+               %{statement: "SELECT n FROM Doc ORDER BY n", params: %{}, language: "sql"},
+               chunk_size: 2
+             )
+
+    assert length(Enum.to_list(stream)) == 5
+    assert {:ok, true} = Grpc.ready?(c)
+
+    # CONCURRENCY-STRESS (review #2): many concurrent calls multiplex over the ONE shared channel —
+    # no corruption, no mid-stream teardown, no supervisor race (NOT an async:false 10/0 proof).
+    results =
+      1..25
+      |> Task.async_stream(
+        fn _ ->
+          Grpc.execute(
+            c,
+            :read,
+            %{statement: "SELECT n FROM Doc", params: %{}, language: "sql"},
+            []
+          )
+        end,
+        max_concurrency: 25,
+        timeout: 15_000
+      )
+      |> Enum.map(fn {:ok, r} -> r end)
+
+    assert Enum.all?(results, &match?({:ok, list} when length(list) == 5, &1))
+  end
 end
