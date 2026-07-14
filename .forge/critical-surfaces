@@ -38,10 +38,13 @@ lib/arcadic/identifier.ex
 lib/arcadic/param.ex
 
 # Transport security — BOLT_* env-var credential/port hijack, TLS verify_peer default, leak_safe_connect
-# chokepoint; HTTP auth headers, TLS, and URL construction.
+# chokepoint; HTTP auth headers, TLS, and URL construction; gRPC x-arcade-* auth metadata, TLS, and
+# the value-free error-mapping (redaction) surface. The generated grpc/proto/*.pb.ex stubs are NOT
+# listed — they carry no security logic (wire structs), and a regen is mechanical + diff-reviewable.
 lib/arcadic/transport/bolt.ex
 lib/arcadic/transport/bolt/*
 lib/arcadic/transport/http.ex
+lib/arcadic/transport/grpc.ex
 
 # SSRF discriminator — IMPORT/EXPORT DATABASE URL handling and its allowlist validation.
 lib/arcadic/import.ex

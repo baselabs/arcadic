@@ -48,6 +48,8 @@ defmodule Arcadic.MixProject do
       {:telemetry, "~> 1.0"},
       {:boltx, "~> 0.0.6", optional: true},
       {:mint_web_socket, "~> 1.0", optional: true},
+      {:grpc, "~> 0.11", optional: true},
+      {:protobuf, "~> 0.17", optional: true},
 
       # Dev/Test
       {:plug, "~> 1.0", only: :test},

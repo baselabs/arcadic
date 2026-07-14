@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.Transport.Grpc` — an optional third transport over ArcadeDB's gRPC plugin,
+  behind the new optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. Its reason
+  to exist is streaming: ArcadeDB's `StreamQuery` in `CURSOR` mode is a real server cursor
+  (O(n), server-paced, language-agnostic), where HTTP result streaming offset-pages (O(n²) in
+  the general case) and Bolt streams Cypher only. `execute/4` (reads via `ExecuteQuery`, writes
+  via `ExecuteCommand`), `query_stream/4` (the CURSOR win), and `ready?/1`/`health?/1` (Ping) are
+  implemented; admin and transactional callbacks return `{:error, %Arcadic.Error{reason:
+  :not_supported}}` — use an HTTP `Conn` for those, exactly as the Bolt transport does. Errors
+  are value-free (an atom reason, never the gRPC wire message). Select it with
+  `transport: Arcadic.Transport.Grpc` and a `grpc://host:port` URL; credentials come from
+  `Conn.auth`. **HTTP/Bolt-only consumers are unaffected**: the transport and its generated
+  protobuf stubs are compile-guarded on the optional deps, so a consumer that doesn't add
+  `:grpc`/`:protobuf` compiles and ships without them.
+
 ## [0.6.0] - 2026-07-14
 
 ### Added
