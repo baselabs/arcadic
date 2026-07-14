@@ -201,11 +201,42 @@ defmodule Arcadic.Integration.GrpcTest do
     assert {:ok, true} = Grpc.ready?(c)
   end
 
-  # Admin reads are still :not_supported here — wired in T5 (list_databases/database_exists?).
-  # begin/commit are NOW supported (T1) — proven by the transaction tests below.
-  test "admin reads are :not_supported until wired (use an HTTP conn)", %{grpc: c} do
-    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.list_databases(c)
-    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.database_exists?(c, "x")
+  # --- T5: admin surface (list/exists/create/drop DB + info) + explain ---
+
+  test "Server.list_databases + database_exists? over gRPC (admin plane, body creds)", %{grpc: c} do
+    assert {:ok, dbs} = Arcadic.Server.list_databases(c)
+    assert c.database in dbs
+    assert {:ok, true} = Arcadic.Server.database_exists?(c, c.database)
+    assert {:ok, false} = Arcadic.Server.database_exists?(c, "no_such_db_xyz")
+  end
+
+  test "Server.create_database/drop_database over gRPC (via server_command mapping)", %{grpc: c} do
+    db = "grpc_admin_#{System.unique_integer([:positive])}"
+    # drive the real Server facade (not a hand-built command string) so a wording drift reds (#10)
+    assert :ok = Arcadic.Server.create_database(c, db)
+    assert {:ok, true} = Arcadic.Server.database_exists?(c, db)
+    assert {:ok, dbs} = Arcadic.Server.list_databases(c)
+    assert db in dbs
+    assert :ok = Arcadic.Server.drop_database(c, db)
+    assert {:ok, false} = Arcadic.Server.database_exists?(c, db)
+  end
+
+  test "Server.info over gRPC returns the server version", %{grpc: c} do
+    assert {:ok, info} = Arcadic.Server.info(c)
+    assert is_binary(info["version"]) and info["version"] != ""
+  end
+
+  test "explain over gRPC returns a plan", %{grpc: c} do
+    assert {:ok, %{plan: plan}} = Arcadic.explain(c, "SELECT FROM Doc", %{}, language: "sql")
+    assert is_binary(plan) and plan != ""
+  end
+
+  test "an unrecognized server_command / login / logout is :not_supported over gRPC", %{grpc: c} do
+    assert {:error, %Arcadic.Error{reason: :not_supported}} =
+             Grpc.server_command(c, "set server setting `x` `y`")
+
+    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.login(c)
+    assert {:error, %Arcadic.Error{reason: :not_supported}} = Grpc.logout(c)
   end
 
   # TRIPWIRE — redaction. A failing statement carrying a secret param must surface a VALUE-FREE

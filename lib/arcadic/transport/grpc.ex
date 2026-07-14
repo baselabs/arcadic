@@ -67,11 +67,15 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       BeginTransactionRequest,
       BulkInsertRequest,
       CommitTransactionRequest,
+      CreateDatabaseRequest,
       CreateRecordRequest,
       DatabaseCredentials,
       DeleteRecordRequest,
+      DropDatabaseRequest,
       ExecuteCommandRequest,
       ExecuteQueryRequest,
+      ExistsDatabaseRequest,
+      GetServerInfoRequest,
       GraphBatchChunk,
       GraphBatchOptions,
       GraphBatchRecord,
@@ -83,6 +87,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       InsertChunk,
       InsertOptions,
       InsertSummary,
+      ListDatabasesRequest,
       LookupByRidRequest,
       PingRequest,
       PropertiesUpdate,
@@ -142,6 +147,45 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
           {:error, e} -> {:error, map_error(e)}
         end
       end)
+    end
+
+    # EXPLAIN/PROFILE: the facade prepends the prefix; the plan comes back as a row carrying
+    # `executionPlanAsString` (human string) + `executionPlan` (the raw plan map).
+    @impl true
+    def explain(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, _opts) do
+      with {:ok, encoded} <- safe_encode_params(params),
+           do: run_explain(conn, stmt, encoded, lang)
+    end
+
+    defp run_explain(conn, stmt, encoded, lang) do
+      req = %ExecuteQueryRequest{
+        database: conn.database,
+        query: stmt,
+        parameters: encoded,
+        language: normalize_language(lang),
+        credentials: credentials(conn),
+        transaction: transaction_context(conn)
+      }
+
+      with_channel(conn, fn ch ->
+        case ArcadeDbService.Stub.execute_query(ch, req, metadata: metadata(conn)) do
+          {:ok, resp} -> {:ok, plan_from_rows(resp)}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    defp plan_from_rows(resp) do
+      row =
+        resp.results |> Enum.flat_map(& &1.records) |> Enum.map(&decode_record/1) |> List.first()
+
+      row = row || %{}
+
+      %{
+        plan: Map.get(row, "executionPlanAsString", ""),
+        plan_tree: Map.get(row, "executionPlan", %{}),
+        rows: []
+      }
     end
 
     @impl true
@@ -586,19 +630,124 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     def rollback(%Conn{}), do: {:error, %Error{reason: :transaction_error}}
 
-    # --- Admin / server surface not this transport's job (use an HTTP Conn) ---
+    # --- Admin plane (ArcadeDbAdminService — authenticates by the body `credentials` field, NOT
+    # metadata; live-proven: metadata-only → Unauthenticated) ---
     @impl true
+    def list_databases(%Conn{} = conn) do
+      with_channel(conn, fn ch ->
+        req = %ListDatabasesRequest{credentials: credentials(conn)}
+
+        case ArcadeDbAdminService.Stub.list_databases(ch, req) do
+          {:ok, %{databases: dbs}} -> {:ok, dbs}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    @impl true
+    def database_exists?(%Conn{} = conn, name) do
+      with_channel(conn, fn ch ->
+        req = %ExistsDatabaseRequest{credentials: credentials(conn), name: name}
+
+        case ArcadeDbAdminService.Stub.exists_database(ch, req) do
+          {:ok, %{exists: exists}} -> {:ok, exists}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    # `Arcadic.Server` builds command strings routed through `server_command`. Only the stable verbs
+    # gRPC has typed RPCs for are recognized (create/drop database — the name is already
+    # Identifier-validated by Server); anything else (settings, open/close/align/events/shutdown/
+    # profiler/users) has NO gRPC admin RPC → value-free `:not_supported` (no command-tail echo).
+    @impl true
+    def server_command(%Conn{} = conn, command) when is_binary(command) do
+      case parse_server_command(command) do
+        {:create_database, name} -> admin_create_database(conn, name)
+        {:drop_database, name} -> admin_drop_database(conn, name)
+        :unsupported -> {:error, %Error{reason: :not_supported}}
+      end
+    end
+
     def server_command(%Conn{}, _command), do: {:error, %Error{reason: :not_supported}}
+
+    # `server_get` is HTTP-path-shaped; only `/api/v1/server` (server info) maps to a gRPC RPC.
+    # NOTE (gRPC divergence): GetServerInfo has no `metrics` and no `mode` — so `Server.metrics/1`
+    # returns `{:ok, %{}}` and a `mode:` option is ignored over gRPC (documented in the moduledoc).
     @impl true
+    def server_get(%Conn{} = conn, path) when is_binary(path) do
+      if String.starts_with?(path, "/api/v1/server") do
+        admin_server_info(conn)
+      else
+        {:error, %Error{reason: :not_supported}}
+      end
+    end
+
     def server_get(%Conn{}, _path), do: {:error, %Error{reason: :not_supported}}
+
+    # gRPC has no token-session model (auth is metadata/body-creds) — login/logout are HTTP-only.
     @impl true
     def login(%Conn{}), do: {:error, %Error{reason: :not_supported}}
     @impl true
     def logout(%Conn{}), do: {:error, %Error{reason: :not_supported}}
-    @impl true
-    def list_databases(%Conn{}), do: {:error, %Error{reason: :not_supported}}
-    @impl true
-    def database_exists?(%Conn{}, _name), do: {:error, %Error{reason: :not_supported}}
+
+    defp parse_server_command(command) do
+      case command |> String.trim() |> String.split(~r/\s+/, parts: 3) do
+        [verb, "database", name] ->
+          case String.downcase(verb) do
+            "create" -> {:create_database, name}
+            "drop" -> {:drop_database, name}
+            _ -> :unsupported
+          end
+
+        _ ->
+          :unsupported
+      end
+    end
+
+    defp admin_create_database(conn, name) do
+      with_channel(conn, fn ch ->
+        req = %CreateDatabaseRequest{credentials: credentials(conn), name: name}
+
+        case ArcadeDbAdminService.Stub.create_database(ch, req) do
+          {:ok, _} -> {:ok, %{}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    defp admin_drop_database(conn, name) do
+      with_channel(conn, fn ch ->
+        req = %DropDatabaseRequest{credentials: credentials(conn), name: name}
+
+        case ArcadeDbAdminService.Stub.drop_database(ch, req) do
+          {:ok, _} -> {:ok, %{}}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    defp admin_server_info(conn) do
+      with_channel(conn, fn ch ->
+        req = %GetServerInfoRequest{credentials: credentials(conn)}
+
+        case ArcadeDbAdminService.Stub.get_server_info(ch, req) do
+          {:ok, info} -> {:ok, server_info_to_map(info)}
+          {:error, e} -> {:error, map_error(e)}
+        end
+      end)
+    end
+
+    # String-keyed map matching what `Server.info` returns from the HTTP `/api/v1/server` body.
+    defp server_info_to_map(info) do
+      %{
+        "version" => info.version,
+        "edition" => info.edition,
+        "httpPort" => info.http_port,
+        "grpcPort" => info.grpc_port,
+        "databasesCount" => info.databases_count
+      }
+    end
 
     # --- internals ---
 
