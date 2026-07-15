@@ -269,6 +269,20 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   ```
   A `MERGE`-based upsert body is retry-safe; a body with a side effect outside the
   transaction (e.g. a non-idempotent external call) is not.
+- **Concurrent writes: server-side statement retry (`retries:`).** Concurrent writes
+  to ONE type contend on that type's **buckets** — on a default-bucket type, ~85 of
+  100 concurrent creates throw `ConcurrentModificationException` (probed
+  2026-07-15). Pass `retries: N` on `command/4` and the SERVER re-executes the
+  statement on the conflict; an autocommit statement is all-or-nothing (nothing
+  applied on the failed attempt), so the retry is idempotency-safe **by
+  construction** — no `MERGE` requirement, unlike the closure retry above
+  (`retries: 10` → 0 conflicts on the same probe, single-create AND `UNWIND`-batch
+  forms). Two boundaries: (a) inside a session transaction the param is a **no-op**
+  (conflicts surface at COMMIT — use `transaction/3` + `:retry` there); (b) it
+  retries only the MVCC-conflict class — a lost RESPONSE stays ambiguous (the
+  multi-host write rule below). Complementary schema lever: create hot types with
+  `CREATE VERTEX TYPE X BUCKETS <n>` (n ≥ your write concurrency; the server caps
+  bucket count ~32) to avoid the contention instead of retrying through it.
 - **Read consistency & bookmarks.** `Arcadic.connect(..., consistency: level)` or
   `Arcadic.Conn.with_consistency(conn, level)` sets the read-consistency level for
   subsequent reads: `:eventual` (default, sends no extra header),

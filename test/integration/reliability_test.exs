@@ -61,4 +61,50 @@ defmodule Arcadic.Integration.ReliabilityTest do
     assert {:ok, [%{"v" => 2}]} =
              Arcadic.query(conn, "SELECT v FROM Ctr WHERE id = 'x'", %{}, language: "sql")
   end
+
+  test "server-side :retries converges concurrent same-type autocommit writes (MVCC statement retry)",
+       %{conn: conn} do
+    # Concurrent CREATEs to ONE vertex type contend on the type's buckets — on a DEFAULT-bucket
+    # type, 100 creates @ 16-wide throw ~85 ConcurrentModificationException without retries
+    # (probed 2026-07-15). The server-side `retries:` body param re-executes the STATEMENT on the
+    # conflict; an autocommit statement is all-or-nothing (nothing applied on conflict), so the
+    # retry is idempotency-safe by construction. RED-capable: drop `retries: 10` below → conflicts
+    # return and the count assertions fail. (Inside a SESSION the param is a no-op — conflicts
+    # surface at commit; use `transaction/3` with `:retry` for that, the test above.)
+    Arcadic.command!(conn, "CREATE VERTEX TYPE Cw", %{}, language: "sql")
+
+    creates =
+      1..100
+      |> Task.async_stream(
+        fn i ->
+          Arcadic.command(conn, "CREATE (x:Cw {id: $id})", %{"id" => "r#{i}"}, retries: 10)
+        end,
+        max_concurrency: 16,
+        timeout: 60_000
+      )
+      |> Enum.map(fn {:ok, r} -> r end)
+
+    assert Enum.all?(creates, &match?({:ok, _}, &1))
+    assert {:ok, [%{"c" => 100}]} = Arcadic.query(conn, "MATCH (x:Cw) RETURN count(x) AS c")
+
+    # The UNWIND-batch form (a bulk writer's shape) converges the same way.
+    batches =
+      1..10
+      |> Task.async_stream(
+        fn b ->
+          rows = for i <- 1..8, do: %{"id" => "b#{b}r#{i}"}
+
+          Arcadic.command(
+            conn,
+            "UNWIND $rows AS row CREATE (n:Cw) SET n += row",
+            %{"rows" => rows}, retries: 10)
+        end,
+        max_concurrency: 8,
+        timeout: 60_000
+      )
+      |> Enum.map(fn {:ok, r} -> r end)
+
+    assert Enum.all?(batches, &match?({:ok, _}, &1))
+    assert {:ok, [%{"c" => 180}]} = Arcadic.query(conn, "MATCH (x:Cw) RETURN count(x) AS c")
+  end
 end

@@ -64,6 +64,17 @@ defmodule Arcadic do
   param — a faithful passthrough, not arcadic-interpreted. `auto_commit: false`
   outside an explicit `transaction/3` means the write is not auto-committed
   (the server's semantic, not arcadic's).
+
+  `:retries` (non-neg integer) is forwarded to ArcadeDB's `retries` body param: the
+  SERVER re-executes the statement on an optimistic-lock conflict
+  (`ConcurrentModificationException` — e.g. concurrent writes contending on one
+  type's buckets). An autocommit statement is all-or-nothing, so the retry is
+  idempotency-safe by construction (nothing was applied on the failed attempt) —
+  this is the recommended option for CONCURRENT writers (probed 2026-07-15: 100
+  concurrent same-type creates on a default-bucket type, ~85 conflicts without →
+  0 with `retries: 10`). Inside a session transaction the param is a no-op —
+  conflicts there surface at COMMIT; use `transaction/3` with `:retry` (the
+  managed closure retry) for that case.
   """
   @spec command(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t()}

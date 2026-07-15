@@ -63,6 +63,15 @@ it.
 - **Idempotent write primitives** (native Cypher): `MERGE (n {key:$k})` is
   replayable; `ON CREATE SET` vs `ON MATCH SET` split stub-vs-rich semantics;
   `n += $props` merges properties.
+- **Server-side statement retry (`retries` body param, probed 2026-07-15):**
+  concurrent writes to one type contend on its BUCKETS — on a default-bucket type,
+  100 concurrent creates @ 16-wide → ~85 `ConcurrentModificationException`;
+  `retries: 10` in the command body → **0 conflicts, all rows persisted**
+  (single-create and `UNWIND`-batch forms both). An autocommit statement is
+  all-or-nothing, so the server-side retry is idempotency-safe by construction.
+  Inside a session the param is a no-op (conflicts surface at commit). Schema
+  lever: `CREATE VERTEX TYPE X BUCKETS <n>` (server caps ~32; `BUCKETS 128` →
+  HTTP 400) sizes a hot type for its write concurrency.
 
 ## Development workflow
 
