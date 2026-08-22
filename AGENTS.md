@@ -118,9 +118,10 @@ The Phase-1 and Phase-2 client surfaces are closed and feature-complete.
 time-series, server programmability, administration, ingest, graphRAG, HA/read
 consistency, telemetry, and the reliability surface are all shipped.
 
-Current `main` is four commits past `v0.7.1`. Its user-facing change is the
-documented and live-tripwired server-side `retries:` option for concurrent
-autocommit writes; it does not change the package version. Forward product
+`main` past `v0.7.1` carries no package-version change; its user-facing
+addition is the documented and live-tripwired server-side `retries:` option
+for concurrent autocommit writes (docs, tooling, and dependency hygiene
+only — no library behavior change). Forward product
 composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
 ArcadeDB transport capabilities still land here first to preserve the
 tenant-blind boundary.
