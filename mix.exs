@@ -99,24 +99,32 @@ defmodule Arcadic.MixProject do
           Arcadic.Result,
           Arcadic.Error,
           Arcadic.TransportError,
-          Arcadic.Opts,
           Arcadic.Identifier,
           Arcadic.Telemetry,
           Arcadic.Param
         ],
-        Transport: [Arcadic.Transport, Arcadic.Transport.HTTP, Arcadic.Transport.Bolt],
+        Transport: [
+          Arcadic.Transport,
+          Arcadic.Transport.HTTP,
+          Arcadic.Transport.Bolt,
+          Arcadic.Transport.Grpc,
+          Arcadic.Transport.Grpc.ChannelPool
+        ],
         "Schema & data": [
           Arcadic.Schema,
           Arcadic.Import,
           Arcadic.Export,
           Arcadic.Vector,
           Arcadic.FullText,
-          Arcadic.Bulk
+          Arcadic.Bulk,
+          Arcadic.Ingest,
+          Arcadic.Record
         ],
         Migrations: [Arcadic.Migration, Arcadic.MigrationRegistry, Arcadic.Migrator],
         "Admin & operations": [Arcadic.Server, Arcadic.Security, Arcadic.Backup],
         "Events & programmability": [
           Arcadic.Changes,
+          Arcadic.Changes.Event,
           Arcadic.Function,
           Arcadic.Trigger,
           Arcadic.MaterializedView,
