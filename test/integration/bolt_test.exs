@@ -1,4 +1,30 @@
 defmodule Arcadic.Integration.BoltTest do
+  @moduledoc """
+  Live proofs for the Bolt transport. Substrate recipe (throwaway; probed 2026-08-22 on
+  arcadedata/arcadedb:latest 26.9.1-SNAPSHOT — Bolt is NOT enabled by default):
+
+      docker run -d --name arcadic-bolt-probe -p 42483:2480 -p 42484:7687 \\
+        -e JAVA_OPTS="-Darcadedb.server.rootPassword=<pw> \\
+          -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \\
+        arcadedata/arcadedb:latest
+
+  Env (this file + bolt_explain/bolt_stream): `ARCADIC_BOLT_HOST` / `ARCADIC_BOLT_PORT` /
+  `ARCADIC_BOLT_HTTP_PORT` / `ARCADIC_BOLT_PASSWORD`. The B6 Bolt-streaming describe in
+  `streaming_tls_test.exs` reads a SEPARATE family — `ARCADIC_TEST_BOLT_HOST`/`_PORT` (plus
+  `ARCADIC_TEST_URL`/`_PASSWORD`) — supply both families to run every `:integration_bolt` test.
+
+  For `:integration_bolt_tls` (bolt.ssl REQUIRED), add to JAVA_OPTS (cert material from
+  `test/support/tls/gen-grpc-certs.sh`, which emits server.p12 + truststore.jks):
+
+      -Darcadedb.bolt.ssl=REQUIRED \\
+      -Darcadedb.ssl.keyStore=/certs/server.p12 -Darcadedb.ssl.keyStorePassword=<kpw> \\
+      -Darcadedb.ssl.trustStore=/certs/truststore.jks -Darcadedb.ssl.trustStorePassword=<kpw>
+
+  (property spellings are the server's own — `arcadedb.ssl.keyStorePassword` in full; the
+  plugin fails at startup naming whatever is missing). Env: `ARCADIC_TEST_BOLT_TLS_HOST` /
+  `_PORT` / `_CACERT` + `ARCADIC_TEST_URL` / `_PASSWORD`; the `s3_tls_probe` db must exist
+  (`-Darcadedb.server.defaultDatabases=s3_tls_probe[root]`).
+  """
   use ExUnit.Case, async: false
   @moduletag :integration_bolt
   alias Arcadic.{Conn, Transport}

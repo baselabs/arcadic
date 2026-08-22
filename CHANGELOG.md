@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified
+
+- **Live-verification record (2026-08-22, `arcadedata/arcadedb:latest` =
+  26.9.1-SNAPSHOT, throwaway containers on this host):** the ENTIRE
+  139-test integration surface — every test excluded from the default
+  unit pass — ran green in one session on the post-migration tree:
+  HTTP `:integration` 55 (incl. the server-side `:retries` tripwire),
+  websocket 6, time-series 10, `:integration_grpc` 38 (grpc 1.0.4 + mint
+  adapter), `:integration_grpc_tls` 5, `:integration_shutdown` 1, and the
+  Bolt family — `:integration_bolt` 22 (bolt, bolt_explain, bolt_stream,
+  tx-scoped B6 streaming) + `:integration_bolt_tls` 2 (verify_peer
+  connects with the trusted CA; fails closed untrusted). Bolt substrate
+  recipes (plugin flag, both env families, the `arcadedb.ssl.*` keystore
+  spellings) are recorded in `bolt_test.exs`'s moduledoc; TLS material
+  for the grpc and Bolt suites comes from
+  `test/support/tls/gen-grpc-certs.sh` (now also emitting the server-side
+  PKCS12 keystore + JKS truststore).
+
 ### Added
 
 - gRPC TLS trust-store selection + a live fail-closed suite. `grpcs://` still

@@ -105,6 +105,13 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   `-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true`; netty-tcnative
   crashes otherwise). Proves the fail-closed contract: untrusted CA and bare
   OS store both reject the handshake.
+- **Bolt live suites** (tags `:integration_bolt`, `:integration_bolt_tls`):
+  Bolt is not enabled by default — the plugin flag, BOTH env families
+  (`ARCADIC_BOLT_*` and the B6 describe's `ARCADIC_TEST_BOLT_*`), and the
+  `arcadedb.ssl.*` keystore spellings for bolt TLS are in `bolt_test.exs`'s
+  moduledoc. TLS material: `test/support/tls/gen-grpc-certs.sh` (shared with
+  the gRPC TLS suite). Benchmark to beat (2026-08-22, 26.9.1-SNAPSHOT): 22 +
+  2 green; the full session ran all 139 integration tests live.
 - **TDD:** write the test first.
 
 ## Docs & lifecycle-artifact policy
