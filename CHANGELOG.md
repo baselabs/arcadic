@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-08-22
+
+The first stable release: the full client surface (HTTP, Bolt, gRPC) is
+feature-complete, every dependency-security advisory is closed, and the entire
+139-test integration surface is live-proven (see **Verified** below). 1.0.0 is
+a compatibility commitment for the public API.
+
+### Historical backfill
+
+Surface that shipped in earlier releases without a changelog entry, recorded
+here for the 1.0 record:
+
+- The `:retries` command option (server-side optimistic-lock retry for
+  concurrent autocommit writes) has existed since v0.1.0
+  (`http.ex` — forwarded to ArcadeDB's `retries` body param). It was first
+  DOCUMENTED in the 0.7.1-era reliability work with a live tripwire
+  (100 concurrent writers, ~85 conflicts without → 0 with `retries: 10`).
+- `Arcadic.Transport.execute_with_index/4` — the offset-paging read
+  underlying HTTP result streaming.
+- `Arcadic.DDLBody` (internal) — the reject-not-escape guard for ArcadeDB
+  DDL body literals (`DEFINE FUNCTION` / `CREATE TRIGGER`), and
+  `Arcadic.Admin` (internal) — the shared, value-free admin span + transport
+  delegation plumbing. Both `@moduledoc false` by design; named here so the
+  security-relevant guard is on the record.
+- `notebooks/operations.livemd` — the change-events / functions / triggers /
+  materialized-views / geo notebook (the fourth Livebook, alongside
+  getting_started, graphrag, and timeseries).
 
 ### Verified
 
