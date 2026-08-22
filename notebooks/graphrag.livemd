@@ -38,15 +38,9 @@ the `docker run` above.
 
 ## Install
 
-> **Requires arcadic ≥ 0.5.** `Bulk`, `FullText`, `Vector.fuse/3`, and `Param` are not
-> yet in a published release, so this notebook errors under a `~> 0.4` pin. To run it
-> today, point the install at the repo instead — `{:arcadic, github: "baselabs/arcadic"}`
-> (or a local `path:` dep). Once 0.5 publishes, the `~> 0.5` pin below resolves to it and
-> this note no longer applies.
-
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.7"},
+  {:arcadic, "~> 1.0"},
   {:kino, "~> 0.14"}
 ])
 ```

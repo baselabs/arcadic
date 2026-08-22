@@ -37,20 +37,9 @@ the `docker run` above.
 
 ## Install
 
-> **Requires an unreleased arcadic build.** `Arcadic.TimeSeries` is not in any published
-> release yet. Concretely, as of this writing: Hex hosts only `0.4.0`, so the `~> 0.6`
-> requirement below doesn't resolve at all (`Mix.install` fails immediately with
-> `version solving failed`, not a silent downgrade); the module also isn't yet on the
-> `main` branch on GitHub, so `{:arcadic, github: "baselabs/arcadic"}` won't have it
-> either until that catches up. The only way to run this notebook today is a local path
-> dependency against a checkout that has the module, e.g.
-> `{:arcadic, path: "/path/to/your/arcadic/checkout"}` in place of the pin below. Once a
-> release carrying it is published (and pushed), the `~> 0.6` pin resolves normally and
-> this note no longer applies.
-
 ```elixir
 Mix.install([
-  {:arcadic, "~> 0.7"},
+  {:arcadic, "~> 1.0"},
   {:kino, "~> 0.14"}
 ])
 ```
