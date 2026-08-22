@@ -111,42 +111,19 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   `docs/` artifacts out to the repo root.
 - AI-tool state dirs (`.claude/`, `.serena/`, etc.) are gitignored.
 
-## Next action
+## Current status
 
-The client surface and the Phase-1 completion design (S1–S6) are shipped and
-closed. Current work is **Phase 2 — gap closure (S7–S13)**: see the local working
-docs `docs/superpowers/ROADMAP.md` (detail) and `docs/superpowers/BACKLOG.md`
-(status). S7 (correctness + docs), S8 (admin & operations), S9 (ingest &
-retrieval / graphRAG), S10 (reliability & HA parity), and S11 (events & server
-programmability — `Arcadic.Changes`/`Function`/`Trigger`/`MaterializedView`/`Geo`)
-are all **EXECUTED + CLOSEOUT 100/100**. **S13 (time-series — the Influx/PromQL
-wire family split from G16 at the S11 spec) is EXECUTED** (9 task commits
-`c5c0939..d4f6fc0`; the closeout fix commits follow `d4f6fc0` on `main`):
-new `Arcadic.TimeSeries` — `TIMESERIES` DDL +
-downsampling policies + continuous aggregates (`create_type`/`drop_type`,
-`add_downsampling`/`drop_downsampling`, `create_aggregate`/`refresh_aggregate`/
-`drop_aggregate`, DDL rides `Arcadic.command/4` SQL-only), Influx line-protocol
-ingest (`write`/`write_lines`), reads (`query`/`latest`), and the PromQL family
-(`prom_query`/`prom_query_range`/`prom_labels`/`prom_label_values`/`prom_series`)
-— all + `!` — plus four new optional `Arcadic.Transport` callbacks (HTTP-only)
-and `notebooks/timeseries.livemd`. Requires ArcadeDB ≥ 26.7.2. **S13 CLOSED
-2026-07-13; release 0.6.0 cut + tagged (held before publish).**
+The Phase-1 and Phase-2 client surfaces are closed and feature-complete.
+`arcadic` 0.7.1 is released with HTTP, Bolt, and full gRPC transport coverage;
+time-series, server programmability, administration, ingest, graphRAG, HA/read
+consistency, telemetry, and the reliability surface are all shipped.
 
-**S12 (transport horizon — gRPC) is EXECUTED + CLOSED + RELEASED 0.7.0 2026-07-14**
-(`Arcadic.Transport.Grpc` completed from the thin StreamQuery slice to the full surface):
-reads/writes, `query_stream` CURSOR, transactions (`begin`/`commit`/`rollback` + tx-scoped
-ops), bulk graph ingest (`Arcadic.Bulk.ingest` via GraphBatchLoad), document ingest
-(`Arcadic.Ingest` via BulkInsert/InsertStream), single-record CRUD (`Arcadic.Record`),
-admin (`Arcadic.Server` db-management + `database_info` + `explain`/`profile`), and an opt-in
-caller-supervised channel pool (`Arcadic.Transport.Grpc.ChannelPool`, charter CA-1).
-Value-free redaction, `verify_peer` TLS, tenant-blind throughout. Server settings,
-user management (server-unimplemented over gRPC), login/logout, time-series, and HA
-read-consistency remain HTTP-only. Live suite `:integration_grpc` (needs an ArcadeDB
-with the gRPC plugin — recreate the throwaway `arcadic-grpc-probe` container per the
-`docs/handoffs/` recipe; `qor-arcadedb` has no gRPC plugin). Closeout: 2 fresh-context
-Claude lenses + delta re-review (all findings fixed), runtime smoke PASS, cross-vendor
-Codex named skip (vendor-blocked). **arcadic Phase 2 (G1–G20) is CLOSED and feature-complete;
-forward work is consumer-side (`ash_arcadic` pins `~> 0.7`).**
+Current `main` is four commits past `v0.7.1`. Its user-facing change is the
+documented and live-tripwired server-side `retries:` option for concurrent
+autocommit writes; it does not change the package version. Forward product
+composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
+ArcadeDB transport capabilities still land here first to preserve the
+tenant-blind boundary.
 
 ## graphify (code knowledge graph)
 
