@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap (Elixir 1.20 type analysis proves it dead; the catch-all already
   evaluated to the same `:ok`, so behavior is unchanged).
 
+### Security
+
+- Dependency lock refresh clears every advisory with a released fix: mint
+  1.9.3, hpax 1.0.4, bandit 1.12.5, plug 1.20.3, cowboy 2.18.0, cowlib
+  2.19.0, gun 2.5.0 (plus plug_crypto/ranch rides). `mix deps.audit` drops
+  from 21 advisories to 8, all at their floor: grpc 0.11.5's CRITICAL + 3
+  HIGH advisories are fixed only in grpc 1.x (blocked by the `~> 0.11`
+  constraint — the grpc 1.x migration is the standing release blocker), and
+  gun 2.5.0 (MEDIUM) / cowlib 2.19.0 (LOW + 2 MEDIUM) carry advisories with
+  no patched release published upstream yet.
+
 ### Changed
 
 - Align the contributor guide with the released 0.7.1 surface and the
