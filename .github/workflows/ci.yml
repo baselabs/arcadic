@@ -166,6 +166,18 @@ jobs:
           done
           docker logs arcadic-grpc-tls && exit 1
 
+      - name: TLS diagnostics (raw ssl probe + server logs)
+        run: |
+          elixir -e '
+          {:ok, _} = :application.ensure_all_started(:ssl)
+          base = [verify: :verify_peer, cacertfile: "/tmp/arcadic-tls/ca.crt",
+                  server_name_indication: ~c"localhost", depth: 3, log_level: :all]
+          IO.inspect(:ssl.connect(~c"localhost", 50052, base ++ [alpn_advertised_protocols: [~c"h2"]], 5000), label: "raw ssl +alpn")
+          IO.inspect(:ssl.connect(~c"localhost", 50052, base, 5000), label: "raw ssl no-alpn")
+          '
+          echo "--- server logs ---"
+          docker logs arcadic-grpc-tls 2>&1 | tail -40
+
       - name: gRPC TLS suite (fail-closed)
         run: mix test --only integration_grpc_tls
         env:
