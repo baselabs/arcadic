@@ -23,11 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency lock refresh clears every advisory with a released fix: mint
   1.9.3, hpax 1.0.4, bandit 1.12.5, plug 1.20.3, cowboy 2.18.0, cowlib
   2.19.0, gun 2.5.0 (plus plug_crypto/ranch rides). The composite `mix audit`
-  gate drops from 21 advisories to 8, all at their floor: grpc 0.11.5's
-  CRITICAL + 3 HIGH advisories are fixed only in grpc 1.x (blocked by the `~> 0.11`
-  constraint — the grpc 1.x migration is the standing release blocker), and
-  gun 2.5.0 (MEDIUM) / cowlib 2.19.0 (LOW + 2 MEDIUM) carry advisories with
-  no patched release published upstream yet.
+  gate dropped from 21 advisories to 8; the remainder (grpc 0.11.5's
+  CRITICAL + 3 HIGH, plus gun/cowlib advisories unpatched upstream) is fully
+  resolved by the grpc 1.x migration below.
+- **grpc 1.x migration** (`~> 0.11` → `~> 1.0`, locked 1.0.4): closes every grpc
+  advisory — CRITICAL CVE-2026-48853 (RCE via erlpack deserialization) plus HIGHs
+  CVE-2026-48599/53430/48854 — all fixed in grpc 1.0.0. The channel pins the
+  mint adapter explicitly (grpc 1.x defaults to gun): mint 1.9.3 is patched and
+  already a runtime dependency via req, and the move drops gun/cowboy/cowlib
+  from the dependency tree entirely — their advisories (unpatched upstream at
+  the latest published versions) leave the tree with them. `mix audit` is now
+  fully green: zero advisories, zero retired packages. Internal to the
+  migration: the 0.11 global client-supervisor bootstrap is gone (grpc 1.x
+  connections are per-channel processes linked to their creator), and
+  `ChannelPool` traps exits so a dropped connection evicts its cached channel
+  instead of killing the pool; teardown disconnects are best-effort with the
+  link as the leak backstop. Verified live against ArcadeDB 26.9.1-SNAPSHOT
+  (gRPC suite 38/38; HTTP 55, websocket 6, time-series 10, shutdown 1 on the
+  refreshed lock). Consumers pinning grpc 0.11.x will see a resolver conflict —
+  intended; re-pin to `~> 1.0`.
 
 ### Changed
 

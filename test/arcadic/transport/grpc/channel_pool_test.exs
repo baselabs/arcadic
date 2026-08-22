@@ -1,7 +1,9 @@
 defmodule Arcadic.Transport.Grpc.ChannelPoolTest do
   @moduledoc """
   Unit proofs for the caller-supervised gRPC channel cache — cache/reuse/reconnect logic, with fake
-  channel structs (no live server). Liveness keys on the channel's `adapter_payload.conn_pid`.
+  channel structs (no live server). Liveness keys on the channel's `adapter_payload.conn_pid`. The
+  fake channels are intentionally NOT live `GRPC.Channel`s: teardown must be best-effort (a channel
+  that cannot be disconnected must not abort pool shutdown — the connection link reaps it).
   """
   use ExUnit.Case, async: false
 
@@ -9,7 +11,17 @@ defmodule Arcadic.Transport.Grpc.ChannelPoolTest do
 
   setup do
     {:ok, pid} = ChannelPool.start_link([])
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    # The pool traps exits, so it terminates when its OTP parent — this test process —
+    # exits; that can win the race with this callback. Tolerate either order.
+    on_exit(fn ->
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
     :ok
   end
 

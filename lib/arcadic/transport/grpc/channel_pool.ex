@@ -16,7 +16,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     the endpoint only, carrying no database/scope. See `docs/CHARTER.md` (CA-1) and the transport ADR.
 
     The cache serializes `checkout` through the GenServer so two concurrent first-connects don't race
-    into two channels; a dead channel (its gun connection process gone) is transparently reconnected.
+    into two channels; a dead channel (its adapter connection process gone) is transparently reconnected.
     """
     use GenServer
 
@@ -36,7 +36,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     @impl true
-    def init(_opts), do: {:ok, %{}}
+    def init(_opts) do
+      # grpc 1.x links each connection process to its creator — here, the pool. Trap exits so
+      # a dropped connection (server restart, network cut) reaches handle_info instead of
+      # killing the pool; eviction there keeps the cache honest until the next checkout.
+      Process.flag(:trap_exit, true)
+      {:ok, %{}}
+    end
 
     @impl true
     def handle_call({:checkout, key, connect_fn}, _from, channels) do
@@ -51,12 +57,34 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    # On shutdown, disconnect every cached channel so the pool doesn't leak gun connections.
+    # On shutdown, disconnect every cached channel — best-effort. Under grpc 1.x each connection
+    # process is linked to the pool, so the link reaps it even when a disconnect fails (already-dead
+    # channel, mid-teardown race); one channel that cannot be disconnected must not abort the rest
+    # of shutdown.
     @impl true
     def terminate(_reason, channels) do
-      Enum.each(channels, fn {_key, ch} -> GRPC.Stub.disconnect(ch) end)
+      Enum.each(channels, fn {_key, ch} -> safe_disconnect(ch) end)
       :ok
     end
+
+    defp safe_disconnect(ch) do
+      _ = GRPC.Stub.disconnect(ch)
+      :ok
+    rescue
+      _ -> :ok
+    catch
+      :exit, _ -> :ok
+    end
+
+    # A dropped connection signals us (trapped in init/1): evict its cached channel — the
+    # next checkout reconnects (checkout's alive?/conn_pid check covers liveness independently).
+    @impl true
+    def handle_info({:EXIT, pid, _reason}, channels) do
+      {:noreply, Map.reject(channels, fn {_key, ch} -> down?(ch, pid) end)}
+    end
+
+    defp down?(%{adapter_payload: %{conn_pid: conn_pid}}, pid), do: conn_pid == pid
+    defp down?(_ch, _pid), do: false
 
     defp reconnect(key, connect_fn, channels) do
       case connect_fn.() do
@@ -65,7 +93,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    # A channel is alive iff its underlying gun connection process is alive (the transport's adapter).
+    # A channel is alive iff its underlying adapter connection process is alive (mint under grpc 1.x).
     defp alive?(%{adapter_payload: %{conn_pid: pid}}) when is_pid(pid), do: Process.alive?(pid)
     defp alive?(_), do: false
   end

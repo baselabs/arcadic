@@ -690,8 +690,9 @@ the connect-time reject closes that window. Unset the var and pass
 ## gRPC transport (optional)
 
 `Arcadic.Transport.Grpc` runs over ArcadeDB's gRPC plugin (`GrpcServerPlugin`), behind the optional
-`{:grpc, "~> 0.11"}` + `{:protobuf, "~> 0.17"}` deps (the transport and its vendored protobuf stubs are
-compile-guarded — HTTP/Bolt-only consumers who don't add them are unaffected). Select it with a
+`{:grpc, "~> 1.0"}` + `{:protobuf, "~> 0.17"}` deps (the transport and its vendored protobuf stubs are
+compile-guarded — HTTP/Bolt-only consumers who don't add them are unaffected; the gRPC channel uses the
+mint adapter, already a runtime dependency via req). Select it with a
 `grpc://host:port` URL (or `grpcs://` for TLS) and `transport: Arcadic.Transport.Grpc`; credentials come
 from `Conn.auth` (`{user, pass}` — a bearer conn is rejected, as with Bolt).
 

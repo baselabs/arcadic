@@ -839,8 +839,6 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # disconnected. Deciding at release-time instead would leak a per-call channel (pool started midway)
     # or tear a shared channel out from concurrent callers (pool crashed midway).
     defp connect(%Conn{} = conn) do
-      ensure_client_supervisor()
-
       if pool_running?() do
         tag_mode(
           ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end),
@@ -864,13 +862,16 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       {uri.host || "localhost", uri.port || 50_051, tls?(conn, uri)}
     end
 
-    # Retry the channel open ONCE on a transient failure. Opening a fresh gun HTTP/2 connection
-    # can race the first-connect on a cold client supervisor; the retry (no RPC has run, so nothing
-    # has a side effect yet) makes the per-call path stable under connect churn.
+    # Retry the channel open ONCE on a transient failure. A fresh HTTP/2 connection can race
+    # the first connect on a cold socket; the retry (no RPC has run, so nothing has a side
+    # effect yet) makes the per-call path stable under connect churn.
     defp raw_connect(%Conn{} = conn, retries) do
       uri = URI.parse(conn.base_url)
       endpoint = "#{uri.host || "localhost"}:#{uri.port || 50_051}"
-      opts = if tls?(conn, uri), do: [cred: tls_credential()], else: []
+      # grpc 1.x defaults to the gun adapter; pin mint explicitly — it is already a runtime
+      # dependency via req and carries no open advisories (gun 2.5.0 does, unpatched upstream).
+      base = [adapter: GRPC.Client.Adapters.Mint]
+      opts = if tls?(conn, uri), do: [{:cred, tls_credential()} | base], else: base
 
       case GRPC.Stub.connect(endpoint, opts) do
         {:ok, ch} ->
@@ -899,25 +900,6 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       GRPC.Credential.new(
         ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
       )
-    end
-
-    # grpc 0.11 routes client connections through a global `GRPC.Client.Supervisor` that its
-    # application does NOT auto-start. Start it lazily and idempotently so the transport works
-    # without the consumer wiring it into their own tree. CRUCIAL: `start_link` LINKS it to the
-    # calling process, so we `unlink` — otherwise the caller (e.g. a short-lived ExUnit test
-    # process, or any transient caller) dying takes the global supervisor with it, breaking the
-    # next call. Unlinked, it persists as the client infrastructure it is meant to be. A consumer
-    # that prefers explicit ownership MAY add `{GRPC.Client.Supervisor, []}` to their own tree —
-    # a running instance short-circuits this. Any start race resolves to `:already_started`.
-    defp ensure_client_supervisor do
-      if Process.whereis(GRPC.Client.Supervisor) == nil do
-        case GRPC.Client.Supervisor.start_link([]) do
-          {:ok, pid} -> Process.unlink(pid)
-          _ -> :ok
-        end
-      end
-
-      :ok
     end
 
     defp safe_disconnect(ch) do
