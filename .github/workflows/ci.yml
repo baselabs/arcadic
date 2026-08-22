@@ -145,6 +145,10 @@ jobs:
 
       - name: Start ArcadeDB (gRPC TLS)
         run: |
+          # NOTE: no noOpenSsl override here — netty-tcnative's crash is an ARM64
+          # LSE-atomics bug; on amd64 runners the native OpenSSL path is the
+          # normal one (and JDK-SSL forced TLS has not been proven against the
+          # BEAM client on this platform).
           docker run -d --name arcadic-grpc-tls -p 50052:50051 \
             -v /tmp/arcadic-tls:/certs:ro \
             -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
@@ -152,8 +156,7 @@ jobs:
               -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin \
               -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051 \
               -Darcadedb.grpc.tls.enabled=true \
-              -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key \
-              -Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true" \
+              -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key" \
             arcadedata/arcadedb:${{ matrix.arcadedb }}
           for i in $(seq 1 60); do
             echo | openssl s_client -connect localhost:50052 -servername localhost \
