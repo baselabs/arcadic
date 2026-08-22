@@ -43,7 +43,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   **HTTP-only**; see Reliability below.
 - **`Arcadic.Server`** — server/database admin, HTTP-only, not delegated from
   the `Arcadic` facade: `create_database/2` (+ `!`), `drop_database/2` (+ `!`),
-  `database_exists?/2`, `list_databases/1`, `ready?/1`, `open_database/2`,
+  `database_exists?/2`, `list_databases/1`, `ready?/1`, `database_info/1`,
+  `open_database/2`,
   `close_database/2`, `align_database/2` (**cluster-only** — a single-server
   node returns `{:error, %Arcadic.Error{reason: :server_error}}`),
   `check_database/2` (`fix: true` → `CHECK DATABASE FIX`, returns the
@@ -729,4 +730,9 @@ Cypher only. It implements the full surface it can: `execute`/`query_stream`, tr
 - **HTTP-only** — server settings, user management (unimplemented server-side over gRPC), token
   login/logout, time-series, and HA read-consistency return `:not_supported`; use an HTTP conn for those.
 
-See `AGENTS.md` for the full working rules and the verified ArcadeDB HTTP contract.
+Working rules that shape every call: dynamic values ride the `params` map as
+`$name` (never string-interpolated into a statement); database/label/property
+identifiers are validated against a strict allowlist before reaching a
+statement; errors and telemetry carry structure (atoms, shapes), never row
+data or parameter values. The [telemetry](#telemetry) section above covers the
+event spans this transport emits.

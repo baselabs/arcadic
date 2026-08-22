@@ -11,11 +11,13 @@
 
 ## One-line orientation
 
-Arcadic is the **tenant-blind HTTP Cypher client for ArcadeDB** — the "`postgrex`
-of ArcadeDB." The Ash data layer that rides on it lives in the sibling
-**`ash_arcadic`** repo. No client implementation exists yet; the surface is
-designed via `/brainstorm-autopilot` against the verified contract in
-`docs/CHARTER.md`.
+Arcadic is the **tenant-blind, framework-agnostic ArcadeDB client** — the
+"`postgrex` of ArcadeDB" — with three verified transports (HTTP default,
+opt-in Bolt and gRPC), released on hex (`arcadic`). The Ash data layer that
+rides on it lives in the sibling **`ash_arcadic`** repo. The client surface is
+feature-complete; forward work here is new ArcadeDB transport capabilities
+(preserving the tenant-blind boundary), with product composition
+consumer-side in `ash_arcadic`.
 
 ## graphify (code knowledge graph)
 

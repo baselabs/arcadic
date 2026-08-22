@@ -14,7 +14,10 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     to your supervision tree. When it is running, the transport reuses its channel; when it is absent,
     the transport falls back to a fresh per-call connect (no behavior change). Tenant-blind — keyed on
-    the endpoint only, carrying no database/scope. See `docs/CHARTER.md` (CA-1) and the transport ADR.
+    the endpoint + trust selection only, carrying no database/scope. Rationale for the process: a live
+    gRPC channel is a socket/connection process (`adapter_payload.conn_pid`), not an immutable value
+    copied into a pure-data `Conn` — sharing one requires a process, which is why the pool is opt-in
+    and caller-supervised rather than transport-internal.
 
     The cache serializes `checkout` through the GenServer so two concurrent first-connects don't race
     into two channels; a dead channel (its adapter connection process gone) is transparently reconnected.

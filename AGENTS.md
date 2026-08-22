@@ -33,9 +33,10 @@ this lib. If a change reaches for a "tenant" or "scope" concept, it belongs in
 `ash_arcadic`. This boundary is the whole reason the two libs are separate.
 
 **5. `MERGE` is fine here (unlike the AGE sibling).** ArcadeDB's native
-OpenCypher `MERGE` is verified correct. Do **not** import `ash_age`'s "never use
-MERGE" rule — that is an Apache AGE performance bug, a different engine. See
-CHARTER D3.
+OpenCypher `MERGE` is verified correct. This deliberately diverges from the
+sibling `ash_age` lib, which bans `MERGE` because Apache AGE's implementation
+has performance bugs — different engine, different rule. Do not copy AGE's
+"never MERGE" rule into this stack.
 
 ## Verified ArcadeDB HTTP API contract
 
@@ -45,6 +46,10 @@ it.
 - **Command:** `POST /api/v1/command/<db>` with basic auth and body
   `{"language":"cypher","command":"…","params":{…}}`. `language` also accepts
   `"sql"`, `"gremlin"`, `"graphql"`, `"mongo"`, `"sqlscript"`.
+- **Reads:** `POST /api/v1/query/<db>` — same body shape, the server's
+  read/idempotent path (verified: `http.ex` routes `query/4` there; a
+  statement that is `:not_idempotent` is rejected client-side before either
+  endpoint is hit).
 - **Result envelope:** `{"user":"…","result":[ {…} ]}`. Rows may carry `@`-prefixed
   keys: `@props` is serializer noise (**strip it**), but `@rid`/`@type`/`@cat`
   (`v`/`e`)/`@in`/`@out` are record + graph identity (**keep them**). Return
