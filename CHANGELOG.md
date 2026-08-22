@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Restore the `mix format --check-formatted` gate: the vendored generated
+  protobuf module (`lib/arcadic/transport/grpc/proto/`) is excluded from
+  formatter inputs, and the live `:retries` tripwire integration test —
+  committed unformatted — is reformatted.
+- Restore the `mix compile --warnings-as-errors` gate: drop the unreachable
+  `{:error, {:already_started, _}}` clause in the gRPC client-supervisor
+  bootstrap (Elixir 1.20 type analysis proves it dead; the catch-all already
+  evaluated to the same `:ok`, so behavior is unchanged).
+
 ### Changed
 
 - Align the contributor guide with the released 0.7.1 surface and the

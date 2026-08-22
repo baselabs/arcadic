@@ -97,7 +97,9 @@ defmodule Arcadic.Integration.ReliabilityTest do
           Arcadic.command(
             conn,
             "UNWIND $rows AS row CREATE (n:Cw) SET n += row",
-            %{"rows" => rows}, retries: 10)
+            %{"rows" => rows},
+            retries: 10
+          )
         end,
         max_concurrency: 8,
         timeout: 60_000

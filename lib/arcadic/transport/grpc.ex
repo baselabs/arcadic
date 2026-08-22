@@ -913,7 +913,6 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       if Process.whereis(GRPC.Client.Supervisor) == nil do
         case GRPC.Client.Supervisor.start_link([]) do
           {:ok, pid} -> Process.unlink(pid)
-          {:error, {:already_started, _}} -> :ok
           _ -> :ok
         end
       end
