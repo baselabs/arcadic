@@ -871,7 +871,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       # grpc 1.x defaults to the gun adapter; pin mint explicitly — it is already a runtime
       # dependency via req and carries no open advisories (gun 2.5.0 does, unpatched upstream).
       base = [adapter: GRPC.Client.Adapters.Mint]
-      opts = if tls?(conn, uri), do: [{:cred, tls_credential()} | base], else: base
+      opts = if tls?(conn, uri), do: [{:cred, tls_credential(conn)} | base], else: base
 
       case GRPC.Stub.connect(endpoint, opts) do
         {:ok, ch} ->
@@ -889,17 +889,23 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # TLS is enabled by a secure URL scheme (`grpcs://`, `grpc+tls://`, `https://`) or an explicit
     # `transport_options: [tls: true]`. Plaintext otherwise — the endpoint is credential-bearing, so
     # prefer a secure scheme in production. When on, TLS ALWAYS verifies the server certificate
-    # against the OS trust store (`verify_peer` + `:public_key.cacerts_get/0`); it never falls back
-    # to `verify_none`. An untrusted/self-signed server cert fails the handshake (fail-closed).
+    # (fail-closed): `verify: :verify_peer` is hardcoded, never `verify_none`. The trust store is
+    # the OS store by default; a caller MAY select a private CA via `transport_options:
+    # [cacertfile: path]` (or `cacerts: der_list`) — an ALLOWLIST merge, so a caller can choose
+    # what to trust but can never downgrade verification itself.
     defp tls?(%Conn{} = conn, %URI{scheme: scheme}),
       do:
         scheme in ["grpcs", "grpc+tls", "https"] or
           Keyword.get(conn.transport_options, :tls, false)
 
-    defp tls_credential do
-      GRPC.Credential.new(
-        ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get(), depth: 3]
-      )
+    defp tls_credential(%Conn{} = conn) do
+      trust =
+        case Keyword.take(conn.transport_options, [:cacertfile, :cacerts]) do
+          [] -> [cacerts: :public_key.cacerts_get()]
+          caller_trust -> caller_trust
+        end
+
+      GRPC.Credential.new(ssl: [verify: :verify_peer, depth: 3] ++ trust)
     end
 
     defp safe_disconnect(ch) do

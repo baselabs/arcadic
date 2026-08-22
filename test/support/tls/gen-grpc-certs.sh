@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Generates throwaway TLS material for the live grpcs:// integration suite
+# (tag :integration_grpc_tls). Output: OUT dir (default /tmp/arcadic-grpc-tls)
+#   ca.{key,crt}        the trusted CA (pass ca.crt as ARCADIC_GRPC_TLS_TEST_CACERT)
+#   server.{key,crt}    the server cert (SANs: localhost, 127.0.0.1, ::1) + chain
+#   untrusted.{key,crt} a SECOND CA — must NOT be trusted by the client (fail-closed probe)
+# Nothing here is a production credential; regenerate freely.
+set -euo pipefail
+
+OUT="${1:-/tmp/arcadic-grpc-tls}"
+mkdir -p "$OUT"
+
+# Trusted CA.
+openssl genrsa -out "$OUT/ca.key" 2048 2>/dev/null
+openssl req -x509 -new -nodes -key "$OUT/ca.key" -sha256 -days 2 \
+  -subj "/CN=arcadic-grpc-test-ca" -out "$OUT/ca.crt"
+
+# Server cert signed by the trusted CA, with the localhost SANs mint verifies.
+openssl genrsa -out "$OUT/server.key" 2048 2>/dev/null
+openssl req -new -key "$OUT/server.key" \
+  -subj "/CN=localhost" -out "$OUT/server.csr"
+cat > "$OUT/san.ext" <<'EOF'
+subjectAltName = DNS:localhost, IP:127.0.0.1, IP:::1
+extendedKeyUsage = serverAuth
+EOF
+openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
+  -CAcreateserial -days 2 -sha256 -extfile "$OUT/san.ext" -out "$OUT/server.crt" 2>/dev/null
+
+# Untrusted second CA (self-signed, disjoint).
+openssl genrsa -out "$OUT/untrusted.key" 2048 2>/dev/null
+openssl req -x509 -new -nodes -key "$OUT/untrusted.key" -sha256 -days 2 \
+  -subj "/CN=arcadic-grpc-UNTRUSTED-ca" -out "$OUT/untrusted.crt"
+
+echo "TLS material in $OUT:" && ls -l "$OUT"

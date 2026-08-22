@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- gRPC TLS trust-store selection + a live fail-closed suite. `grpcs://` still
+  hardcodes `verify: :verify_peer` (never `verify_none`), but callers may now
+  select a private CA via `transport_options: [cacertfile: path]` (or
+  `cacerts:` as a DER list) — an allowlist merge, so a caller chooses the
+  trust store but cannot downgrade verification itself. New
+  `:integration_grpc_tls` live suite closes the long-standing "no live TLS
+  coverage" gap: cert recipe (`test/support/tls/gen-grpc-certs.sh`) + a
+  TLS-enabled gRPC ArcadeDB (recipe in the test moduledoc; on ARM64 images
+  add `-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true` to dodge
+  netty-tcnative's LSE-atomics crash). Proven live: trusted CA connects and
+  executes; an untrusted CA and the bare OS store both fail the handshake —
+  and non-vacuous: a scratch `verify_none` mutation reddens both fail-closed
+  tests.
+
 ### Fixed
 
 - Restore the `mix format --check-formatted` gate: the vendored generated

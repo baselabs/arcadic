@@ -99,6 +99,12 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   unset so the pure-unit suite runs anywhere. Spin ArcadeDB locally with
   `docker run -p 2480:2480 -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" \
   arcadedata/arcadedb:latest`.
+- **gRPC TLS live suite** (`test/integration/grpc_tls_test.exs`, tag
+  `@moduletag :integration_grpc_tls`): needs a TLS-enabled gRPC ArcadeDB — the
+  cert script and docker flags are in the test's moduledoc (on ARM64 images add
+  `-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true`; netty-tcnative
+  crashes otherwise). Proves the fail-closed contract: untrusted CA and bare
+  OS store both reject the handshake.
 - **TDD:** write the test first.
 
 ## Docs & lifecycle-artifact policy

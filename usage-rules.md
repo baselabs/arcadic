@@ -696,6 +696,14 @@ mint adapter, already a runtime dependency via req). Select it with a
 `grpc://host:port` URL (or `grpcs://` for TLS) and `transport: Arcadic.Transport.Grpc`; credentials come
 from `Conn.auth` (`{user, pass}` — a bearer conn is rejected, as with Bolt).
 
+TLS (`grpcs://`) ALWAYS verifies the server certificate (`verify_peer`, never `verify_none`),
+against the OS trust store by default. To trust a private CA, pass its PEM as
+`transport_options: [cacertfile: path]` (or `cacerts:` as a DER-encoded list) — an allowlist
+merge, so a caller selects the trust store but can never downgrade verification itself. The
+live fail-closed proofs (trusted CA connects; untrusted CA and bare OS store both reject the
+handshake) are in `test/integration/grpc_tls_test.exs`, with the throwaway cert + docker recipe
+in its moduledoc.
+
     conn = Arcadic.connect("grpc://localhost:50051", "mydb",
              transport: Arcadic.Transport.Grpc, auth: {"root", pw})
 
