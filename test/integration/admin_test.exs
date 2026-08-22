@@ -16,12 +16,32 @@ defmodule Arcadic.Integration.AdminTest do
 
   test "Server info/metrics/health/events/settings/check", %{conn: conn} do
     assert {:ok, %{"version" => _}} = Server.info(conn, mode: :basic)
-    assert {:ok, %{"profiler" => _}} = Server.metrics(conn)
+
+    # Cold-start tolerance: the first default-mode info (which carries the metrics
+    # snapshot) can exceed the default request timeout on a freshly-started container
+    # (CI starts the server ~40s before this runs). Bounded retry; the property —
+    # metrics are served with a "profiler" map — is unchanged.
+    assert {:ok, %{"profiler" => _}} = eventually(fn -> Server.metrics(conn) end)
+
     assert {:ok, true} = Server.health?(conn)
     assert {:ok, %{"events" => _}} = Server.events(conn)
     assert :ok = Server.set_server_setting(conn, "arcadedb.serverMetrics", "true")
     assert {:ok, %{"operation" => "check database"}} = Server.check_database(conn)
     assert {:ok, %{"totalEntries" => _}} = Schema.dictionary(conn)
+  end
+
+  defp eventually(fun, attempts \\ 5) do
+    case fun.() do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} when attempts > 1 ->
+        Process.sleep(1_000)
+        eventually(fun, attempts - 1)
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   test "align_database is cluster-only (single-server → server error, surfaced not raised)", %{

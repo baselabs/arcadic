@@ -20,9 +20,11 @@ jobs:
           - elixir: "1.20"
             otp: "29"
             dialyzer: true
+            format: true
           - elixir: "1.15"
             otp: "27"
             dialyzer: false
+            format: false
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +48,10 @@ jobs:
 
       - run: mix deps.get
 
+      # Formatter output is Elixir-version-dependent; the canonical form is the
+      # dev toolchain's (1.20.x), so the floor cell skips the format gate.
       - run: mix format --check-formatted
+        if: matrix.format
 
       - run: mix compile --warnings-as-errors
 
