@@ -31,9 +31,17 @@ defmodule Arcadic.Integration.AdminShutdownTest do
 
     # Documented contract: :ok (server acked first) OR {:error, transport-closed} (died mid-response).
     assert result == :ok or match?({:error, %Arcadic.TransportError{}}, result)
-    # And the server is now down (health fails). Bind once — a second round-trip could race an
-    # async shutdown transition and see {:ok, true} then false → spurious false-or-false.
-    health = Server.health?(conn)
-    assert match?({:error, _}, health) or match?({:ok, false}, health)
+
+    # And the server ends up down. 26.9.1 halts asynchronously — the graceful drain can
+    # outlive the ack (an immediate single check races it and sees {:ok, true}) — so poll
+    # the health check with a bounded deadline instead of binding once.
+    down_within_10s? =
+      Enum.any?(1..40, fn _ ->
+        Process.sleep(250)
+        health = Server.health?(conn)
+        match?({:error, _}, health) or match?({:ok, false}, health)
+      end)
+
+    assert down_within_10s?
   end
 end

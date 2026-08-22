@@ -206,23 +206,24 @@ defmodule Arcadic.Integration.TimeSeriesTest do
              )
   end
 
-  # CHARACTERIZATION (shape-only — documents the substrate's silent-swallow class, probed
-  # 2026-07-11 on 26.7.2; see docs/superpowers/external/arcadedb-ts-docs-divergence.md).
-  # Assertions pin the RESPONSE SHAPE arcadic must tolerate, never the buggy values: a
-  # value-correcting upstream fix does not red this suite; a reject-style fix (e.g. the server
-  # starts 400-ing swallowed lines) WILL red it, deliberately — that contract change must be
-  # seen, not absorbed.
-  test "mixed-body write with an unknown type returns :ok and silently drops that line",
+  # CHARACTERIZATION (shape-only — re-pinned 2026-08-22 on 26.9.1-SNAPSHOT; originally probed
+  # 2026-07-11 on 26.7.2; see docs/superpowers/external/arcadedb-ts-docs-divergence.md). 26.7.2
+  # silently swallowed an unknown-type line and returned 200 — this tripwire reddened
+  # deliberately when 26.9+ changed the contract. The new shape: the server still PARTIALLY
+  # WRITES (the known line lands) but answers HTTP 400 with a structured partial-write body
+  # (written/dropped/unknownTypes), which arcadic maps value-free to reason :server_error.
+  # The pin asserts BOTH the new error shape and the partial-write effect (count: 1).
+  test "mixed-body write with an unknown type reports a partial-write error; the known line lands",
        %{conn: conn} do
     t0 = now_ms()
 
     # write_lines (raw) carries the mixed body; the KNOWN line lands, the unknown-type line vanishes.
-    :ok =
-      TimeSeries.write_lines(
-        conn,
-        "cpu,host=mix,region=x usage=1.0,n=1i,msg=\"m\",ok=true #{t0}\nnosuchtype v=1.0 #{t0}",
-        precision: :ms
-      )
+    assert {:error, %Arcadic.Error{reason: :server_error, http_status: 400}} =
+             TimeSeries.write_lines(
+               conn,
+               "cpu,host=mix,region=x usage=1.0,n=1i,msg=\"m\",ok=true #{t0}\nnosuchtype v=1.0 #{t0}",
+               precision: :ms
+             )
 
     assert {:ok, %{count: 1}} =
              TimeSeries.query(conn, "cpu",

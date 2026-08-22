@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ArcadeDB 26.9.x substrate drift, pinned in the live suites (characterization
+  re-pins, verified against 26.9.1-SNAPSHOT): a mixed line-protocol write with
+  an unknown timeseries type still partially writes (the known line lands) but
+  now answers HTTP 400 with a structured partial-write body instead of the
+  26.7.2 silent 200 — arcadic maps it value-free to
+  `{:error, %Arcadic.Error{reason: :server_error}}`; and `Server.shutdown/1`
+  halts asynchronously (graceful drain can outlive the ack), so the live suite
+  polls health with a bounded deadline.
 - Align the contributor guide with the released 0.7.1 surface and the
   post-release server-side `retries:` documentation and live tripwire already
   present on `main`.
