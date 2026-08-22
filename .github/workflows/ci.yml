@@ -168,15 +168,26 @@ jobs:
 
       - name: TLS diagnostics (raw ssl probe + server logs)
         run: |
+          echo "--- openssl tls1.3 ---"
+          echo | openssl s_client -connect localhost:50052 -servername localhost -tls1_3 \
+            -CAfile /tmp/arcadic-tls/ca.crt -verify_return_error 2>&1 | grep -E "Verify return|Protocol|Cipher is"
+          echo "--- openssl tls1.2 ---"
+          echo | openssl s_client -connect localhost:50052 -servername localhost -tls1_2 \
+            -CAfile /tmp/arcadic-tls/ca.crt -verify_return_error 2>&1 | grep -E "Verify return|Protocol|Cipher is"
+          echo "--- beam probes ---"
           elixir -e '
           {:ok, _} = :application.ensure_all_started(:ssl)
           base = [verify: :verify_peer, cacertfile: "/tmp/arcadic-tls/ca.crt",
-                  server_name_indication: ~c"localhost", depth: 3, log_level: :all]
-          IO.inspect(:ssl.connect(~c"localhost", 50052, base ++ [alpn_advertised_protocols: [~c"h2"]], 5000), label: "raw ssl +alpn")
-          IO.inspect(:ssl.connect(~c"localhost", 50052, base, 5000), label: "raw ssl no-alpn")
+                  server_name_indication: ~c"localhost", depth: 3]
+          IO.inspect(:ssl.connect(~c"localhost", 50052, base, 5000), label: "default")
+          IO.inspect(:ssl.connect(~c"localhost", 50052, base ++ [versions: [:"tlsv1.2"]], 5000), label: "tlsv1.2-only")
+          IO.inspect(:ssl.connect(~c"localhost", 50052,
+            base ++ [versions: [:"tlsv1.2"], ciphers: ["ECDHE-RSA-AES128-GCM-SHA256", "ECDHE-RSA-AES256-GCM-SHA384"]],
+            5000), label: "tlsv1.2+aes-gcm")
+          IO.inspect(:ssl.connect(~c"127.0.0.1", 50052, base, 5000), label: "by-ip")
           '
-          echo "--- server logs ---"
-          docker logs arcadic-grpc-tls 2>&1 | tail -40
+          echo "--- server logs (filtered) ---"
+          docker logs arcadic-grpc-tls 2>&1 | grep -viE "█|╗|║|╝|═|PLAY WITH|incubator|^$" | tail -30
 
       - name: gRPC TLS suite (fail-closed)
         run: mix test --only integration_grpc_tls
