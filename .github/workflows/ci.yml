@@ -155,6 +155,13 @@ jobs:
               -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key \
               -Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true" \
             arcadedata/arcadedb:${{ matrix.arcadedb }}
+          for i in $(seq 1 60); do
+            echo | openssl s_client -connect localhost:50052 -servername localhost \
+              -CAfile /tmp/arcadic-tls/ca.crt -verify_return_error 2>/dev/null \
+              | grep -q "Verify return code: 0" && exit 0
+            sleep 2
+          done
+          docker logs arcadic-grpc-tls && exit 1
 
       - name: gRPC TLS suite (fail-closed)
         run: mix test --only integration_grpc_tls
@@ -177,6 +184,13 @@ jobs:
               -Darcadedb.ssl.trustStore=/certs/truststore.jks \
               -Darcadedb.ssl.trustStorePassword=arcadic-tls-test" \
             arcadedata/arcadedb:${{ matrix.arcadedb }}
+          # The Bolt plugin starts BEFORE_HTTP_ON, so HTTP readiness implies the
+          # TLS Bolt listener is up.
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -u root:$PW http://localhost:2481/api/v1/ready)" = "204" ] && exit 0
+            sleep 2
+          done
+          docker logs arcadic-bolt-tls && exit 1
 
       - name: Bolt TLS suite (fail-closed)
         run: mix test --only integration_bolt_tls
