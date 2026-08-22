@@ -13,15 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardcodes `verify: :verify_peer` (never `verify_none`), but callers may now
   select a private CA via `transport_options: [cacertfile: path]` (or
   `cacerts:` as a DER list) — an allowlist merge, so a caller chooses the
-  trust store but cannot downgrade verification itself. New
-  `:integration_grpc_tls` live suite closes the long-standing "no live TLS
-  coverage" gap: cert recipe (`test/support/tls/gen-grpc-certs.sh`) + a
+  trust store but cannot downgrade verification itself. The trust selection
+  is part of the `ChannelPool` key (`{host, port, tls?, trust}`), so pooled
+  channels never cross trust stores (a cross-vendor review finding: with the
+  old key, a channel established under one trust anchor was silently reused
+  by conns with a different trust config — fail-closed would have become
+  first-conn-wins through the pool); passing both `cacertfile` and `cacerts`
+  is rejected value-free instead of letting OTP precedence silently pick one.
+  New `:integration_grpc_tls` live suite closes the long-standing "no live
+  TLS coverage" gap: cert recipe (`test/support/tls/gen-grpc-certs.sh`) + a
   TLS-enabled gRPC ArcadeDB (recipe in the test moduledoc; on ARM64 images
   add `-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true` to dodge
   netty-tcnative's LSE-atomics crash). Proven live: trusted CA connects and
   executes; an untrusted CA and the bare OS store both fail the handshake —
-  and non-vacuous: a scratch `verify_none` mutation reddens both fail-closed
-  tests.
+  pooled and unpooled, each with its own liveness anchor — and non-vacuous:
+  a scratch `verify_none` mutation reddens both fail-closed tests, and the
+  pool-crossing test was observed RED before the key fix.
 
 ### Fixed
 

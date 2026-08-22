@@ -30,6 +30,7 @@ defmodule Arcadic.Integration.GrpcTlsTest do
 
   alias Arcadic.Conn
   alias Arcadic.Transport.Grpc
+  alias Arcadic.Transport.Grpc.ChannelPool
 
   setup_all do
     url =
@@ -69,29 +70,101 @@ defmodule Arcadic.Integration.GrpcTlsTest do
     assert {:ok, true} = Grpc.ready?(conn)
   end
 
+  # Each negative folds in its own liveness anchor (the trusted CA works on this exact endpoint)
+  # so a dead endpoint or stale env var cannot green the fail-closed assertion for the wrong reason.
   test "grpcs:// with an UNTRUSTED CA fails closed (handshake rejected, value-free)", %{
     url: url,
+    ca: ca,
     bad_ca: bad_ca,
+    pass: pass
+  } do
+    read = fn opts ->
+      conn =
+        Conn.new(url, "probe", transport: Grpc, auth: {"root", pass}, transport_options: opts)
+
+      Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
+    end
+
+    assert {:ok, _} = read.(cacertfile: ca)
+
+    assert {:error, %Arcadic.TransportError{}} = read.(cacertfile: bad_ca)
+  end
+
+  test "grpcs:// with the default OS trust store fails closed against a private CA", %{
+    url: url,
+    ca: ca,
+    pass: pass
+  } do
+    read = fn opts ->
+      conn =
+        Conn.new(url, "probe", transport: Grpc, auth: {"root", pass}, transport_options: opts)
+
+      Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
+    end
+
+    assert {:ok, _} = read.(cacertfile: ca)
+
+    assert {:error, %Arcadic.TransportError{}} = read.([])
+  end
+
+  test "grpcs:// with both cacertfile and cacerts is rejected value-free", %{
+    url: url,
+    ca: ca,
     pass: pass
   } do
     conn =
       Conn.new(url, "probe",
         transport: Grpc,
         auth: {"root", pass},
+        transport_options: [cacertfile: ca, cacerts: []]
+      )
+
+    assert_raise ArgumentError, ~r/at most one of :cacertfile or :cacerts/, fn ->
+      Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
+    end
+  end
+
+  # POOL CROSS-CONTAMINATION (cross-vendor review finding, both peers): the pool key must
+  # include the trust selection — otherwise a channel established under one trust anchor is
+  # silently reused by a conn with a DIFFERENT trust config, and fail-closed becomes
+  # first-conn-wins. The liveness anchor (trusted conn works on this same endpoint, through
+  # the same pool) is folded in so a dead endpoint cannot green the negative branches.
+  test "pooled grpcs:// channels do not cross trust stores (untrusted + OS-store stay closed)", %{
+    url: url,
+    ca: ca,
+    bad_ca: bad_ca,
+    pass: pass
+  } do
+    {:ok, _} = ChannelPool.start_link([])
+
+    trusted =
+      Conn.new(url, "probe",
+        transport: Grpc,
+        auth: {"root", pass},
+        transport_options: [cacertfile: ca]
+      )
+
+    untrusted =
+      Conn.new(url, "probe",
+        transport: Grpc,
+        auth: {"root", pass},
         transport_options: [cacertfile: bad_ca]
       )
 
-    assert {:error, %Arcadic.TransportError{}} =
-             Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
-  end
+    os_store = Conn.new(url, "probe", transport: Grpc, auth: {"root", pass})
 
-  test "grpcs:// with the default OS trust store fails closed against a private CA", %{
-    url: url,
-    pass: pass
-  } do
-    conn = Conn.new(url, "probe", transport: Grpc, auth: {"root", pass})
+    read = fn c ->
+      Grpc.execute(c, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
+    end
 
-    assert {:error, %Arcadic.TransportError{}} =
-             Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
+    # Liveness anchor: the trusted conn works THROUGH THE POOL on this exact endpoint.
+    assert {:ok, _} = read.(trusted)
+
+    # Both other trust configs must still fail closed even with a pooled live channel
+    # for the same host:port:tls? present.
+    assert {:error, %Arcadic.TransportError{}} = read.(untrusted)
+    assert {:error, %Arcadic.TransportError{}} = read.(os_store)
+  after
+    if pid = Process.whereis(ChannelPool), do: GenServer.stop(pid)
   end
 end

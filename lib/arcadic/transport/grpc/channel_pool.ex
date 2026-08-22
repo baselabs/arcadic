@@ -6,8 +6,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     Caller-supervised shared-channel cache for `Arcadic.Transport.Grpc`.
 
     A gRPC channel is HTTP/2-multiplexed — many concurrent streams share ONE connection — so this is a
-    **shared** channel cache (one long-lived channel per `{host, port, tls?}` endpoint reused across
-    ALL calls), NOT an exclusive checkout pool that would serialize streams. It **opt-in**: add
+    **shared** channel cache (one long-lived channel per `{host, port, tls?, trust-selection}` endpoint
+    reused across ALL calls with the SAME trust config), NOT an exclusive checkout pool that would
+    serialize streams. It **opt-in**: add
 
         children = [{Arcadic.Transport.Grpc.ChannelPool, []}]
 

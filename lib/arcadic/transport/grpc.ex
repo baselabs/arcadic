@@ -859,7 +859,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp endpoint_key(%Conn{} = conn) do
       uri = URI.parse(conn.base_url)
-      {uri.host || "localhost", uri.port || 50_051, tls?(conn, uri)}
+      # The trust selection is part of the pool key: a channel is established under ONE trust
+      # anchor, so conns with different trust configs must never share it (fail-closed must
+      # not become first-conn-wins through the pool). Sorted for a stable identity.
+      trust = conn.transport_options |> Keyword.take([:cacertfile, :cacerts]) |> Enum.sort()
+      {uri.host || "localhost", uri.port || 50_051, tls?(conn, uri), trust}
     end
 
     # Retry the channel open ONCE on a transient failure. A fresh HTTP/2 connection can race
@@ -901,8 +905,17 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp tls_credential(%Conn{} = conn) do
       trust =
         case Keyword.take(conn.transport_options, [:cacertfile, :cacerts]) do
-          [] -> [cacerts: :public_key.cacerts_get()]
-          caller_trust -> caller_trust
+          [] ->
+            [cacerts: :public_key.cacerts_get()]
+
+          [_] = single ->
+            single
+
+          # Both present would let OTP :ssl precedence silently pick one trust store over the
+          # other — reject the ambiguity loudly and value-free instead.
+          _ ->
+            raise ArgumentError,
+                  "pass at most one of :cacertfile or :cacerts in :transport_options"
         end
 
       GRPC.Credential.new(ssl: [verify: :verify_peer, depth: 3] ++ trust)
