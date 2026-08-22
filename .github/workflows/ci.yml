@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: "unit + static (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.20"
+            otp: "29"
+            dialyzer: true
+          - elixir: "1.15"
+            otp: "27"
+            dialyzer: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore deps cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - name: Restore PLT cache
+        if: matrix.dialyzer
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: plt-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+
+      - run: mix format --check-formatted
+
+      - run: mix compile --warnings-as-errors
+
+      - run: mix credo --strict
+
+      - run: mix test
+
+      - run: mix dialyzer
+        if: matrix.dialyzer
+
+  integration:
+    name: "live integration (ArcadeDB ${{ matrix.arcadedb }})"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arcadedb: ["latest"]
+    env:
+      PW: probe-test-pw
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Restore deps cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-integration-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+
+      - name: Generate throwaway TLS material
+        run: test/support/tls/gen-grpc-certs.sh /tmp/arcadic-tls
+
+      - name: Start ArcadeDB (HTTP + Bolt + gRPC, plaintext)
+        run: |
+          docker run -d --name arcadic-main \
+            -p 2480:2480 -p 7687:7687 -p 50051:50051 \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
+              -Darcadedb.server.defaultDatabases=probe[root] \
+              -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
+              -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051" \
+            arcadedata/arcadedb:${{ matrix.arcadedb }}
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -u root:$PW http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
+            sleep 2
+          done
+          docker logs arcadic-main && exit 1
+
+      - name: HTTP-family suites (integration, ws, ts, reliability)
+        run: mix test --only integration
+        env:
+          ARCADIC_TEST_URL: http://localhost:2480
+          ARCADIC_TEST_PASSWORD: ${{ env.PW }}
+      - run: mix test --only integration_ws
+        env:
+          ARCADIC_TEST_URL: http://localhost:2480
+          ARCADIC_TEST_PASSWORD: ${{ env.PW }}
+      - run: mix test --only integration_ts
+        env:
+          ARCADIC_TS_TEST_URL: http://localhost:2480
+          ARCADIC_TS_TEST_PASSWORD: ${{ env.PW }}
+
+      - name: Bolt suites (both env families)
+        run: mix test --only integration_bolt
+        env:
+          ARCADIC_BOLT_HOST: localhost
+          ARCADIC_BOLT_PORT: "7687"
+          ARCADIC_BOLT_HTTP_PORT: "2480"
+          ARCADIC_BOLT_PASSWORD: ${{ env.PW }}
+          ARCADIC_TEST_BOLT_HOST: localhost
+          ARCADIC_TEST_BOLT_PORT: "7687"
+          ARCADIC_TEST_URL: http://localhost:2480
+          ARCADIC_TEST_PASSWORD: ${{ env.PW }}
+
+      - name: gRPC suite
+        run: mix test --only integration_grpc
+        env:
+          ARCADIC_GRPC_TEST_URL: grpc://localhost:50051
+          ARCADIC_GRPC_TEST_HTTP_URL: http://localhost:2480
+          ARCADIC_GRPC_TEST_PASSWORD: ${{ env.PW }}
+
+      - name: Start ArcadeDB (gRPC TLS)
+        run: |
+          docker run -d --name arcadic-grpc-tls -p 50052:50051 \
+            -v /tmp/arcadic-tls:/certs:ro \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
+              -Darcadedb.server.defaultDatabases=probe[root] \
+              -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin \
+              -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051 \
+              -Darcadedb.grpc.tls.enabled=true \
+              -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key \
+              -Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true" \
+            arcadedata/arcadedb:${{ matrix.arcadedb }}
+
+      - name: gRPC TLS suite (fail-closed)
+        run: mix test --only integration_grpc_tls
+        env:
+          ARCADIC_GRPC_TLS_TEST_URL: grpcs://localhost:50052
+          ARCADIC_GRPC_TLS_TEST_CACERT: /tmp/arcadic-tls/ca.crt
+          ARCADIC_GRPC_TLS_TEST_UNTRUSTED_CACERT: /tmp/arcadic-tls/untrusted.crt
+          ARCADIC_GRPC_TLS_TEST_PASSWORD: ${{ env.PW }}
+
+      - name: Start ArcadeDB (Bolt TLS)
+        run: |
+          docker run -d --name arcadic-bolt-tls -p 7688:7687 -p 2481:2480 \
+            -v /tmp/arcadic-tls:/certs:ro \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
+              -Darcadedb.server.defaultDatabases=s3_tls_probe[root] \
+              -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
+              -Darcadedb.bolt.ssl=REQUIRED \
+              -Darcadedb.ssl.keyStore=/certs/server.p12 \
+              -Darcadedb.ssl.keyStorePassword=arcadic-tls-test \
+              -Darcadedb.ssl.trustStore=/certs/truststore.jks \
+              -Darcadedb.ssl.trustStorePassword=arcadic-tls-test" \
+            arcadedata/arcadedb:${{ matrix.arcadedb }}
+
+      - name: Bolt TLS suite (fail-closed)
+        run: mix test --only integration_bolt_tls
+        env:
+          ARCADIC_TEST_BOLT_TLS_HOST: localhost
+          ARCADIC_TEST_BOLT_TLS_PORT: "7688"
+          ARCADIC_TEST_BOLT_TLS_CACERT: /tmp/arcadic-tls/ca.crt
+          ARCADIC_TEST_URL: http://localhost:2481
+          ARCADIC_TEST_PASSWORD: ${{ env.PW }}
+
+      - name: Shutdown suite (halts its own throwaway server)
+        run: |
+          docker run -d --name arcadic-shutdown -p 2482:2480 \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW" \
+            arcadedata/arcadedb:${{ matrix.arcadedb }}
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -u root:$PW http://localhost:2482/api/v1/ready)" = "204" ] && break
+            sleep 2
+          done
+          mix test --only integration_shutdown
+        env:
+          ARCADIC_SHUTDOWN_TEST_URL: http://localhost:2482
+          ARCADIC_SHUTDOWN_TEST_PASSWORD: ${{ env.PW }}
+          ARCADIC_TEST_URL: http://localhost:2480
