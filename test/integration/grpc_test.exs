@@ -725,16 +725,7 @@ defmodule Arcadic.Integration.GrpcTest do
     grpc: c
   } do
     {:ok, pool} = ChannelPool.start_link([])
-
-    # The pool traps exits, so it terminates when its OTP parent — this test process —
-    # exits; that can win the race with this callback. Tolerate either order.
-    on_exit(fn ->
-      try do
-        GenServer.stop(pool)
-      catch
-        :exit, _ -> :ok
-      end
-    end)
+    on_exit(fn -> if Process.alive?(pool), do: GenServer.stop(pool) end)
 
     # a mix of unary read, a server-cursor stream, and a ping all work through the pooled channel
     assert {:ok, rows} =

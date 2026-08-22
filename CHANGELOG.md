@@ -34,14 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the dependency tree entirely — their advisories (unpatched upstream at
   the latest published versions) leave the tree with them. `mix audit` is now
   fully green: zero advisories, zero retired packages. Internal to the
-  migration: the 0.11 global client-supervisor bootstrap is gone (grpc 1.x
-  connections are per-channel processes linked to their creator), and
-  `ChannelPool` traps exits so a dropped connection evicts its cached channel
-  instead of killing the pool; teardown disconnects are best-effort with the
-  link as the leak backstop. Verified live against ArcadeDB 26.9.1-SNAPSHOT
-  (gRPC suite 38/38; HTTP 55, websocket 6, time-series 10, shutdown 1 on the
-  refreshed lock). Consumers pinning grpc 0.11.x will see a resolver conflict —
-  intended; re-pin to `~> 1.0`.
+  migration: the 0.11 lazy client-supervisor bootstrap is gone (grpc 1.x
+  auto-starts its own connection supervisor), and `ChannelPool` now
+  best-effort-disconnects a stale cached channel when reconnecting replaces
+  it (cross-vendor review finding: grpc 1.x owns connection processes under
+  its own supervisor with random names, so dropping the handle without
+  disconnecting would orphan that connection tree); pool teardown is
+  best-effort for the same reason. Verified live against ArcadeDB
+  26.9.1-SNAPSHOT (gRPC suite 38/38; HTTP 55, websocket 6, time-series 10,
+  shutdown 1 on the refreshed lock). Consumers pinning grpc 0.11.x will see
+  a resolver conflict — intended; re-pin to `~> 1.0`.
 
 ### Changed
 

@@ -36,13 +36,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     @impl true
-    def init(_opts) do
-      # grpc 1.x links each connection process to its creator — here, the pool. Trap exits so
-      # a dropped connection (server restart, network cut) reaches handle_info instead of
-      # killing the pool; eviction there keeps the cache honest until the next checkout.
-      Process.flag(:trap_exit, true)
-      {:ok, %{}}
-    end
+    def init(_opts), do: {:ok, %{}}
 
     @impl true
     def handle_call({:checkout, key, connect_fn}, _from, channels) do
@@ -57,10 +51,10 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    # On shutdown, disconnect every cached channel — best-effort. Under grpc 1.x each connection
-    # process is linked to the pool, so the link reaps it even when a disconnect fails (already-dead
-    # channel, mid-teardown race); one channel that cannot be disconnected must not abort the rest
-    # of shutdown.
+    # On shutdown, disconnect every cached channel — best-effort. grpc 1.x owns each
+    # connection process under its own GRPC.Client.Supervisor, so a channel that cannot be
+    # disconnected here (already dead, mid-teardown race) is left to that supervisor / app
+    # shutdown; one such channel must not abort the rest of the pool's shutdown.
     @impl true
     def terminate(_reason, channels) do
       Enum.each(channels, fn {_key, ch} -> safe_disconnect(ch) end)
@@ -76,20 +70,22 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       :exit, _ -> :ok
     end
 
-    # A dropped connection signals us (trapped in init/1): evict its cached channel — the
-    # next checkout reconnects (checkout's alive?/conn_pid check covers liveness independently).
-    @impl true
-    def handle_info({:EXIT, pid, _reason}, channels) do
-      {:noreply, Map.reject(channels, fn {_key, ch} -> down?(ch, pid) end)}
-    end
-
-    defp down?(%{adapter_payload: %{conn_pid: conn_pid}}, pid), do: conn_pid == pid
-    defp down?(_ch, _pid), do: false
-
     defp reconnect(key, connect_fn, channels) do
       case connect_fn.() do
-        {:ok, ch} -> {:reply, {:ok, ch}, Map.put(channels, key, ch)}
-        {:error, _} = err -> {:reply, err, Map.delete(channels, key)}
+        {:ok, ch} ->
+          # Best-effort-disconnect the stale channel being replaced: grpc 1.x owns each
+          # connection process under its own GRPC.Client.Supervisor (random make_ref name),
+          # so dropping the handle without disconnecting would orphan that connection tree —
+          # socket and resolver — there forever.
+          case Map.get(channels, key) do
+            nil -> :ok
+            stale -> safe_disconnect(stale)
+          end
+
+          {:reply, {:ok, ch}, Map.put(channels, key, ch)}
+
+        {:error, _} = err ->
+          {:reply, err, Map.delete(channels, key)}
       end
     end
 
