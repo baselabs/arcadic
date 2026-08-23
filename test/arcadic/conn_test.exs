@@ -64,6 +64,15 @@ defmodule Arcadic.ConnTest do
       assert conn.base_url == "http://localhost:2480"
     end
 
+    test "the userinfo guard does not fail open on URI.new-hostile URLs Req still parses" do
+      # URI.new rejects this shape (unencoded @ in the password); URI.parse — what Req
+      # uses — extracts its userinfo and would apply it as overriding auth. The guard
+      # must reject it, not wave it through the parse-error path.
+      assert_raise ArgumentError, ~r/userinfo conflicts/, fn ->
+        Conn.new("http://root:p@ss@localhost:2480", "mydb", auth: {"root", "other"})
+      end
+    end
+
     test "a failover host carrying userinfo is rejected (same silent-override conflict)" do
       err =
         assert_raise ArgumentError, fn ->

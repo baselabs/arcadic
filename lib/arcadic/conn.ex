@@ -115,9 +115,14 @@ defmodule Arcadic.Conn do
   # credentials override the Authorization header, so a caller overriding credentials via
   # :auth would silently send the URL's instead. Reject value-free at construction (never
   # echo the URL or the credentials).
+  # Parsed with the LENIENT URI.parse (a total function), never URI.new — URI.new
+  # rejects URLs Req still accepts (e.g. an unencoded `@` in a password), and a
+  # parse-error fallthrough to :ok would fail this guard OPEN on exactly those URLs
+  # (Req's own lenient URI.parse still extracts their userinfo and applies it as
+  # overriding basic auth). Reject value-free (never echo the URL or credentials).
   defp reject_userinfo_conflict!(base_url) do
-    case URI.new(base_url) do
-      {:ok, %URI{userinfo: userinfo}} when is_binary(userinfo) and userinfo != "" ->
+    case URI.parse(base_url) do
+      %URI{userinfo: userinfo} when is_binary(userinfo) and userinfo != "" ->
         raise ArgumentError, "base_url userinfo conflicts with :auth — remove one"
 
       _ ->
