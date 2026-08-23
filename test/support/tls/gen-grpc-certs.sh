@@ -50,4 +50,10 @@ rm -f "$OUT/truststore.jks"
 keytool -importcert -alias ca -file "$OUT/ca.crt" -keystore "$OUT/truststore.jks" \
   -storepass "$KPW" -noprompt >/dev/null
 
+# genrsa writes 0600 — the ArcadeDB container's JVM runs as a non-root user, and a root-owned
+# 0600 key mounted read-only is unreadable inside the container (netty: "could not find key
+# file"; Docker Desktop on macOS relaxes permissions, which masks this locally). Throwaway
+# test material: world-readable is the point.
+chmod 644 "$OUT"/server.key "$OUT"/ca.key "$OUT"/untrusted.key
+
 echo "TLS material in $OUT:" && ls -l "$OUT"
