@@ -63,6 +63,20 @@ defmodule Arcadic.ConnTest do
       conn = Conn.new("http://localhost:2480", "mydb", auth: {"root", "x"})
       assert conn.base_url == "http://localhost:2480"
     end
+
+    test "a failover host carrying userinfo is rejected (same silent-override conflict)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Conn.new("http://localhost:2480", "mydb",
+            auth: {"root", "x"},
+            hosts: ["http://other:pw@h2.invalid"]
+          )
+        end
+
+      # value-free: no URL or credential echo
+      refute Exception.message(err) =~ "other"
+      assert Exception.message(err) =~ "userinfo-free"
+    end
   end
 
   describe "with_database/2" do

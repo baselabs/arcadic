@@ -209,17 +209,22 @@ defmodule Arcadic.Conn do
   defp validate_hosts!(_hosts, _transport),
     do: raise(ArgumentError, "hosts must be a list of http(s) base URLs")
 
+  # Hosts are replayed with the conn's own credentials, so a userinfo-carrying host URL is the
+  # same silent credential-override conflict as a userinfo base_url (the HTTP layer lets URL
+  # creds win over the Authorization header) — reject userinfo here too, value-free.
   defp validate_host_url!(url) when is_binary(url) do
     case URI.new(url) do
-      {:ok, %URI{scheme: s, host: h}} when s in ["http", "https"] and is_binary(h) and h != "" ->
+      {:ok, %URI{scheme: s, host: h, userinfo: ui}}
+      when s in ["http", "https"] and is_binary(h) and h != "" and (is_nil(ui) or ui == "") ->
         :ok
 
       _ ->
-        raise ArgumentError, "each host must be an http(s) base URL"
+        raise ArgumentError, "each host must be a userinfo-free http(s) base URL"
     end
   end
 
-  defp validate_host_url!(_), do: raise(ArgumentError, "each host must be an http(s) base URL")
+  defp validate_host_url!(_),
+    do: raise(ArgumentError, "each host must be a userinfo-free http(s) base URL")
 
   defimpl Inspect do
     import Inspect.Algebra
