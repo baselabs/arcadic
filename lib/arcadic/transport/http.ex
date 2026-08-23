@@ -486,7 +486,8 @@ defmodule Arcadic.Transport.HTTP do
         retry: false,
         finch: conn.transport_options[:finch],
         plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout
+        receive_timeout: opts[:timeout] || conn.timeout,
+        request_timeout: opts[:request_timeout] || conn.request_timeout
       ]
       |> maybe_put_json(body)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
@@ -604,7 +605,8 @@ defmodule Arcadic.Transport.HTTP do
         retry: false,
         finch: conn.transport_options[:finch],
         plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout
+        receive_timeout: opts[:timeout] || conn.timeout,
+        request_timeout: opts[:request_timeout] || conn.request_timeout
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -641,7 +643,8 @@ defmodule Arcadic.Transport.HTTP do
         retry: false,
         finch: conn.transport_options[:finch],
         plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout
+        receive_timeout: opts[:timeout] || conn.timeout,
+        request_timeout: opts[:request_timeout] || conn.request_timeout
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -922,7 +925,8 @@ defmodule Arcadic.Transport.HTTP do
       retry: false,
       finch: conn.transport_options[:finch],
       plug: conn.transport_options[:plug],
-      receive_timeout: opts[:timeout] || conn.timeout
+      receive_timeout: opts[:timeout] || conn.timeout,
+      request_timeout: opts[:request_timeout] || conn.request_timeout
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Req.get()

@@ -26,8 +26,8 @@ defmodule Arcadic do
   alias Arcadic.{Conn, Opts, Telemetry}
 
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
-  @command_opts ~w(language limit serializer timeout retries auto_commit)a
-  @query_opts ~w(language limit serializer timeout)a
+  @command_opts ~w(language limit serializer timeout request_timeout retries auto_commit)a
+  @query_opts ~w(language limit serializer timeout request_timeout)a
   @query_stream_opts ~w(chunk_size timeout language order_key)a
   # explain/profile take only :language + :timeout. retries is EXCLUDED — PROFILE executes, so a
   # retry double-runs the write; limit/serializer are meaningless for a plan.

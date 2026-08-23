@@ -20,6 +20,7 @@ defmodule Arcadic.Conn do
           transport: module(),
           transport_options: keyword(),
           timeout: pos_integer() | nil,
+          request_timeout: pos_integer() | nil,
           consistency: consistency(),
           read_after: integer() | nil,
           hosts: [String.t()]
@@ -32,6 +33,7 @@ defmodule Arcadic.Conn do
     :auth,
     :session_id,
     :timeout,
+    :request_timeout,
     :read_after,
     transport: Arcadic.Transport.HTTP,
     transport_options: [],
@@ -44,7 +46,15 @@ defmodule Arcadic.Conn do
   # Value-free opt-key allowlist (mirrors the query/command surface via Arcadic.Opts.validate_keys!/2).
   # An unknown key is a caller TYPO (e.g. `consistancy:`/`hosts` mis-spelled) that would otherwise be
   # silently ignored — for a connection-control opt that means the wrong default silently applies.
-  @connect_opts [:auth, :transport, :transport_options, :timeout, :consistency, :hosts]
+  @connect_opts [
+    :auth,
+    :transport,
+    :transport_options,
+    :timeout,
+    :request_timeout,
+    :consistency,
+    :hosts
+  ]
 
   @doc """
   Build a connection handle.
@@ -53,11 +63,18 @@ defmodule Arcadic.Conn do
     * `:auth` — `{user, pass}`. REQUIRED (no default credential).
     * `:transport` — transport module (default `Arcadic.Transport.HTTP`).
     * `:transport_options` — keyword passed to the transport (`:finch`, `:plug`, `:timeout`, pool knobs).
-    * `:timeout` — default per-call receive timeout (ms).
+    * `:timeout` — default per-call receive timeout (ms; max wait per received CHUNK).
+    * `:request_timeout` — default per-call whole-response timeout (ms). Bounds the full
+      response, defeating a peer that trickles chunks forever; `nil` (the default) leaves
+      Finch's own default (`:infinity`) in place.
     * `:consistency` - read-consistency level: `:eventual` (default) | `:read_your_writes` |
       `:linearizable`. HTTP-only; a non-default level on a Bolt conn raises.
     * `:hosts` - additional `http(s)` base URLs for multi-host availability failover
       (default `[]`). HTTP-only; a non-empty list on a Bolt conn raises.
+
+  A `base_url` carrying USERINFO (e.g. `http://user:pass@host`) together with an explicit
+  `:auth` raises — the HTTP layer resolves that conflict silently (the URL credentials win
+  over the header), which would defeat a caller deliberately overriding credentials.
 
   ## Examples
 
@@ -69,6 +86,7 @@ defmodule Arcadic.Conn do
   def new(base_url, database, opts \\ []) when is_binary(base_url) and is_binary(database) do
     Opts.validate_keys!(opts, @connect_opts)
     auth = opts[:auth] || raise ArgumentError, "Arcadic.connect/3 requires :auth {user, pass}"
+    reject_userinfo_conflict!(base_url)
     transport = Keyword.get(opts, :transport, Arcadic.Transport.HTTP)
     validate_identifier!(database)
     validate_auth!(auth, transport)
@@ -86,10 +104,25 @@ defmodule Arcadic.Conn do
       transport: transport,
       transport_options: Keyword.get(opts, :transport_options, []),
       timeout: Keyword.get(opts, :timeout),
+      request_timeout: Keyword.get(opts, :request_timeout),
       consistency: consistency,
       read_after: nil,
       hosts: Enum.map(hosts, &String.trim_trailing(&1, "/"))
     }
+  end
+
+  # A URL userinfo + an explicit :auth is a SILENT conflict at the HTTP layer: the URL
+  # credentials override the Authorization header, so a caller overriding credentials via
+  # :auth would silently send the URL's instead. Reject value-free at construction (never
+  # echo the URL or the credentials).
+  defp reject_userinfo_conflict!(base_url) do
+    case URI.new(base_url) do
+      {:ok, %URI{userinfo: userinfo}} when is_binary(userinfo) and userinfo != "" ->
+        raise ArgumentError, "base_url userinfo conflicts with :auth — remove one"
+
+      _ ->
+        :ok
+    end
   end
 
   @doc "Derive a same-pool handle on another database; validates and clears the session."

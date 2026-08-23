@@ -1,7 +1,7 @@
 defmodule Arcadic.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
+  @version "1.1.0"
   @source_url "https://github.com/baselabs/arcadic"
 
   def project do
@@ -43,7 +43,7 @@ defmodule Arcadic.MixProject do
   defp deps do
     [
       # Runtime
-      {:req, "~> 0.5"},
+      {:req, "~> 0.7"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:boltx, "~> 0.0.6", optional: true},

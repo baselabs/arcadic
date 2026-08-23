@@ -36,6 +36,33 @@ defmodule Arcadic.ConnTest do
       assert conn.transport_options == [finch: MyFinch]
       assert conn.timeout == 30_000
     end
+
+    test "carries request_timeout; default nil (Finch's whole-response default stands)" do
+      conn = Conn.new("http://localhost:2480", "mydb", auth: {"root", "x"})
+      assert conn.request_timeout == nil
+
+      conn =
+        Conn.new("http://localhost:2480", "mydb",
+          auth: {"root", "x"},
+          request_timeout: 5_000
+        )
+
+      assert conn.request_timeout == 5_000
+    end
+
+    test "base_url userinfo + explicit :auth raises value-free (the URL creds would silently win)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Conn.new("http://root:sekret@localhost:2480", "mydb", auth: {"root", "other"})
+        end
+
+      assert Exception.message(err) == "base_url userinfo conflicts with :auth — remove one"
+    end
+
+    test "a userinfo-free base_url with :auth is unaffected" do
+      conn = Conn.new("http://localhost:2480", "mydb", auth: {"root", "x"})
+      assert conn.base_url == "http://localhost:2480"
+    end
   end
 
   describe "with_database/2" do

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-23
+
+### Added
+
+- **`request_timeout` — the whole-response bound.** New conn field/connect opt
+  (`Arcadic.connect/3, request_timeout: ms`), per-call override on
+  `Arcadic.query/command` (`request_timeout:`), and transport wiring on every
+  HTTP request site (`post/4`, `raw_get/3`, `batch_ingest`, `ts_write`). It maps
+  to Finch's `request_timeout`, bounding the COMPLETE response — the hazard
+  class `receive_timeout` (max wait per received chunk) cannot bound: a peer
+  that trickles bytes can otherwise hold a call open indefinitely. Default
+  `nil` keeps Finch's own default (`:infinity`) — existing conns are unchanged.
+  Proven on a real socket: a 20-byte trickle at 200 ms intervals under
+  `timeout: 60_000` is killed at ~400 ms by `request_timeout: 400`
+  (`TransportError{reason: :timeout}`); the same trickle with no
+  `request_timeout` completes. Mutation-red-proven (dropping the wiring reds
+  exactly the kill test).
+
+### Fixed
+
+- `Arcadic.connect/3` now REJECTS a `base_url` carrying userinfo together with
+  an explicit `:auth` (value-free `ArgumentError`). At the HTTP layer the URL
+  credentials silently override the Authorization header, so a caller
+  deliberately overriding credentials via `:auth` would send the URL's instead.
+
+### Changed
+
+- `req` floor bumped `~> 0.5` → `~> 0.7` (0.7 is where `request_timeout`
+  exists as a request option; resolved 0.7.3, full suite green on it).
+
 ## [1.0.0] - 2026-08-22
 
 The first stable release: the full client surface (HTTP, Bolt, gRPC) is
