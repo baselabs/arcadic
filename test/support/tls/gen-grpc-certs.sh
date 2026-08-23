@@ -31,6 +31,11 @@ EOF
 openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -days 2 -sha256 -extfile "$OUT/san.ext" -out "$OUT/server.crt" 2>/dev/null
 
+# Normalize the server key to traditional PKCS#1 RSA ("BEGIN RSA PRIVATE KEY"): grpc-java's
+# netty refused the PKCS#8 form with "File does not contain valid private key" on some
+# providers (CI, amd64 + native OpenSSL; the JDK-SSL path accepted it — probed 2026-08-22).
+openssl rsa -in "$OUT/server.key" -traditional -out "$OUT/server.key" 2>/dev/null
+
 # Untrusted second CA (self-signed, disjoint).
 openssl genrsa -out "$OUT/untrusted.key" 2048 2>/dev/null
 openssl req -x509 -new -nodes -key "$OUT/untrusted.key" -sha256 -days 2 \
