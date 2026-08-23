@@ -46,10 +46,11 @@ it.
 - **Command:** `POST /api/v1/command/<db>` with basic auth and body
   `{"language":"cypher","command":"…","params":{…}}`. `language` also accepts
   `"sql"`, `"gremlin"`, `"graphql"`, `"mongo"`, `"sqlscript"`.
-- **Reads:** `POST /api/v1/query/<db>` — same body shape, the server's
-  read/idempotent path (verified: `http.ex` routes `query/4` there; a
-  statement that is `:not_idempotent` is rejected client-side before either
-  endpoint is hit).
+- **Reads:** `POST /api/v1/query/<db>` — same body shape, the server's read/idempotent
+  path (`http.ex` routes `query/4` there). The **server** rejects a non-idempotent
+  statement on this endpoint (`QueryNotIdempotentException`, mapped value-free to
+  `:not_idempotent`); there is NO client-side idempotency classification — a write
+  sent as a read reaches the server and comes back as that error.
 - **Result envelope:** `{"user":"…","result":[ {…} ]}`. Rows may carry `@`-prefixed
   keys: `@props` is serializer noise (**strip it**), but `@rid`/`@type`/`@cat`
   (`v`/`e`)/`@in`/`@out` are record + graph identity (**keep them**). Return

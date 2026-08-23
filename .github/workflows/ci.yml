@@ -10,6 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Supply-chain posture: third-party ACTION code is pinned by commit SHA (mutable tags
+  # can be retargeted under us). The ArcadeDB IMAGE stays on :latest DELIBERATELY — the
+  # substrate under test is meant to float so upstream contract changes (like the 26.9
+  # partial-write/TLS drift this suite already caught) surface in CI, not in production.
   unit:
     name: "unit + static (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     runs-on: ubuntu-24.04
@@ -26,22 +30,22 @@ jobs:
             dialyzer: false
             format: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
       - name: Restore deps cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: deps
           key: deps-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
 
       - name: Restore PLT cache
         if: matrix.dialyzer
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: priv/plts
           key: plt-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
@@ -56,6 +60,8 @@ jobs:
       - run: mix compile --warnings-as-errors
 
       - run: mix credo --strict
+
+      - run: mix audit
 
       - run: mix test
 
@@ -72,20 +78,20 @@ jobs:
     env:
       PW: probe-test-pw
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: "1.20"
           otp-version: "29"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Restore deps cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: deps
           key: deps-${{ runner.os }}-integration-${{ hashFiles('mix.lock') }}

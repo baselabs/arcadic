@@ -30,12 +30,15 @@ defmodule Arcadic.Integration.AdminTest do
     assert {:ok, %{"totalEntries" => _}} = Schema.dictionary(conn)
   end
 
+  # Cold-start tolerance, scoped to the documented cause: only the transport TIMEOUT
+  # retries (a cold container's first default-mode info can exceed the request timeout);
+  # any other error surfaces immediately so a flapping endpoint is never masked.
   defp eventually(fun, attempts \\ 5) do
     case fun.() do
       {:ok, _} = ok ->
         ok
 
-      {:error, _} when attempts > 1 ->
+      {:error, %Arcadic.TransportError{reason: :timeout}} = err when attempts > 1 ->
         Process.sleep(1_000)
         eventually(fun, attempts - 1)
 

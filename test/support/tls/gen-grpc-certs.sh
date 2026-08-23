@@ -49,11 +49,11 @@ rm -f "$OUT/truststore.jks"
 keytool -importcert -alias ca -file "$OUT/ca.crt" -keystore "$OUT/truststore.jks" \
   -storepass "$KPW" -noprompt >/dev/null
 
-# genrsa/pkcs12 write 0600 — the ArcadeDB container's JVM runs as a non-root user, and
-# root-owned 0600 files mounted read-only are unreadable inside the container (server key:
-# netty "could not find key file"; keystore: "Could not load resource"). Docker Desktop on
-# macOS relaxes mount permissions, which masks this locally. Throwaway test material:
-# world-readable is the point.
-chmod 644 "$OUT"/server.key "$OUT"/ca.key "$OUT"/untrusted.key "$OUT"/server.p12 "$OUT"/truststore.jks
+# Only the artifacts the CONTAINER reads need relaxing — the ArcadeDB JVM runs as a
+# non-root user, and root-owned 0600 files mounted read-only are unreadable in-container
+# (server key: netty "could not find key file"; keystore: "Could not load resource").
+# The CA private keys stay 0600 (nothing in-container reads them). Docker Desktop on
+# macOS relaxes mount permissions, which masks this locally. Throwaway test material.
+chmod 644 "$OUT"/server.key "$OUT"/server.p12 "$OUT"/truststore.jks
 
 echo "TLS material in $OUT:" && ls -l "$OUT"
