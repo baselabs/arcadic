@@ -117,6 +117,8 @@ defmodule Arcadic.Error do
     if msg =~ "isolationLevel", do: :invalid_begin_body, else: :server_error
   end
 
+  defp reason_for(401, _body), do: :unauthorized
+
   defp reason_for(403, _body), do: :unauthorized
 
   defp reason_for(_status, %{"exception" => fqn}) when is_binary(fqn) do

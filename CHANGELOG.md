@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A 401 response (invalid/expired bearer token — the body carries only
+  `error`/`requestId`, no `exception` FQN; live-probed on 26.8.1) now maps to
+  `:unauthorized` instead of the generic `:server_error` — a credential
+  failure read as a server fault hides the re-auth remedy.
 - `Arcadic.connect/3` now REJECTS a `base_url` carrying userinfo together with
   an explicit `:auth` (value-free `ArgumentError`). At the HTTP layer the URL
   credentials silently override the Authorization header, so a caller

@@ -29,6 +29,16 @@ defmodule Arcadic.ErrorTest do
       assert %Error{reason: :invalid_begin_body} = Error.from_response(400, body)
     end
 
+    test "a 401 (invalid/expired bearer token — no exception FQN) maps to :unauthorized" do
+      # Live-probed on 26.8.1: the 401 body carries only error/requestId — no
+      # `exception` key — so without the explicit 401 clause it falls to the
+      # generic :server_error catch-all, dressing a credential failure up as a
+      # server fault.
+      body = %{"error" => "Invalid or expired authentication token", "requestId" => "r"}
+
+      assert %Error{reason: :unauthorized, http_status: 401} = Error.from_response(401, body)
+    end
+
     test "maps a 400 carrying an exception FQN to the exception reason, not :server_error" do
       body = %{
         "error" => "boom",
