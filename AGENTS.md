@@ -104,7 +104,11 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   require a live server. Gate them on an env var (`ARCADIC_TEST_URL`); skip when
   unset so the pure-unit suite runs anywhere. Spin ArcadeDB locally with
   `docker run -p 2480:2480 -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" \
-  arcadedata/arcadedb:latest`.
+  arcadedata/arcadedb:latest`. When a shared server already runs, its values sit
+  in the gitignored `.env` under the names the suites read (`ARCADIC_TEST_*`,
+  `ARCADIC_TS_TEST_*`, `ARCADIC_BOLT_*`, `ARCADIC_GRPC_TEST_*`); load them with
+  `set -a; . ./.env; set +a` before a lane. The TLS and admin-shutdown suites
+  still need their own throwaway server.
 - **gRPC TLS live suite** (`test/integration/grpc_tls_test.exs`, tag
   `@moduletag :integration_grpc_tls`): needs a TLS-enabled gRPC ArcadeDB — the
   cert script and docker flags are in the test's moduledoc (on ARM64 images add
