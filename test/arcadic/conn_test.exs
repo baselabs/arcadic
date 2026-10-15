@@ -252,6 +252,38 @@ defmodule Arcadic.ConnTest do
         Conn.with_consistency(bolt, :linearizable)
       end
     end
+
+    test "gRPC rejects a non-default consistency and a non-empty hosts list value-free" do
+      # The gRPC transport ignores both knobs (no read-consistency metadata, no hosts failover),
+      # so accepting them would be the same silent no-op fail-open Bolt already rejects.
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.new("grpc://a.invalid:50051", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.Grpc,
+          consistency: :linearizable
+        )
+      end
+
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.new("grpc://a.invalid:50051", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.Grpc,
+          hosts: ["http://b.invalid"]
+        )
+      end
+
+      grpc =
+        Conn.new("grpc://a.invalid:50051", "db",
+          auth: {"root", "x"},
+          transport: Arcadic.Transport.Grpc
+        )
+
+      assert grpc.consistency == :eventual
+
+      assert_raise ArgumentError, ~r/HTTP transport/, fn ->
+        Conn.with_consistency(grpc, :read_your_writes)
+      end
+    end
   end
 
   describe "option-key validation" do

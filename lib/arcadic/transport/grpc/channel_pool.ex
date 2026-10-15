@@ -19,39 +19,80 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     copied into a pure-data `Conn` — sharing one requires a process, which is why the pool is opt-in
     and caller-supervised rather than transport-internal.
 
-    The cache serializes `checkout` through the GenServer so two concurrent first-connects don't race
-    into two channels; a dead channel (its adapter connection process gone) is transparently reconnected.
+    The CONNECT itself runs in the CALLER's process, never inside the GenServer: a connect can block
+    for the adapter's full connect timeout (grpc 1.x default 15s, ×2 with the transport's transient
+    retry), and serializing that inside the pool would queue every OTHER endpoint's checkout behind
+    one dead endpoint. The GenServer only makes two O(1) decisions — a cache lookup, and a
+    first-wins register when two concurrent first-connects race (the loser's channel serves its own
+    call and is then best-effort disconnected). A dead channel (its adapter connection process gone)
+    is transparently replaced on the next checkout.
     """
+
     use GenServer
+
+    # Both server operations are O(1) map touches; the explicit timeout documents that no caller
+    # ever waits behind a connect here (the pre-restructure design ran connect_fn inside
+    # handle_call, where one dead endpoint could hold every checkout past this deadline).
+    @call_timeout 5_000
 
     @spec start_link(keyword()) :: GenServer.on_start()
     def start_link(opts) do
-      GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+      # The transport resolves the pool by its OWN name (Process.whereis/checkout), so a custom
+      # :name would silently run a pool nobody uses — reject it value-free instead.
+      if opts[:name] not in [nil, __MODULE__] do
+        raise ArgumentError,
+              "ChannelPool does not support a custom :name (the transport resolves it by module name)"
+      end
+
+      GenServer.start_link(__MODULE__, opts, name: __MODULE__)
     end
 
     @doc """
     Return a healthy channel for `key`, connecting via `connect_fn` (a 0-arity `-> {:ok, channel} |
-    {:error, term}`) and caching it if the endpoint has no live channel yet.
+    {:error, term}`) and caching it if the endpoint has no live channel yet. The connect runs in the
+    CALLER process; concurrent first-connects race and the first registered channel wins.
     """
     @spec checkout(term(), (-> {:ok, term()} | {:error, term()})) ::
             {:ok, term()} | {:error, term()}
     def checkout(key, connect_fn) when is_function(connect_fn, 0) do
-      GenServer.call(__MODULE__, {:checkout, key, connect_fn})
+      case GenServer.call(__MODULE__, {:lookup, key}, @call_timeout) do
+        {:ok, ch} ->
+          {:ok, ch}
+
+        :connect ->
+          case connect_fn.() do
+            {:ok, ch} -> register(key, ch)
+            {:error, _} = err -> err
+          end
+      end
     end
 
     @impl true
     def init(_opts), do: {:ok, %{}}
 
     @impl true
-    def handle_call({:checkout, key, connect_fn}, _from, channels) do
+    def handle_call({:lookup, key}, _from, channels) do
+      case Map.get(channels, key) do
+        nil -> {:reply, :connect, channels}
+        ch -> if alive?(ch), do: {:reply, {:ok, ch}, channels}, else: {:reply, :connect, channels}
+      end
+    end
+
+    def handle_call({:register, key, ch}, _from, channels) do
       case Map.get(channels, key) do
         nil ->
-          reconnect(key, connect_fn, channels)
+          {:reply, :stored, Map.put(channels, key, ch)}
 
-        ch ->
-          if alive?(ch),
-            do: {:reply, {:ok, ch}, channels},
-            else: reconnect(key, connect_fn, channels)
+        existing ->
+          if alive?(existing) do
+            # Lost the first-connect race: the winner is already shared; disconnect ours here so
+            # its supervisor-owned connection tree is not orphaned.
+            safe_disconnect(ch)
+            {:reply, {:ok, existing}, channels}
+          else
+            safe_disconnect(existing)
+            {:reply, :stored, Map.put(channels, key, ch)}
+          end
       end
     end
 
@@ -65,6 +106,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       :ok
     end
 
+    defp register(key, ch) do
+      case GenServer.call(__MODULE__, {:register, key, ch}, @call_timeout) do
+        :stored -> {:ok, ch}
+        {:ok, _winner} = ok -> ok
+      end
+    end
+
     defp safe_disconnect(ch) do
       _ = GRPC.Stub.disconnect(ch)
       :ok
@@ -72,25 +120,6 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       _ -> :ok
     catch
       :exit, _ -> :ok
-    end
-
-    defp reconnect(key, connect_fn, channels) do
-      case connect_fn.() do
-        {:ok, ch} ->
-          # Best-effort-disconnect the stale channel being replaced: grpc 1.x owns each
-          # connection process under its own GRPC.Client.Supervisor (random make_ref name),
-          # so dropping the handle without disconnecting would orphan that connection tree —
-          # socket and resolver — there forever.
-          case Map.get(channels, key) do
-            nil -> :ok
-            stale -> safe_disconnect(stale)
-          end
-
-          {:reply, {:ok, ch}, Map.put(channels, key, ch)}
-
-        {:error, _} = err ->
-          {:reply, err, Map.delete(channels, key)}
-      end
     end
 
     # A channel is alive iff its underlying adapter connection process is alive (mint under grpc 1.x).

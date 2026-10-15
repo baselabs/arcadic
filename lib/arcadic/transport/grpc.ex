@@ -28,6 +28,23 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     conn is rejected at construction, as with Bolt). Admin RPCs (Ping) authenticate by the request
     `credentials` field; data RPCs by `x-arcade-user`/`-password`/`-database` metadata.
 
+    ## Timeouts
+
+    A per-call `timeout:` option or a conn-level `timeout:` reaches EVERY RPC (unary and
+    streaming) as the grpc deadline — the transport no longer silently drops it. Unset, the
+    grpc library's own defaults apply: **10s for unary calls, `:infinity` for streaming** — a
+    long-running unary bulk ingest needs an explicit `timeout:`. The channel OPEN retries once
+    only on a transient (`:unavailable`) failure; a deterministic failure (TLS verification
+    against an untrusted CA) fails immediately at full timeout cost.
+
+    ## Streaming laziness
+
+    `query_stream/3` connects and opens the server cursor on the FIRST enumeration pull: an
+    abandoned (never-enumerated) stream leaks neither a channel nor a server cursor, connect
+    errors surface as a raise at enumeration (the same shape as HTTP's mid-stream page
+    errors), and an early halt cancels the in-flight server stream on a pooled channel
+    (RST_STREAM) so a half-consumed cursor does not keep draining server-side.
+
     ## Connection pooling
 
     By default each call opens a fresh channel. For channel reuse, add the caller-supervised
@@ -108,17 +125,28 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     }
 
     @impl true
-    def execute(%Conn{} = conn, :read, %{statement: stmt, params: params, language: lang}, _opts) do
+    def execute(%Conn{} = conn, :read, %{statement: stmt, params: params, language: lang}, opts) do
       with {:ok, encoded} <- safe_encode_params(params),
-           do: run_query(conn, stmt, encoded, lang)
+           do: run_query(conn, stmt, encoded, lang, opts)
     end
 
-    def execute(%Conn{} = conn, :write, %{statement: stmt, params: params, language: lang}, _opts) do
+    def execute(%Conn{} = conn, :write, %{statement: stmt, params: params, language: lang}, opts) do
       with {:ok, encoded} <- safe_encode_params(params),
-           do: run_command(conn, stmt, encoded, lang)
+           do: run_command(conn, stmt, encoded, lang, opts)
     end
 
-    defp run_query(conn, stmt, encoded, lang) do
+    # The caller's timeout reaches EVERY stub call: `opts[:timeout]` (per-call) or `conn.timeout`
+    # (conn default). Unset, the grpc library's own defaults apply (unary 10s, streaming
+    # :infinity) — documented in the moduledoc; the transport no longer silently drops the knob.
+    defp rpcopts(%Conn{} = conn, opts) do
+      timeout = Keyword.get(opts, :timeout) || conn.timeout
+      maybe_timeout([metadata: metadata(conn)], timeout)
+    end
+
+    defp maybe_timeout(opts, nil), do: opts
+    defp maybe_timeout(opts, timeout), do: Keyword.put(opts, :timeout, timeout)
+
+    defp run_query(conn, stmt, encoded, lang, opts) do
       req = %ExecuteQueryRequest{
         database: conn.database,
         query: stmt,
@@ -129,7 +157,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.execute_query(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.execute_query(ch, req, rpcopts(conn, opts)) do
           {:ok, resp} ->
             {:ok, resp.results |> Enum.flat_map(& &1.records) |> Enum.map(&decode_record/1)}
 
@@ -139,7 +167,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
-    defp run_command(conn, stmt, encoded, lang) do
+    defp run_command(conn, stmt, encoded, lang, opts) do
       req = %ExecuteCommandRequest{
         database: conn.database,
         command: stmt,
@@ -151,7 +179,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.execute_command(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.execute_command(ch, req, rpcopts(conn, opts)) do
           {:ok, %{success: true} = resp} -> {:ok, Enum.map(resp.records, &decode_record/1)}
           {:ok, %{success: false}} -> {:error, %Error{reason: :command_failed}}
           {:error, e} -> {:error, map_error(e)}
@@ -162,12 +190,12 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # EXPLAIN/PROFILE: the facade prepends the prefix; the plan comes back as a row carrying
     # `executionPlanAsString` (human string) + `executionPlan` (the raw plan map).
     @impl true
-    def explain(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, _opts) do
+    def explain(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, opts) do
       with {:ok, encoded} <- safe_encode_params(params),
-           do: run_explain(conn, stmt, encoded, lang)
+           do: run_explain(conn, stmt, encoded, lang, opts)
     end
 
-    defp run_explain(conn, stmt, encoded, lang) do
+    defp run_explain(conn, stmt, encoded, lang, opts) do
       req = %ExecuteQueryRequest{
         database: conn.database,
         query: stmt,
@@ -178,7 +206,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.execute_query(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.execute_query(ch, req, rpcopts(conn, opts)) do
           {:ok, resp} -> {:ok, plan_from_rows(resp)}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -214,32 +242,68 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
           transaction: transaction_context(conn)
         }
 
-        # Lazy end-to-end: connect, open the server cursor, then Stream.transform maps each wire
-        # batch to its rows AS THE CONSUMER PULLS (no eager drain — that would defeat the cursor and
-        # buffer the whole result in memory). Its after-fun disconnects the channel on normal
-        # completion, early `Stream.take` halt, OR a raise mid-enumeration, so the server cursor lives
-        # exactly the consume window and the channel never leaks.
-        case connect(conn) do
-          {:ok, ch, mode} -> open_cursor(conn, ch, req, mode)
-          {:error, e} -> {:error, e}
-        end
+        # TRULY lazy end-to-end (matching HTTP/Bolt): the connect and the server-cursor open run
+        # on the FIRST pull (Stream.map over a one-element list defers open_cursor/3), so a
+        # stream that is never enumerated never connects and never opens a server cursor — an
+        # abandoned return value leaks nothing. Connect/open errors surface at enumeration (a
+        # raise, the same shape as HTTP's mid-stream page errors); the inner transform's
+        # after-fun runs on drain and early halt, cancelling a pooled stream and releasing the
+        # channel, so the cursor lives exactly the consume window.
+        {:ok,
+         [{:open, conn, req, opts}]
+         |> Stream.map(fn {:open, conn, req, opts} -> open_cursor(conn, req, opts) end)
+         |> Stream.flat_map(fn cursor -> cursor_rows(cursor) end)}
       end
     end
 
-    defp open_cursor(conn, ch, req, mode) do
-      case ArcadeDbService.Stub.stream_query(ch, req, metadata: metadata(conn)) do
-        {:ok, grpc_stream} ->
-          {:ok,
-           Stream.transform(grpc_stream, fn -> ch end, &stream_reducer/2, &release(&1, mode))}
+    defp open_cursor(conn, req, opts) do
+      case connect(conn) do
+        {:ok, ch, mode} ->
+          case ArcadeDbService.Stub.stream_query(ch, req, rpcopts(conn, opts)) do
+            {:ok, grpc_stream} ->
+              %{ch: ch, mode: mode, stream: grpc_stream}
+
+            {:error, e} ->
+              release(ch, mode)
+              raise map_error(e)
+          end
 
         {:error, e} ->
-          release(ch, mode)
-          {:error, map_error(e)}
+          raise e
       end
     end
 
-    defp stream_reducer({:ok, %{records: recs}}, ch), do: {Enum.map(recs, &decode_record/1), ch}
-    defp stream_reducer({:error, e}, ch), do: {[{:error, map_error(e)}], ch}
+    # The inner, ELEMENT-driven transform over the wire stream: each wire batch maps to its
+    # decoded rows; the after-fun closes the cursor (cancel a pooled stream, release the channel)
+    # on drain AND early halt.
+    defp cursor_rows(%{ch: ch, mode: mode, stream: gs}) do
+      Stream.transform(gs, fn -> :ok end, &stream_reducer/2, fn :ok ->
+        close_cursor(%{ch: ch, mode: mode, stream: gs})
+      end)
+    end
+
+    defp stream_reducer({:ok, %{records: recs}}, acc),
+      do: {Enum.map(recs, &decode_record/1), acc}
+
+    defp stream_reducer({:error, e}, acc), do: {[{:error, map_error(e)}], acc}
+
+    # Early halt on a POOLED channel must CANCEL the in-flight server stream (RST_STREAM): the
+    # channel survives for other calls, and without the cancel the half-consumed cursor keeps
+    # draining server-side under the stream's :infinity deadline. On a fully-drained stream (and
+    # on a per-call channel, which disconnects) it is a harmless best-effort.
+    defp close_cursor(%{ch: ch, mode: mode, stream: stream}) do
+      if mode == :pooled, do: cancel_stream(stream)
+      release(ch, mode)
+    end
+
+    defp cancel_stream(stream) do
+      _ = GRPC.Stub.cancel(stream)
+      :ok
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
 
     # --- Bulk graph ingest → GraphBatchLoad (client-streaming; the twin of HTTP POST /api/v1/batch) ---
     @impl true
@@ -267,7 +331,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        stream = ArcadeDbService.Stub.graph_batch_load(ch, metadata: metadata(conn))
+        stream = ArcadeDbService.Stub.graph_batch_load(ch, rpcopts(conn, opts))
         GRPC.Stub.send_request(stream, chunk, end_stream: true)
 
         case GRPC.Stub.recv(stream) do
@@ -385,7 +449,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.bulk_insert(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.bulk_insert(ch, req, rpcopts(conn, opts)) do
           {:ok, %InsertSummary{} = s} -> {:ok, insert_summary_to_map(s)}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -400,7 +464,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       last_index = length(chunks) - 1
 
       with_channel(conn, fn ch ->
-        stream = ArcadeDbService.Stub.insert_stream(ch, metadata: metadata(conn))
+        stream = ArcadeDbService.Stub.insert_stream(ch, rpcopts(conn, opts))
 
         chunks
         |> Enum.with_index()
@@ -493,12 +557,12 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     # --- Single-record CRUD (CreateRecord/LookupByRid/UpdateRecord/DeleteRecord; raw maps) ---
     @impl true
-    def create_record(%Conn{} = conn, type, props, _opts) do
+    def create_record(%Conn{} = conn, type, props, opts) do
       with {:ok, entries} <- safe_props(props),
-           do: run_create_record(conn, type, entries)
+           do: run_create_record(conn, type, entries, opts)
     end
 
-    defp run_create_record(conn, type, entries) do
+    defp run_create_record(conn, type, entries, opts) do
       req = %CreateRecordRequest{
         database: conn.database,
         credentials: credentials(conn),
@@ -508,7 +572,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.create_record(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.create_record(ch, req, rpcopts(conn, opts)) do
           {:ok, %{rid: rid}} when is_binary(rid) and rid != "" -> {:ok, rid}
           {:ok, _} -> {:error, %Error{reason: :server_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -517,7 +581,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     @impl true
-    def lookup_record(%Conn{} = conn, rid, _opts) do
+    def lookup_record(%Conn{} = conn, rid, opts) do
       req = %LookupByRidRequest{
         database: conn.database,
         credentials: credentials(conn),
@@ -527,7 +591,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
       with_channel(conn, fn ch ->
         ch
-        |> ArcadeDbService.Stub.lookup_by_rid(req, metadata: metadata(conn))
+        |> ArcadeDbService.Stub.lookup_by_rid(req, rpcopts(conn, opts))
         |> lookup_result()
       end)
     end
@@ -567,7 +631,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.update_record(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.update_record(ch, req, rpcopts(conn, opts)) do
           {:ok, %{success: true}} -> :ok
           {:ok, _} -> {:error, %Error{reason: :server_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -576,7 +640,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     @impl true
-    def delete_record(%Conn{} = conn, rid, _opts) do
+    def delete_record(%Conn{} = conn, rid, opts) do
       req = %DeleteRecordRequest{
         database: conn.database,
         rid: rid,
@@ -585,7 +649,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.delete_record(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.delete_record(ch, req, rpcopts(conn, opts)) do
           {:ok, %{success: true}} -> :ok
           {:ok, _} -> {:error, %Error{reason: :server_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -620,7 +684,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.begin_transaction(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.begin_transaction(ch, req, rpcopts(conn, opts)) do
           {:ok, %{transaction_id: id}} when is_binary(id) and id != "" -> {:ok, id}
           {:ok, _} -> {:error, %Error{reason: :transaction_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -636,7 +700,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.commit_transaction(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.commit_transaction(ch, req, rpcopts(conn, [])) do
           {:ok, %{success: true}} -> :ok
           {:ok, _} -> {:error, %Error{reason: :transaction_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -654,7 +718,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       }
 
       with_channel(conn, fn ch ->
-        case ArcadeDbService.Stub.rollback_transaction(ch, req, metadata: metadata(conn)) do
+        case ArcadeDbService.Stub.rollback_transaction(ch, req, rpcopts(conn, [])) do
           {:ok, %{success: true}} -> :ok
           {:ok, _} -> {:error, %Error{reason: :transaction_error}}
           {:error, e} -> {:error, map_error(e)}
@@ -671,7 +735,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %ListDatabasesRequest{credentials: credentials(conn)}
 
-        case ArcadeDbAdminService.Stub.list_databases(ch, req) do
+        case ArcadeDbAdminService.Stub.list_databases(ch, req, rpcopts(conn, [])) do
           {:ok, %{databases: dbs}} -> {:ok, dbs}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -683,7 +747,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %ExistsDatabaseRequest{credentials: credentials(conn), name: name}
 
-        case ArcadeDbAdminService.Stub.exists_database(ch, req) do
+        case ArcadeDbAdminService.Stub.exists_database(ch, req, rpcopts(conn, [])) do
           {:ok, %{exists: exists}} -> {:ok, exists}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -695,7 +759,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %GetDatabaseInfoRequest{credentials: credentials(conn), name: conn.database}
 
-        case ArcadeDbAdminService.Stub.get_database_info(ch, req) do
+        case ArcadeDbAdminService.Stub.get_database_info(ch, req, rpcopts(conn, [])) do
           {:ok, info} ->
             {:ok,
              %{
@@ -765,7 +829,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %CreateDatabaseRequest{credentials: credentials(conn), name: name}
 
-        case ArcadeDbAdminService.Stub.create_database(ch, req) do
+        case ArcadeDbAdminService.Stub.create_database(ch, req, rpcopts(conn, [])) do
           {:ok, _} -> {:ok, %{}}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -776,7 +840,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %DropDatabaseRequest{credentials: credentials(conn), name: name}
 
-        case ArcadeDbAdminService.Stub.drop_database(ch, req) do
+        case ArcadeDbAdminService.Stub.drop_database(ch, req, rpcopts(conn, [])) do
           {:ok, _} -> {:ok, %{}}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -787,7 +851,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       with_channel(conn, fn ch ->
         req = %GetServerInfoRequest{credentials: credentials(conn)}
 
-        case ArcadeDbAdminService.Stub.get_server_info(ch, req) do
+        case ArcadeDbAdminService.Stub.get_server_info(ch, req, rpcopts(conn, [])) do
           {:ok, info} -> {:ok, server_info_to_map(info)}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -811,7 +875,11 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       # Ping is on the ADMIN service, which authenticates by the body `credentials` field
       # (the data service uses `x-arcade-*` metadata — verified live). So Ping carries creds.
       with_channel(conn, fn ch ->
-        case ArcadeDbAdminService.Stub.ping(ch, %PingRequest{credentials: credentials(conn)}) do
+        case ArcadeDbAdminService.Stub.ping(
+               ch,
+               %PingRequest{credentials: credentials(conn)},
+               rpcopts(conn, [])
+             ) do
           {:ok, %{ok: ok}} -> {:ok, ok}
           {:error, e} -> {:error, map_error(e)}
         end
@@ -866,29 +934,56 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       {uri.host || "localhost", uri.port || 50_051, tls?(conn, uri), trust}
     end
 
-    # Retry the channel open ONCE on a transient failure. A fresh HTTP/2 connection can race
+    # Retry the channel open ONCE on a TRANSIENT failure only. A fresh HTTP/2 connection can race
     # the first connect on a cold socket; the retry (no RPC has run, so nothing has a side
-    # effect yet) makes the per-call path stable under connect churn.
+    # effect yet) makes the per-call path stable under connect churn. A DETERMINISTIC failure
+    # (TLS verification against an untrusted CA) must not burn a second full connect timeout on
+    # the same dead end — hence the :unavailable-only transient test.
     defp raw_connect(%Conn{} = conn, retries) do
       uri = URI.parse(conn.base_url)
       endpoint = "#{uri.host || "localhost"}:#{uri.port || 50_051}"
       # grpc 1.x defaults to the gun adapter; pin mint explicitly — it is already a runtime
       # dependency via req and carries no open advisories (gun 2.5.0 does, unpatched upstream).
-      base = [adapter: GRPC.Client.Adapters.Mint]
-      opts = if tls?(conn, uri), do: [{:cred, tls_credential(conn)} | base], else: base
-
-      case GRPC.Stub.connect(endpoint, opts) do
-        {:ok, ch} ->
-          {:ok, ch}
-
-        {:error, _reason} when retries > 0 ->
-          Process.sleep(25)
-          raw_connect(conn, retries - 1)
-
-        {:error, _reason} ->
-          {:error, %TransportError{reason: :connect_failed}}
+      with {:ok, opts} <- connect_opts(conn) do
+        open_channel(endpoint, opts, conn, retries)
       end
     end
+
+    defp open_channel(endpoint, opts, conn, retries) do
+      case GRPC.Stub.connect(endpoint, opts) do
+        {:ok, ch} -> {:ok, ch}
+        {:error, reason} -> retry_or_fail(conn, reason, retries)
+      end
+    end
+
+    defp retry_or_fail(conn, reason, retries) do
+      if retries > 0 and transient?(reason) do
+        Process.sleep(25)
+        raw_connect(conn, retries - 1)
+      else
+        {:error, %TransportError{reason: :connect_failed}}
+      end
+    end
+
+    defp connect_opts(%Conn{} = conn) do
+      uri = URI.parse(conn.base_url)
+      base = [adapter: GRPC.Client.Adapters.Mint]
+
+      if tls?(conn, uri) do
+        case tls_credential(conn) do
+          {:ok, cred} -> {:ok, [{:cred, cred} | base]}
+          {:error, _} = err -> err
+        end
+      else
+        {:ok, base}
+      end
+    end
+
+    # A channel-open :unavailable is the cold-socket/connect-churn class worth one retry;
+    # anything else (TLS verification, credential shape) is deterministic and a retry would
+    # only double the wait on the same dead end.
+    defp transient?(%GRPC.RPCError{status: 14}), do: true
+    defp transient?(_), do: false
 
     # TLS is enabled by a secure URL scheme (`grpcs://`, `grpc+tls://`, `https://`) or an explicit
     # `transport_options: [tls: true]`. Plaintext otherwise — the endpoint is credential-bearing, so
@@ -903,22 +998,26 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
           Keyword.get(conn.transport_options, :tls, false)
 
     defp tls_credential(%Conn{} = conn) do
-      trust =
-        case Keyword.take(conn.transport_options, [:cacertfile, :cacerts]) do
-          [] ->
-            [cacerts: :public_key.cacerts_get()]
+      case Keyword.take(conn.transport_options, [:cacertfile, :cacerts]) do
+        [] ->
+          {:ok,
+           GRPC.Credential.new(
+             ssl: [verify: :verify_peer, depth: 3] ++ [cacerts: :public_key.cacerts_get()]
+           )}
 
-          [_] = single ->
-            single
+        [_] = single ->
+          {:ok, GRPC.Credential.new(ssl: [verify: :verify_peer, depth: 3] ++ single)}
 
-          # Both present would let OTP :ssl precedence silently pick one trust store over the
-          # other — reject the ambiguity loudly and value-free instead.
-          _ ->
-            raise ArgumentError,
-                  "pass at most one of :cacertfile or :cacerts in :transport_options"
-        end
-
-      GRPC.Credential.new(ssl: [verify: :verify_peer, depth: 3] ++ trust)
+        # Both present would let OTP :ssl precedence silently pick one trust store over the
+        # other — reject the ambiguity value-free as a TYPED error (never a raise: the caller
+        # may be connecting through the ChannelPool, where an argument raise crashes the caller).
+        _ ->
+          {:error,
+           %Error{
+             reason: :invalid_transport_options,
+             message: "pass at most one of :cacertfile or :cacerts in :transport_options"
+           }}
+      end
     end
 
     defp safe_disconnect(ch) do
@@ -1114,9 +1213,18 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp from_kind({:link_value, link}), do: link.rid
 
     # A DATETIME column arrives as a google.protobuf.Timestamp (seconds + nanos) → decode to a
-    # DateTime rather than dropping it to nil (the silent-data-loss class).
-    defp from_kind({:timestamp_value, %{seconds: s, nanos: n}}),
-      do: DateTime.from_unix!(s * 1_000_000_000 + n, :nanosecond)
+    # DateTime rather than dropping it to nil (the silent-data-loss class). Seconds are bounded
+    # to the DateTime range so a pathological/hostile value cannot raise `ArgumentError` (which
+    # ECHOES the number — Rule 3) and crash the whole row decode; out-of-range decodes to nil,
+    # mirroring the DECIMAL clause's bounded-scale posture just below.
+    @datetime_unix_min -62_167_219_200
+    @datetime_unix_max 253_402_300_799
+
+    defp from_kind({:timestamp_value, %{seconds: s, nanos: n}})
+         when is_integer(s) and s >= @datetime_unix_min and s <= @datetime_unix_max,
+         do: DateTime.from_unix!(s * 1_000_000_000 + n, :nanosecond)
+
+    defp from_kind({:timestamp_value, _}), do: nil
 
     # An exact DECIMAL arrives as unscaled + scale. Elixir has no built-in arbitrary decimal and
     # arcadic takes no Decimal dep, so surface it as a float (unscaled × 10^-scale) — lossy for

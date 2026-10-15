@@ -59,4 +59,60 @@ defmodule Arcadic.Transport.Grpc.ChannelPoolTest do
     ch = live_channel()
     assert {:ok, ^ch} = ChannelPool.checkout({"h", 4, false}, fn -> {:ok, ch} end)
   end
+
+  describe "connect runs OUTSIDE the pool GenServer (a dead endpoint must not queue the world)" do
+    test "two concurrent first-connects do not serialize behind each other" do
+      connect = fn ->
+        Process.sleep(250)
+        {:ok, %{adapter_payload: %{conn_pid: self()}}}
+      end
+
+      {elapsed_us, results} =
+        :timer.tc(fn ->
+          tasks =
+            for _ <- 1..2 do
+              Task.async(fn -> ChannelPool.checkout({"h", 9, false}, connect) end)
+            end
+
+          Task.await_many(tasks)
+        end)
+
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+      # Serialized-in-GenServer (the old design) forces 2 × 250ms sequential = 500ms+; the
+      # caller-process connect finishes both in ~one connect duration. 450ms cuts between.
+      assert elapsed_us < 450_000
+    end
+
+    test "a slow connect on one endpoint does not block checkout of an already-cached endpoint" do
+      ch = live_channel()
+      assert {:ok, ^ch} = ChannelPool.checkout({"cached", 1, false}, fn -> {:ok, ch} end)
+
+      slow =
+        Task.async(fn ->
+          ChannelPool.checkout({"slow", 1, false}, fn ->
+            Process.sleep(400)
+            {:error, :dead}
+          end)
+        end)
+
+      Process.sleep(20)
+
+      {elapsed_us, _} =
+        :timer.tc(fn ->
+          ChannelPool.checkout({"cached", 1, false}, fn ->
+            flunk("cached endpoint must not reconnect")
+          end)
+        end)
+
+      assert {:error, :dead} = Task.await(slow)
+      assert elapsed_us < 300_000
+    end
+  end
+
+  describe "custom :name is rejected (the transport resolves the pool by module name)" do
+    test "start_link with a custom :name raises value-free" do
+      err = assert_raise ArgumentError, fn -> ChannelPool.start_link(name: MyApp.Pool) end
+      assert Exception.message(err) =~ ":name"
+    end
+  end
 end

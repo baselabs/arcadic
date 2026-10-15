@@ -68,9 +68,9 @@ defmodule Arcadic.Conn do
       response, defeating a peer that trickles chunks forever; `nil` (the default) leaves
       Finch's own default (`:infinity`) in place.
     * `:consistency` - read-consistency level: `:eventual` (default) | `:read_your_writes` |
-      `:linearizable`. HTTP-only; a non-default level on a Bolt conn raises.
+      `:linearizable`. HTTP-only; a non-default level on a Bolt or gRPC conn raises.
     * `:hosts` - additional `http(s)` base URLs for multi-host availability failover
-      (default `[]`). HTTP-only; a non-empty list on a Bolt conn raises.
+      (default `[]`). HTTP-only; a non-empty list on a Bolt or gRPC conn raises.
 
   A `base_url` carrying USERINFO (e.g. `http://user:pass@host`) together with an explicit
   `:auth` raises — the HTTP layer resolves that conflict silently (the URL credentials win
@@ -154,8 +154,8 @@ defmodule Arcadic.Conn do
 
   @doc "Derive a handle with a read-consistency level; validates and clears the session. HTTP-only."
   @spec with_consistency(t(), consistency()) :: t()
-  def with_consistency(%__MODULE__{transport: Arcadic.Transport.Bolt}, level)
-      when level != :eventual,
+  def with_consistency(%__MODULE__{transport: transport}, level)
+      when transport in [Arcadic.Transport.Bolt, Arcadic.Transport.Grpc] and level != :eventual,
       do: raise(ArgumentError, "read-consistency requires the HTTP transport")
 
   def with_consistency(%__MODULE__{} = conn, level) do
@@ -187,8 +187,10 @@ defmodule Arcadic.Conn do
   # allowed set, never the offending value (Rule 3).
   defp validate_consistency!(:eventual, _transport), do: :ok
 
-  defp validate_consistency!(level, Arcadic.Transport.Bolt) when level in @consistency_levels,
-    do: raise(ArgumentError, "read-consistency requires the HTTP transport")
+  defp validate_consistency!(level, transport)
+       when transport in [Arcadic.Transport.Bolt, Arcadic.Transport.Grpc] and
+              level in @consistency_levels and level != :eventual,
+       do: raise(ArgumentError, "read-consistency requires the HTTP transport")
 
   defp validate_consistency!(level, _transport) when level in @consistency_levels, do: :ok
 
@@ -204,8 +206,9 @@ defmodule Arcadic.Conn do
   # construction (never echo the value). Multi-host is HTTP-only.
   defp validate_hosts!([], _transport), do: :ok
 
-  defp validate_hosts!(_hosts, Arcadic.Transport.Bolt),
-    do: raise(ArgumentError, "multi-host failover requires the HTTP transport")
+  defp validate_hosts!(_hosts, transport)
+       when transport in [Arcadic.Transport.Bolt, Arcadic.Transport.Grpc],
+       do: raise(ArgumentError, "multi-host failover requires the HTTP transport")
 
   defp validate_hosts!(hosts, _transport) when is_list(hosts) do
     Enum.each(hosts, &validate_host_url!/1)
