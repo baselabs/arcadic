@@ -138,7 +138,14 @@ defmodule Arcadic.MixProject do
 
   defp aliases do
     [
-      quality: ["format --check-formatted", "credo --strict", "dialyzer"],
+      # The full declared gate (AGENTS.md workflow): format, compile, credo, unit tests, dialyzer.
+      quality: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "test",
+        "dialyzer"
+      ],
       # `mix deps.audit` is MixAudit's own CVE-scan task — do NOT alias it (an alias of
       # the same name shadows it and can't call it without recursion). `mix audit` is the
       # composite: unused-lock check + retired-hex check + MixAudit's CVE scan.

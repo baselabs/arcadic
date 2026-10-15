@@ -6,7 +6,9 @@ defmodule Arcadic.Integration.SchemaImportTest do
 
   # Server-local directory ArcadeDB writes EXPORT DATABASE artifacts to. Verified live at
   # /home/arcadedb/exports for the qor-arcadedb container; override for other setups.
-  @export_dir System.get_env("ARCADIC_TEST_EXPORT_DIR", "/home/arcadedb/exports")
+  # Runtime read (a module attribute would bake at compile time — a later run with the env
+  # set would silently keep the default).
+  defp export_dir, do: System.get_env("ARCADIC_TEST_EXPORT_DIR", "/home/arcadedb/exports")
 
   setup_all do
     url =
@@ -105,7 +107,7 @@ defmodule Arcadic.Integration.SchemaImportTest do
     :ok = Server.create_database!(dst, dst_name)
     on_exit(fn -> Server.drop_database(dst, dst_name) end)
 
-    assert {:ok, rows} = Import.database(dst, "file://#{@export_dir}/#{name}")
+    assert {:ok, rows} = Import.database(dst, "file://#{export_dir()}/#{name}")
     assert Enum.any?(rows, &(&1["result"] == "OK"))
   end
 
@@ -150,7 +152,7 @@ defmodule Arcadic.Integration.SchemaImportTest do
     # assertion is RED on the shipped bug and GREEN on the fix. The unit stub can never catch this
     # (it echoes whatever bytes it is sent); only a live bind proves the GRAMMAR the server accepts.
     assert {:ok, rows} =
-             Arcadic.Import.database(dst, "file://#{@export_dir}/#{name}",
+             Arcadic.Import.database(dst, "file://#{export_dir()}/#{name}",
                with: [commitEvery: 1, wal: false]
              )
 
@@ -179,7 +181,7 @@ defmodule Arcadic.Integration.SchemaImportTest do
     assert Enum.any?(rows, &(is_integer(&1["totalRecords"]) and &1["totalRecords"] >= 4))
 
     dst = new_db(url, pass)
-    assert {:ok, _} = Arcadic.Import.database(dst, "file://#{@export_dir}/#{name}")
+    assert {:ok, _} = Arcadic.Import.database(dst, "file://#{export_dir()}/#{name}")
   end
 
   test "a string with: setting carrying a loopback URL opens no new SSRF door (B9 boundary)", %{
@@ -228,11 +230,12 @@ defmodule Arcadic.Integration.SchemaImportTest do
     dst = new_db(url, pass)
 
     # Same valid path the happy-path sibling imports OK; only commitEvery changes to a charset-clean
-    # NON-numeric string. The server PARSES the WITH clause and rejects the value ("For input string"),
-    # so the setting is demonstrably processed, not silently dropped. `reason` is :server_error
-    # (CommandExecutionException is unmapped → fallback); the setting-specific signal is `detail`.
-    assert {:error, %Arcadic.Error{reason: :server_error} = e} =
-             Arcadic.Import.database(dst, "file://#{@export_dir}/#{name}",
+    # NON-numeric string. Re-pinned 2026-10-15 (ArcadeDB 26.10): the setting failure moved from
+    # an HTTP error into the 2xx RESULT ROW ("result": "FAIL") — arcadic fails closed on it as
+    # {:error, :import_failed} with the server's reason text quarantined in `detail` (the
+    # setting is demonstrably processed either way, never silently dropped).
+    assert {:error, %Arcadic.Error{reason: :import_failed} = e} =
+             Arcadic.Import.database(dst, "file://#{export_dir()}/#{name}",
                with: [commitEvery: "notanumber"]
              )
 

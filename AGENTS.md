@@ -78,6 +78,10 @@ it.
   Inside a session the param is a no-op (conflicts surface at commit). Schema
   lever: `CREATE VERTEX TYPE X BUCKETS <n>` (server caps ~32; `BUCKETS 128` →
   HTTP 400) sizes a hot type for its write concurrency.
+- **Session transactions do NOT roll back DDL** (probed 2026-10-15, v26.10.2):
+  `begin → CREATE VERTEX TYPE T → INSERT → rollback` discards the INSERT and KEEPS
+  the type; a session stays valid after an in-tx statement error. Only DML is
+  transactional.
 
 ## Development workflow
 
@@ -136,18 +140,28 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 
 ## Current status
 
-The Phase-1 and Phase-2 client surfaces are closed and feature-complete.
-`arcadic` 0.7.1 is released with HTTP, Bolt, and full gRPC transport coverage;
-time-series, server programmability, administration, ingest, graphRAG, HA/read
-consistency, telemetry, and the reliability surface are all shipped.
+The client surface is closed and feature-complete: HTTP, Bolt, and full gRPC transport
+coverage; time-series, server programmability, administration, ingest, graphRAG, HA/read
+consistency, telemetry, migrations (with the crash-recovery marker contract), and the
+reliability surface are all shipped. `arcadic` **1.1.0** is the current release (Hex,
+2026-08-23); `main` past it carries the post-review hardening batch under
+`[Unreleased]` (dependency CVE closures, HTTP-boundary redaction, gRPC timeout/laziness/
+pool fixes, import fail-closed, migrator crash recovery).
 
-`main` past `v0.7.1` carries no package-version change; its user-facing
-addition is the documented and live-tripwired server-side `retries:` option
-for concurrent autocommit writes (docs, tooling, and dependency hygiene
-only — no library behavior change). Forward product
-composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
-ArcadeDB transport capabilities still land here first to preserve the
-tenant-blind boundary.
+Forward product composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
+ArcadeDB transport capabilities still land here first to preserve the tenant-blind
+boundary.
+
+## Verified ArcadeDB drift notes
+
+- **DDL is NOT transactional in session transactions** (probed 2026-10-15 on 26.10.2:
+  `begin → CREATE TYPE → INSERT → rollback` discards the row, keeps the type). The
+  migrator's marker contract exists because of this.
+- **Import failures moved into the result row** (26.10): a bad `WITH` setting answers
+  HTTP 2xx with `"result": "FAIL"` in the row — `Import.database` fails closed on it.
+- **26.10 behavior changes** (pinned in the integration suite): the sparse-vector
+  retro-index now covers pre-existing rows; an unknown time-series FIELD write and an
+  unknown tag-key filter are rejected (was fail-open).
 
 ## graphify (code knowledge graph)
 

@@ -236,22 +236,16 @@ defmodule Arcadic.Integration.TimeSeriesTest do
     assert {:error, _} = TimeSeries.query(conn, "nosuchtype", from: t0 - 1_000, to: t0 + 1_000)
   end
 
-  test "unknown FIELD writes a zero-filled row (shape-only characterization)", %{conn: conn} do
+  # Re-pinned 2026-10-15 (ArcadeDB 26.10.2): the server now REJECTS a write naming a field
+  # the type does not define (HTTP 400) — the 26.7-era zero-filled-row characterization no
+  # longer holds; the stricter contract is pinned.
+  test "unknown FIELD is rejected by the write (fail-closed since 26.10)", %{conn: conn} do
     t0 = now_ms()
 
-    :ok =
-      TimeSeries.write_lines(conn, "cpu,host=zf,region=x nosuchfield=9.9 #{t0}", precision: :ms)
-
-    assert {:ok, %{count: 1, columns: cols, rows: [row]}} =
-             TimeSeries.query(conn, "cpu",
-               from: t0 - 1_000,
-               to: t0 + 1_000,
-               tags: %{"host" => "zf"}
+    assert {:error, %Arcadic.Error{reason: :server_error}} =
+             TimeSeries.write_lines(conn, "cpu,host=zf,region=x nosuchfield=9.9 #{t0}",
+               precision: :ms
              )
-
-    # Shape only: the row EXISTS (the zero-fill defect) at full column width; no assertion
-    # on the zeroed values.
-    assert length(row) == length(cols)
   end
 
   test "fields projection answers 200 (shape-only — server-side projection defect)", %{conn: conn} do
@@ -285,12 +279,11 @@ defmodule Arcadic.Integration.TimeSeriesTest do
     assert is_list(cols)
   end
 
-  test "unknown tag KEY fails open on query and latest (filter ignored, not rejected)",
+  # Re-pinned 2026-10-15 (ArcadeDB 26.10.2): the fail-open era ended — a tag filter naming a
+  # key the type does not define is now REJECTED (HTTP 400), exactly the contract change the
+  # old pin was designed to surface rather than absorb.
+  test "unknown tag KEY is rejected by query and latest (fail-closed since 26.10)",
        %{conn: conn} do
-    # Server behavior probed 2026-07-11 on 26.7.2: a tag filter naming a key that is not on the
-    # type is IGNORED server-side (fail-open), never rejected. Both asserts pin the :ok+row shape
-    # HARD: a server that starts REJECTING unknown tag keys (an {:error, _} contract change)
-    # must red this test — that change must be seen, not absorbed.
     t0 = now_ms()
 
     :ok =
@@ -307,29 +300,18 @@ defmodule Arcadic.Integration.TimeSeriesTest do
         precision: :ms
       )
 
-    # (a) query/3: the unknown-key filter matches NOTHING if applied — the written row coming
-    # back proves the filter was dropped. Time-scoped to this test's window; the row is found
-    # BY NAME (other tests' ~now windows may overlap, so no bare count assert).
-    assert {:ok, %{columns: columns, rows: rows, count: count}} =
+    # The write above is fine (all fields defined); the FILTERS below name an undefined key.
+    # (a) query/3 rejects the unknown tag key (fail-closed since 26.10 — was fail-open).
+    assert {:error, %Arcadic.Error{reason: :server_error}} =
              TimeSeries.query(conn, "cpu",
                from: t0 - 1_000,
                to: t0 + 1_000,
                tags: %{"nosuchkey" => "zzz"}
              )
 
-    assert count >= 1
-    row_maps = Enum.map(rows, fn row -> columns |> Enum.zip(row) |> Map.new() end)
-    assert Enum.any?(row_maps, &(&1["host"] == "failopen")), "unknown-tag-key filter was applied"
-
-    # (b) latest/3: same fail-open — ANY non-empty newest row proves the unknown-key filter was
-    # ignored (applied, it matches nothing; a silent fail-CLOSED would normalize to latest: []).
-    # Shape-tolerant on WHICH row: the agg test's bucket-interior timestamps can sit ahead of
-    # this test's ~now under some seed orders.
-    assert {:ok, %{columns: lcols, latest: latest}} =
+    # (b) latest/3 rejects it too.
+    assert {:error, %Arcadic.Error{reason: :server_error}} =
              TimeSeries.latest(conn, "cpu", tag: {"nosuchkey", "zzz"})
-
-    assert latest != []
-    assert length(lcols) == length(latest)
   end
 
   test "PromQL family: instant, range, labels, label values, series", %{conn: conn} do

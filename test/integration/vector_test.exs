@@ -99,7 +99,11 @@ defmodule Arcadic.Integration.VectorTest do
     refute Enum.any?(rows, &Map.has_key?(&1, "distance"))
   end
 
-  test "retro-index quirk: pre-existing rows are uncovered AND the telemetry signal fires live",
+  # Re-pinned 2026-10-15 (ArcadeDB 26.10.2): the retro-index QUIRK is FIXED upstream —
+  # pre-existing rows ARE covered by a late LSM_SPARSE_VECTOR index now (probed: the row
+  # comes back with score 0.75). The telemetry guard signal still fires on the DDL
+  # response's totalIndexed shape; both new facts are pinned.
+  test "retro-index covers pre-existing rows on 26.10.2+ AND the telemetry signal fires live",
        %{
          conn: conn
        } do
@@ -126,9 +130,11 @@ defmodule Arcadic.Integration.VectorTest do
     assert_received {[:arcadic, :vector, :sparse_index_preexisting], ^ref, %{count: 1}, %{}}
     :telemetry.detach(ref)
 
-    # documented behavior: pre-existing rows are NOT searchable
-    assert {:ok, []} =
+    # documented behavior (26.10.2+): pre-existing rows ARE searchable after the late index
+    assert {:ok, [row | _]} =
              Vector.sparse_neighbors(conn, t, "tokens", "weights", [1, 2, 3], [0.5, 0.5, 0.5], 10)
+
+    assert is_number(row["score"])
   end
 
   test "filter restricts neighbors to a candidate RID set; group_by collapses to top-N per group",

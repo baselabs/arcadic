@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Migrator crash recovery.** Every migration attempt is bracketed by a durable
+  `up_started`/`down_started` marker on the `_arcadic_migrations` row (ArcadeDB session
+  transactions do not roll back DDL — live-probed — so `up` + version-recording cannot be
+  atomic). The marker is removed only by successful finalization or the new
+  `Migrator.resolve/3`; an interrupted migration (error return, raise, process death)
+  makes the next `migrate/rollback/reset/status` REFUSE with a typed
+  `:interrupted_migration` error instead of silently re-running a possibly half-applied
+  migration. `Migrator.interrupted/1` lists the stuck versions. Legacy status-less rows
+  read as applied. All migrator entry points now reject a session-scoped conn. Migration
+  callbacks widen to `:ok | {:error, term()}` (only `:ok` finalizes).
+
+### Fixed
+
+- **Rule-3 redaction at the HTTP boundary:** an unencodable param or statement value
+  (invalid UTF-8, a tuple/pid) returns `{:error, %Error{reason: :invalid_params}}`
+  value-free — previously Jason/Protocol raised with the offending value echoed in the
+  message. `query/command/async/bookmarked` reject a non-binary statement value-free (a
+  bare atom silently stringified before).
+- **Import failure is no longer a silent success:** ArcadeDB ≥ 26.10 reports import-setting
+  failures inside a 2xx result row (`"result": "FAIL"`); `Import.database/3` now returns
+  `{:error, %Error{reason: :import_failed}}` (server reason quarantined in `detail`).
+- **gRPC caller timeouts are honored:** `timeout:`/`conn.timeout` now reaches every RPC.
+  Previously the transport dropped the option entirely and the grpc library's own
+  defaults applied (unary capped at 10s with no override, streaming `:infinity`).
+- **gRPC `query_stream` is lazy end-to-end** (connect + server-cursor open on first
+  enumeration pull — an abandoned stream leaks no channel and no cursor; was: both
+  leaked). Early halt cancels the in-flight server stream on a pooled channel.
+- **ChannelPool no longer serializes connects:** a connect runs in the caller's process;
+  previously one dead endpoint queued every checkout behind its ~15s connect until the
+  GenServer call timed out with an untyped crash. A custom `:name` (which silently never
+  served the transport) is now rejected.
+- `list_databases` fails closed on an off-contract body (`:unexpected_response`) instead
+  of a silent empty list — `database_exists?` no longer answers false on protocol drift.
+- A `transaction/3` commit-phase failure now rolls the session back best-effort (was: the
+  session dangled server-side until reaping).
+- A gRPC timestamp outside the DateTime range decodes to `nil` instead of raising with
+  the number echoed and killing the whole row decode; a deterministic TLS connect failure
+  no longer burns a second connect-timeout retry.
+- `Conn` rejects `consistency:`/`hosts:` on a gRPC conn value-free (the transport ignores
+  both — the same silent no-op Bolt already rejected).
+- `Ingest.insert/4` validates option VALUES (a string `chunk_size` crashed deep in the
+  gRPC layer with encoded rows in the blame; `0` silently coerced to row-at-a-time).
+
+### Changed
+
+- gRPC stream connect/open errors now surface at enumeration (a raise, matching HTTP's
+  mid-stream error shape) instead of a call-time `{:error, _}`.
+- `query_stream` accepts a per-call `request_timeout:` (threaded into every page POST).
+- `mix quality` now runs the full declared gate (format, compile `--warnings-as-errors`,
+  credo `--strict`, unit tests, dialyzer) — previously only format/credo/dialyzer.
+- `Vector.require_list!`, `FullText.search`, and `Server.check_database` validate their
+  argument values value-free (an element-checked list, a binary query, a boolean `fix`).
+- Integration pins updated to ArcadeDB 26.10: the sparse-vector retro-index now covers
+  pre-existing rows; an unknown time-series FIELD write and an unknown tag-key filter are
+  rejected by the server (was fail-open); the B7 streaming fixture seeds 2500 rows in one
+  `UNWIND` round trip (sequential inserts blew test budgets on remote substrates).
+
+### Security
+
+- Dependency lock refreshed: mint 1.11.0 (CVE-2026-82728 HIGH, CVE-2026-94194 MEDIUM),
+  protobuf 0.17.1 (CVE-2026-104635 HIGH), bandit 1.13.1 (CVE-2026-105659 HIGH,
+  CVE-2026-105660 MEDIUM — test-only dependency). `mix audit` is clean.
+
 ## [1.1.0] - 2026-08-23
 
 ### Added

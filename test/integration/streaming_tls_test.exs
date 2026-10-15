@@ -19,10 +19,12 @@ defmodule Arcadic.Integration.StreamingTLSTest do
 
     test "streams all rows in @rid order, @props/alias-free" do
       conn = http_conn()
-      Arcadic.command!(conn, "CREATE DOCUMENT TYPE V", %{}, language: "sql")
+      Arcadic.command!(conn, "CREATE VERTEX TYPE V", %{}, language: "sql")
 
-      for i <- 1..2500,
-          do: Arcadic.command!(conn, "INSERT INTO V SET n = #{i}", %{}, language: "sql")
+      # ONE round trip (was 2500 sequential INSERTs — a remote/tunneled substrate blew every
+      # test budget at ~143ms RTT each). Insertion order == rid order, so the order assert
+      # still means the same thing.
+      Arcadic.command!(conn, "UNWIND range(1, 2500) AS i CREATE (v:V {n: i})")
 
       assert {:ok, stream} =
                Arcadic.query_stream(conn, "SELECT n FROM V", %{},
