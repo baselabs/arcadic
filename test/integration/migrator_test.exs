@@ -80,4 +80,117 @@ defmodule Arcadic.Integration.MigratorTest do
     assert {:ok, 2} = Migrator.reset(conn, Registry)
     assert {:ok, [{1, :up}, {2, :up}]} = Migrator.status(conn, Registry)
   end
+
+  # A migration that DIES mid-up (deterministic in-process kill — the crash window itself):
+  # the marker was committed BEFORE the callback ran, so the next migrate refuses instead of
+  # re-running a possibly half-applied migration, and resolve records the operator's outcome.
+  defmodule Killer do
+    @behaviour Arcadic.Migration
+    @impl true
+    def version, do: 9
+
+    @impl true
+    def up(conn) do
+      # Half-applied on purpose: this statement COMMITS before the process dies.
+      Arcadic.command!(conn, "CREATE VERTEX TYPE HalfApplied IF NOT EXISTS", %{}, language: "sql")
+      Process.exit(self(), :kill)
+    end
+
+    @impl true
+    def down(conn) do
+      Arcadic.command!(conn, "DROP TYPE HalfApplied IF EXISTS", %{}, language: "sql")
+      :ok
+    end
+  end
+
+  defmodule KillerRegistry do
+    use Arcadic.MigrationRegistry
+    migrations([Killer])
+  end
+
+  # The crash window itself, live: run the killer migration in a nolinked child, await its
+  # :killed exit, then prove the loud-stop contract end to end on the real substrate.
+  test "kill-proof contract: marker survives, migrate refuses, callback does not re-run, resolve recovers",
+       %{conn: conn} do
+    db = "arcadic_mig_kill2_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    scoped = %{conn | database: db}
+    :ok = Server.create_database!(conn, db)
+    on_exit(fn -> Server.drop_database(conn, db) end)
+
+    {:ok, _marker_before} =
+      Task.async_nolink(fn ->
+        Migrator.migrate(scoped, KillerRegistry)
+      end)
+      |> await_killed()
+
+    # The marker is durable: interrupted/1 sees version 9.
+    assert {:ok, [9]} = Migrator.interrupted(scoped)
+
+    # The next migrate REFUSES (value-free) instead of re-running the killed migration.
+    assert {:error, %Arcadic.Error{reason: :interrupted_migration}} =
+             Migrator.migrate(scoped, KillerRegistry)
+
+    # ...and the half-applied DDL from the dead attempt is still there (the operator inspects
+    # exactly this before resolving).
+    assert {:ok, [_]} =
+             Arcadic.command(scoped, "SELECT FROM schema:types WHERE name = 'HalfApplied'", %{},
+               language: "sql"
+             )
+
+    # The operator establishes it APPLIED → resolve finalizes → migrate proceeds (no-op).
+    assert :ok = Migrator.resolve(scoped, 9, :applied)
+    assert {:ok, []} = Migrator.interrupted(scoped)
+    assert {:ok, 0} = Migrator.migrate(scoped, KillerRegistry)
+  end
+
+  test "legacy status-less rows read as applied; a down_started marker refuses rollback", %{
+    conn: conn
+  } do
+    db = "arcadic_mig_legacy_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    scoped = %{conn | database: db}
+    :ok = Server.create_database!(conn, db)
+    on_exit(fn -> Server.drop_database(conn, db) end)
+
+    # Simulate a pre-marker-contract database: a tracking row with NO status property.
+    :ok =
+      Arcadic.command!(scoped, "CREATE DOCUMENT TYPE _arcadic_migrations", %{}, language: "sql")
+
+    :ok =
+      Arcadic.command!(scoped, "INSERT INTO _arcadic_migrations SET version = 1", %{},
+        language: "sql"
+      )
+
+    assert {:ok, [{1, :up}, {2, :down}]} = Migrator.status(scoped, Registry)
+    assert {:ok, 1} = Migrator.migrate(scoped, Registry)
+
+    # A hand-forged down_started marker (a down that died before the DELETE) refuses the
+    # next rollback AND migrate, until resolved :applied (the migration is still applied).
+    :ok =
+      Arcadic.command!(
+        scoped,
+        "UPDATE _arcadic_migrations SET status = 'down_started' WHERE version = 1",
+        %{},
+        language: "sql"
+      )
+
+    assert {:error, %Arcadic.Error{reason: :interrupted_migration}} =
+             Migrator.rollback(scoped, Registry)
+
+    assert :ok = Migrator.resolve(scoped, 1, :applied)
+    assert {:ok, [{1, :up}, {2, :up}]} = Migrator.status(scoped, Registry)
+  end
+
+  defp await_killed(task) do
+    ref = Process.monitor(task.pid)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, :killed} ->
+        {:ok, :killed}
+
+      {:DOWN, ^ref, :process, _pid, reason} ->
+        {:ok, reason}
+    after
+      30_000 -> flunk("killer migration task did not die")
+    end
+  end
 end

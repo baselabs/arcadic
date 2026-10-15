@@ -46,7 +46,19 @@ defmodule Arcadic.Error do
     inside a transaction, Bolt's admin-only calls, async writes without
     `execute_async/3`).
   - `:unexpected_response` — a 2xx response whose body is off the documented contract
-    (client-raised by the time-series read paths; the body is never echoed).
+    (client-raised by the time-series read paths and `list_databases`; the body is never echoed).
+  - `:invalid_params` — a caller param or statement that cannot be encoded for the wire
+    (an invalid-UTF-8 binary, a term with no JSON/gRPC representation). Raised by the
+    boundary, never as a mid-encode exception echoing the value.
+  - `:import_failed` — an import whose 2xx result row itself reported `"result" => "FAIL"`
+    (current ArcadeDB reports import-setting failures in the row, not the HTTP status).
+  - `:interrupted_migration` — `Arcadic.Migrator` found an `up_started`/`down_started`
+    marker from an attempt whose outcome is unknown; reconcile via
+    `Arcadic.Migrator.resolve/3` (versions via `Arcadic.Migrator.interrupted/1`).
+  - `:invalid_state` — a `Migrator.resolve/3` transition was attempted against a
+    non-interrupted version or matched no rows.
+  - `:invalid_transport_options` — contradictory transport options (e.g. both
+    `:cacertfile` and `:cacerts` on a gRPC conn).
 
   A separate, non-`Arcadic.Error` convention: several admin validators reject
   bad input as a **bare atom** tuple, never this struct, and never echoing the
