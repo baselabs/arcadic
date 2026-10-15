@@ -47,6 +47,11 @@ defmodule Arcadic.Import do
   `{:ok, rows}` (rows carry `operation`/`fromUrl`/`parsedRecords`/`result`) or
   `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
 
+  A 2xx whose result row reports `"result" => "FAIL"` (ArcadeDB ≥ 26.10 moves import-setting
+  failures INTO the result row instead of an HTTP error — live-probed 2026-10-15) returns
+  `{:error, %Arcadic.Error{reason: :import_failed}}`; the row's server text rides the
+  quarantined `detail` field, never `message/1`.
+
   `opts`: `with` — a keyword list of import settings whose values are numbers, booleans, or
   allowlisted strings (e.g. `with: [commitEvery: 100, wal: false, mapping: "map.json"]`).
 
@@ -57,7 +62,31 @@ defmodule Arcadic.Import do
     validate_url!(url)
     Opts.validate_keys!(opts, [:with])
     with_clause = build_with(Keyword.get(opts, :with, []))
-    Arcadic.command(conn, "IMPORT DATABASE '#{url}'#{with_clause}", %{}, language: "sql")
+
+    case Arcadic.command(conn, "IMPORT DATABASE '#{url}'#{with_clause}", %{}, language: "sql") do
+      {:ok, rows} -> fail_closed_on_failed_row(rows)
+      {:error, _} = err -> err
+    end
+  end
+
+  # The import result row is the failure surface on current ArcadeDB: an HTTP 2xx can carry
+  # `"result" => "FAIL"` with the human reason in `"reason"`. Treat it as the failure it is —
+  # surfacing it as {:ok, rows} would dress a failed import up as a success. Value-free: the
+  # server's reason text goes ONLY to the quarantined `detail` (Rule 3 — it may carry values,
+  # e.g. credentials echoed in fromUrl per the moduledoc).
+  defp fail_closed_on_failed_row(rows) when is_list(rows) do
+    failed = Enum.find(rows, fn row -> is_map(row) and row["result"] == "FAIL" end)
+
+    if failed do
+      {:error,
+       %Arcadic.Error{
+         reason: :import_failed,
+         message: "import reported failure",
+         detail: failed["reason"]
+       }}
+    else
+      {:ok, rows}
+    end
   end
 
   @doc "Imports `url`, returning the rows or raising."

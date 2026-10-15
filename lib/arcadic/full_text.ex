@@ -80,6 +80,7 @@ defmodule Arcadic.FullText do
   @spec search(Conn.t(), String.t(), String.t() | [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
   def search(%Conn{} = conn, type, property_or_properties, query, opts \\ []) do
+    unless is_binary(query), do: raise(ArgumentError, "query must be a string")
     Opts.validate_keys!(opts, @search_opts)
     require_props!(property_or_properties)
 

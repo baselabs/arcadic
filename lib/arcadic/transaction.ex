@@ -38,6 +38,7 @@ defmodule Arcadic.Transaction do
 
   def transaction(%Conn{} = conn, fun, opts) when is_function(fun, 1) do
     Opts.validate_keys!(opts, @transaction_opts)
+    validate_isolation!(opts[:isolation])
     retry = parse_retry!(opts[:retry])
 
     Telemetry.span(:transaction, %{isolation: opts[:isolation]}, fn ->
@@ -141,14 +142,30 @@ defmodule Arcadic.Transaction do
     end
   end
 
+  # The isolation VALUE is validated value-free at the facade: the transport's own raise is
+  # defense-in-depth, but the facade must reject before any wire call (echo the allowed set,
+  # never the offending value — Rule 3).
+  defp validate_isolation!(nil), do: :ok
+  defp validate_isolation!(level) when level in [:read_committed, :repeatable_read], do: :ok
+
+  defp validate_isolation!(_level),
+    do: raise(ArgumentError, "unknown isolation; allowed: [:read_committed, :repeatable_read]")
+
   defp run(conn, fun, opts) do
     with {:ok, tx} <- begin_pinned(conn, [conn.base_url | conn.hosts], opts) do
       try do
         result = fun.(tx)
 
         case conn.transport.commit(tx) do
-          :ok -> {:ok, result}
-          {:error, error} -> {:error, error}
+          # A commit-phase failure leaves the session open server-side until reaping — roll it
+          # back best-effort (safe_rollback never masks the original error) so the session
+          # unwinds exactly like every other failure path in this function.
+          :ok ->
+            {:ok, result}
+
+          {:error, error} ->
+            _ = safe_rollback(tx)
+            {:error, error}
         end
       rescue
         exception ->

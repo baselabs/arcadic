@@ -155,6 +155,13 @@ defmodule Arcadic.Server do
   @spec check_database(Conn.t(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
   def check_database(%Conn{} = conn, opts \\ []) do
     Opts.validate_keys!(opts, [:fix])
+    # A truthy-but-not-true :fix (e.g. "true", 1) must not silently downgrade the REPAIR to a
+    # report — reject value-free so the caller learns their option was ignored-shaped.
+    case opts[:fix] do
+      f when is_boolean(f) or is_nil(f) -> :ok
+      _ -> raise(ArgumentError, "fix must be a boolean")
+    end
+
     statement = if opts[:fix] == true, do: "CHECK DATABASE FIX", else: "CHECK DATABASE"
 
     Admin.span(:check_database, fn ->

@@ -28,7 +28,7 @@ defmodule Arcadic do
   @language_allowlist ~w(cypher sql sqlscript gremlin graphql mongo)
   @command_opts ~w(language limit serializer timeout request_timeout retries auto_commit)a
   @query_opts ~w(language limit serializer timeout request_timeout)a
-  @query_stream_opts ~w(chunk_size timeout language order_key)a
+  @query_stream_opts ~w(chunk_size timeout request_timeout language order_key)a
   # explain/profile take only :language + :timeout. retries is EXCLUDED — PROFILE executes, so a
   # retry double-runs the write; limit/serializer are meaningless for a plan.
   @explain_opts ~w(language timeout)a
@@ -95,6 +95,7 @@ defmodule Arcadic do
   @spec command_async(Conn.t(), String.t(), map(), keyword()) :: :ok | {:error, Exception.t()}
   def command_async(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
     opts = validate_opts!(opts, @command_opts)
+    validate_statement!(statement)
     validate_params!(params)
     language = opts[:language] || "cypher"
     request = %{statement: statement, params: params, language: language}
@@ -285,6 +286,7 @@ defmodule Arcadic do
   # ── internals ──────────────────────────────────────────────────────────────
 
   defp run(conn, mode, statement, params, opts) do
+    validate_statement!(statement)
     validate_params!(params)
     language = opts[:language] || "cypher"
     request = %{statement: statement, params: params, language: language}
@@ -303,6 +305,7 @@ defmodule Arcadic do
   # `:not_supported`, never an UndefinedFunctionError. The span dispatch is extracted to
   # dispatch_bookmarked/5 so neither the guard nor the span nests too deep (credo max-depth 2).
   defp run_bookmarked(conn, mode, statement, params, opts) do
+    validate_statement!(statement)
     validate_params!(params)
 
     if Code.ensure_loaded?(conn.transport) and
@@ -444,11 +447,10 @@ defmodule Arcadic do
   defp validate_params!(params) when is_map(params), do: :ok
   defp validate_params!(_), do: raise(ArgumentError, "params must be a map")
 
-  # `statement` must be a binary BEFORE the `EXPLAIN `/`PROFILE ` keyword is prepended — a non-binary
-  # term makes the `<>` concat raise `construction of binary failed ... got: <value>`, echoing the
-  # whole term into the message (the Rule-3 leak class validate_params!/1 already guards for `opts`).
-  # Reject value-free at the explain/profile facade. query/command carry the statement through to the
-  # transport body without a `<>`, so they never hit this raise path and need no guard here.
+  # `statement` must be a binary BEFORE it reaches the wire: a non-binary term either raises
+  # mid-encode (an atom keyword list) or silently stringifies (a bare atom) — and the raise path
+  # echoes the whole term into the message (the Rule-3 leak class validate_params!/1 guards for
+  # params). Reject value-free at the facade on EVERY statement-taking entry point.
   defp validate_statement!(statement) when is_binary(statement), do: :ok
   defp validate_statement!(_), do: raise(ArgumentError, "statement must be a string")
 

@@ -494,7 +494,15 @@ defmodule Arcadic.Vector do
   defp add_query_opt(:group_size, value, pairs, params),
     do: {["groupSize: :gs" | pairs], Map.put(params, "gs", require_pos_int!(value, "group_size"))}
 
-  defp require_list!(v, _label) when is_list(v), do: v
+  # A list whose ELEMENTS are not all numbers still cannot ride the wire (a tuple/pid raises the
+  # Encoder protocol with the value echoed; a non-UTF-8 binary raises Jason) — check the elements
+  # here so the message matches its own claim, value-free (Rule 3).
+  defp require_list!(v, label) when is_list(v) do
+    if Enum.all?(v, &is_number/1),
+      do: v,
+      else: raise(ArgumentError, "#{label} must be a list of numbers")
+  end
+
   defp require_list!(_v, label), do: raise(ArgumentError, "#{label} must be a list of numbers")
 
   defp require_number!(v, _label) when is_number(v), do: v

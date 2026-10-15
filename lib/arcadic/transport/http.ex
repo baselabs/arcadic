@@ -220,10 +220,11 @@ defmodule Arcadic.Transport.HTTP do
   defp build_sql_stream(conn, statement, params, opts) do
     chunk = Keyword.get(opts, :chunk_size, 1000)
     timeout = Keyword.get(opts, :timeout, :infinity)
+    rt = Keyword.get(opts, :request_timeout)
 
     if has_where?(statement),
-      do: build_offset_stream(conn, statement, params, chunk, timeout),
-      else: build_keyset_stream(conn, statement, params, chunk, timeout)
+      do: build_offset_stream(conn, statement, params, chunk, timeout, rt),
+      else: build_keyset_stream(conn, statement, params, chunk, timeout, rt)
   end
 
   # Cypher streaming: validate the required :order_key, then OFFSET-page over it with Cypher $name
@@ -236,7 +237,8 @@ defmodule Arcadic.Transport.HTTP do
         if Regex.match?(@order_key_re, key) do
           chunk = Keyword.get(opts, :chunk_size, 1000)
           timeout = Keyword.get(opts, :timeout, :infinity)
-          {:ok, build_cypher_offset_stream(conn, statement, key, params, chunk, timeout)}
+          rt = Keyword.get(opts, :request_timeout)
+          {:ok, build_cypher_offset_stream(conn, statement, key, params, chunk, timeout, rt)}
         else
           {:error,
            %Error{
@@ -288,23 +290,23 @@ defmodule Arcadic.Transport.HTTP do
   # over one. Use a Bolt in-tx cursor for snapshot consistency. ArcadeDB SQL binds `:name`
   # placeholders, NOT `$name` (Cypher's syntax); a `$`-named SQL param binds to null → `Invalid
   # value for LIMIT: null`.
-  defp build_offset_stream(conn, statement, params, chunk, timeout) do
+  defp build_offset_stream(conn, statement, params, chunk, timeout, rt) do
     paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
 
     page_stream(%{offset: 0, rows: 0, done: false}, fn %{offset: offset} = acc ->
       page_params = Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
-      emit_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+      emit_page(page(conn, paged, page_params, timeout, rt, "sql"), chunk, acc)
     end)
   end
 
   # Cypher offset paging: same machinery as build_offset_stream but with a Cypher suffix ($name
   # placeholders + the validated order_key) and language "cypher" on the page body.
-  defp build_cypher_offset_stream(conn, statement, order_key, params, chunk, timeout) do
+  defp build_cypher_offset_stream(conn, statement, order_key, params, chunk, timeout, rt) do
     paged = statement <> " ORDER BY #{order_key} SKIP $__arcadic_skip LIMIT $__arcadic_limit"
 
     page_stream(%{offset: 0, rows: 0, done: false}, fn %{offset: offset} = acc ->
       page_params = Map.merge(params, %{"__arcadic_skip" => offset, "__arcadic_limit" => chunk})
-      emit_page(page(conn, paged, page_params, timeout, "cypher"), chunk, acc)
+      emit_page(page(conn, paged, page_params, timeout, rt, "cypher"), chunk, acc)
     end)
   end
 
@@ -312,11 +314,11 @@ defmodule Arcadic.Transport.HTTP do
   # `WHERE @rid > <cursor-literal>` where <cursor> is the MAX @rid of the previous page (rows come
   # back @rid-ascending). Free of the offset-shift skip a concurrent delete causes, and O(n) instead
   # of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated.
-  defp build_keyset_stream(conn, statement, params, chunk, timeout) do
+  defp build_keyset_stream(conn, statement, params, chunk, timeout, rt) do
     page_stream(%{cursor: nil, rows: 0, done: false}, fn %{cursor: cursor} = acc ->
       paged = keyset_page_statement(statement, cursor)
       page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
-      emit_keyset_page(page(conn, paged, page_params, timeout, "sql"), chunk, acc)
+      emit_keyset_page(page(conn, paged, page_params, timeout, rt, "sql"), chunk, acc)
     end)
   end
 
@@ -378,7 +380,8 @@ defmodule Arcadic.Transport.HTTP do
   # ArcadeDB's DEFAULT body limit (20000) caps a page BELOW the statement LIMIT, and since a page
   # shorter than `chunk` is treated as the last, a `chunk_size` above the server default would
   # SILENTLY truncate the stream. Setting it to the chunk makes the statement LIMIT the only cap.
-  defp page(conn, statement, params, timeout, language) do
+  # `rt` is the per-call whole-response bound (nil → post/4 falls back to conn.request_timeout).
+  defp page(conn, statement, params, timeout, rt, language) do
     body = %{
       language: language,
       command: statement,
@@ -387,7 +390,7 @@ defmodule Arcadic.Transport.HTTP do
     }
 
     conn
-    |> post("/api/v1/query/#{conn.database}", body, timeout: timeout)
+    |> post("/api/v1/query/#{conn.database}", body, timeout: timeout, request_timeout: rt)
     |> handle_result()
   end
 
@@ -433,11 +436,11 @@ defmodule Arcadic.Transport.HTTP do
   defp isolation_body(:read_committed), do: %{isolationLevel: "READ_COMMITTED"}
   defp isolation_body(:repeatable_read), do: %{isolationLevel: "REPEATABLE_READ"}
 
-  defp isolation_body(other),
+  defp isolation_body(_other),
     do:
       raise(
         ArgumentError,
-        "unknown isolation #{inspect(other)}; allowed: [:read_committed, :repeatable_read]"
+        "unknown isolation; allowed: [:read_committed, :repeatable_read]"
       )
 
   defp session_id(%Req.Response{headers: headers}) do
@@ -493,6 +496,14 @@ defmodule Arcadic.Transport.HTTP do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     Req.post(req_opts)
+  rescue
+    # The LAST redaction seam for unencodable caller data: Jason (an invalid-UTF-8 binary) and
+    # the Encoder protocol (a tuple/pid/unknown struct) both raise with the offending VALUE in
+    # the message. Map to a typed, value-free error — the facades' pre-validators catch the
+    # common shapes early with better messages; this closes the whole surface once (Rule 3).
+    _e in [Jason.EncodeError, Protocol.UndefinedError] ->
+      {:error,
+       %Error{reason: :invalid_params, message: "params or statement failed value encoding"}}
   end
 
   # req_opts is a keyword list — use Keyword.put, NOT put_if (which does Map.put → BadMapError).
@@ -551,6 +562,11 @@ defmodule Arcadic.Transport.HTTP do
   defp handle_result({:ok, %Req.Response{status: status}}) do
     {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
   end
+
+  # An already-typed Arcadic.Error (e.g. the param-encoding boundary) passes through UNTOUCHED —
+  # the generic reason-clause below would flatten it into a TransportError and misreport a
+  # client-side error class as a transport failure.
+  defp handle_result({:error, %Error{} = err}), do: {:error, err}
 
   defp handle_result({:error, %{reason: reason}}), do: {:error, %TransportError{reason: reason}}
 
@@ -851,9 +867,16 @@ defmodule Arcadic.Transport.HTTP do
   @impl true
   def list_databases(%Conn{} = conn) do
     case get(conn, "/api/v1/databases") do
-      {:ok, %{"result" => names}} when is_list(names) -> {:ok, names}
-      {:ok, _} -> {:ok, []}
-      {:error, error} -> {:error, error}
+      {:ok, %{"result" => names}} when is_list(names) ->
+        {:ok, names}
+
+      # Off-contract 2xx fails CLOSED (the F9 posture): a malformed body must never read as
+      # "no databases" — database_exists? would then answer false on protocol drift.
+      {:ok, _} ->
+        {:error, %Error{reason: :unexpected_response, message: "off-contract databases body"}}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 

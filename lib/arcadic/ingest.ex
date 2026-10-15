@@ -49,6 +49,7 @@ defmodule Arcadic.Ingest do
     unless is_list(rows), do: raise(ArgumentError, "rows must be a list of maps")
 
     Opts.validate_keys!(opts, @insert_opts)
+    validate_opt_values!(opts)
 
     with :ok <- validate_class(target_class) do
       Telemetry.span(:ingest, %{operation: :insert, mode: :write}, fn ->
@@ -69,6 +70,50 @@ defmodule Arcadic.Ingest do
   end
 
   # --- private ---
+
+  # `Opts.validate_keys!` guards only KEYS; the option VALUES flow to the wire otherwise unchecked
+  # (the Bulk precedent): a non-integer `:chunk_size` survives gRPC's term-ordered `max/2` and
+  # crashes `Enum.chunk_every/2` with the ENCODED ROWS in the blame; `0`/negative silently becomes
+  # row-at-a-time streaming. `:timeout` mirrors it; `:key_columns` must be a list of strings;
+  # `:conflict_mode` is re-rejected here so the facade (not a deep transport raise) owns the
+  # message. All value-free (house style).
+  defp validate_opt_values!(opts) do
+    require_pos_int_opt!(opts, :chunk_size)
+    require_pos_int_opt!(opts, :timeout)
+    require_list_of_binaries_opt!(opts, :key_columns)
+    validate_conflict_mode!(opts[:conflict_mode])
+    :ok
+  end
+
+  defp require_pos_int_opt!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, v} when is_integer(v) and v > 0 -> :ok
+      {:ok, _} -> raise ArgumentError, "#{key} must be a positive integer"
+    end
+  end
+
+  defp require_list_of_binaries_opt!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, cols} when is_list(cols) -> validate_key_columns!(cols, key)
+      {:ok, _} -> raise ArgumentError, "#{key} must be a list of column names"
+    end
+  end
+
+  defp validate_key_columns!(cols, key) do
+    unless Enum.all?(cols, &is_binary/1),
+      do: raise(ArgumentError, "#{key} must be a list of column names")
+
+    :ok
+  end
+
+  defp validate_conflict_mode!(nil), do: :ok
+
+  defp validate_conflict_mode!(mode) when mode in [:error, :update, :ignore, :abort], do: :ok
+
+  defp validate_conflict_mode!(_),
+    do: raise(ArgumentError, "conflict_mode must be one of [:error, :update, :ignore, :abort]")
 
   defp validate_class(class) do
     case Identifier.validate(class) do
