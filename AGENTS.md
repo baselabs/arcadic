@@ -161,7 +161,9 @@ boundary.
   HTTP 2xx with `"result": "FAIL"` in the row — `Import.database` fails closed on it.
 - **26.10 behavior changes** (pinned in the integration suite): the sparse-vector
   retro-index now covers pre-existing rows; an unknown time-series FIELD write and an
-  unknown tag-key filter are rejected (was fail-open).
+  unknown tag-key filter are rejected (was fail-open); projected rows no longer carry the
+  synthetic `_$$$ORDER_BY_ALIAS$$$` ordering column, so HTTP keyset streaming of a
+  projection falls back to offset paging (value-free warning, same rows).
 
 ## graphify (code knowledge graph)
 

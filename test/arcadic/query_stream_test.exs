@@ -411,10 +411,34 @@ defmodule Arcadic.QueryStreamTest do
       assert b1["command"] == "SELECT somewhere FROM V ORDER BY @rid LIMIT :__arcadic_limit"
     end
 
-    test "SQL keyset raises a value-free error if a page row carries no parseable @rid cursor" do
-      # A row with neither @rid nor the alias column (protocol drift) must fail LOUD, never
-      # silently switch to offset (which could skip/dup rows). No caller value is echoed.
-      stub_pages([[%{"n" => 1}]])
+    test "SQL keyset FALLS BACK to offset paging on page 1 without a cursor (26.10 dropped the alias column)" do
+      # ArcadeDB >= 26.10 stopped injecting the synthetic `_$$$ORDER_BY_ALIAS$$$` column into
+      # projected rows — a page-1 projection with no @rid is the KNOWN server shape now, not
+      # drift: fall back to offset paging (same rows, O(n²)) instead of failing the stream.
+      stub_pages([
+        [%{"n" => 1}],
+        [%{"n" => 2}],
+        []
+      ])
+
+      assert {:ok, stream} =
+               Arcadic.query_stream(http_conn(), "SELECT n FROM V", %{},
+                 language: "sql",
+                 chunk_size: 1
+               )
+
+      assert [%{"n" => 1}, %{"n" => 2}] = Enum.to_list(stream)
+      # Page 2 went out as an OFFSET page (SKIP param present).
+      assert_received {:page_body, %{"params" => %{"__arcadic_skip" => 1}}}
+    end
+
+    test "SQL keyset raises value-free when the cursor disappears MID-stream (protocol drift)" do
+      # Page 1 carries a valid cursor; page 2's rows carry none — that is genuine drift (the
+      # server changed shape mid-stream), and it must fail LOUD, never silently continue.
+      stub_pages([
+        [%{"n" => 1, "@rid" => "#1:0"}],
+        [%{"n" => 2}]
+      ])
 
       assert {:ok, stream} =
                Arcadic.query_stream(http_conn(), "SELECT FROM V", %{},

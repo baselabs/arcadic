@@ -148,8 +148,7 @@ defmodule Arcadic.Integration.MigratorTest do
     on_exit(fn -> Server.drop_database(conn, db) end)
 
     # Simulate a pre-marker-contract database: a tracking row with NO status property.
-    :ok =
-      Arcadic.command!(scoped, "CREATE DOCUMENT TYPE _arcadic_migrations", %{}, language: "sql")
+    Arcadic.command!(scoped, "CREATE DOCUMENT TYPE _arcadic_migrations", %{}, language: "sql")
 
     Arcadic.command!(scoped, "INSERT INTO _arcadic_migrations SET version = 1", %{},
       language: "sql"

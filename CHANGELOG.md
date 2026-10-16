@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - gRPC stream connect/open errors now surface at enumeration (a raise, matching HTTP's
   mid-stream error shape) instead of a call-time `{:error, _}`.
 - `query_stream` accepts a per-call `request_timeout:` (threaded into every page POST).
+- HTTP keyset streaming FALLS BACK to offset paging when page 1 of a projection carries no
+  readable cursor (ArcadeDB >= 26.10 dropped the synthetic ordering column from projected
+  rows — probed): same rows, O(n^2) paging, one value-free warning. A cursor that disappears
+  MID-stream still fails loud (protocol drift).
 - `mix quality` now runs the full declared gate (format, compile `--warnings-as-errors`,
   credo `--strict`, unit tests, dialyzer) — previously only format/credo/dialyzer.
 - `Vector.require_list!`, `FullText.search`, and `Server.check_database` validate their

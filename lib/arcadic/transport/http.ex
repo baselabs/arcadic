@@ -313,12 +313,25 @@ defmodule Arcadic.Transport.HTTP do
   # Keyset paging (O(n)) for WHERE-less SQL: page 1 has no WHERE; each later page adds a trailing
   # `WHERE @rid > <cursor-literal>` where <cursor> is the MAX @rid of the previous page (rows come
   # back @rid-ascending). Free of the offset-shift skip a concurrent delete causes, and O(n) instead
-  # of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated.
+  # of O(n²) (no re-scan). The cursor is arcadic-owned + allowlist-validated. A page-1 projection
+  # with no readable cursor (ArcadeDB ≥ 26.10 dropped the synthetic ordering column) falls back to
+  # OFFSET paging mid-stream — see emit_keyset_page/3.
   defp build_keyset_stream(conn, statement, params, chunk, timeout, rt) do
-    page_stream(%{cursor: nil, rows: 0, done: false}, fn %{cursor: cursor} = acc ->
-      paged = keyset_page_statement(statement, cursor)
-      page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
-      emit_keyset_page(page(conn, paged, page_params, timeout, rt, "sql"), chunk, acc)
+    page_stream(%{mode: :keyset, cursor: nil, offset: 0, page: 1, rows: 0, done: false}, fn acc ->
+      case acc.mode do
+        :keyset ->
+          paged = keyset_page_statement(statement, acc.cursor)
+          page_params = Map.merge(params, %{"__arcadic_limit" => chunk})
+          emit_keyset_page(page(conn, paged, page_params, timeout, rt, "sql"), chunk, acc)
+
+        :offset ->
+          paged = statement <> " ORDER BY @rid SKIP :__arcadic_skip LIMIT :__arcadic_limit"
+
+          page_params =
+            Map.merge(params, %{"__arcadic_skip" => acc.offset, "__arcadic_limit" => chunk})
+
+          emit_page(page(conn, paged, page_params, timeout, rt, "sql"), chunk, acc)
+      end
     end)
   end
 
@@ -342,33 +355,53 @@ defmodule Arcadic.Transport.HTTP do
   defp emit_page({:error, e}, _chunk, _acc), do: raise(e)
 
   # A full page (== chunk) advances the cursor to the page's MAX @rid; a short/empty page drains.
+  # PAGE 1 of a projection whose rows carry NO cursor column (ArcadeDB ≥ 26.10 dropped the
+  # synthetic `_$$$ORDER_BY_ALIAS$$$` ordering column from projected rows — probed 2026-10-15)
+  # FALLS BACK to offset paging: the already-fetched rows are correct, so they are emitted and
+  # the stream continues in offset mode (same data, O(n²) paging) with one value-free warning.
+  # A cursor that disappears MID-stream (page > 1) is protocol drift — loud, never silent.
   defp emit_keyset_page({:ok, []}, _chunk, acc), do: {:halt, %{acc | done: true}}
 
   defp emit_keyset_page({:ok, rows}, chunk, acc) do
-    cursor = extract_rid_cursor!(List.last(rows))
-    shaped = Enum.map(rows, &strip_order_alias/1)
-    acc = %{acc | rows: acc.rows + length(rows), cursor: cursor}
-    next = if length(rows) < chunk, do: %{acc | done: true}, else: acc
-    {shaped, next}
+    case rid_cursor(List.last(rows)) do
+      cursor when is_binary(cursor) ->
+        emit_keyset_rows(rows, chunk, acc, cursor)
+
+      nil when acc.cursor == nil and acc.page == 1 ->
+        Logger.warning(
+          "arcadic: HTTP stream keyset cursor unavailable on this server (projected rows carry no @rid) - falling back to offset paging"
+        )
+
+        # This page's rows are CORRECT (page 1 of keyset == page 1 of offset) — emit them and
+        # continue in offset mode PAST this page (offset advanced, or the next page would
+        # re-emit these rows).
+        emit_keyset_rows(rows, chunk, %{acc | mode: :offset, offset: acc.offset + chunk}, nil)
+
+      nil ->
+        raise %Error{
+          reason: :server_error,
+          message: "HTTP keyset stream: page row carried no parseable @rid cursor"
+        }
+    end
   end
 
   defp emit_keyset_page({:error, e}, _chunk, _acc), do: raise(e)
 
+  defp emit_keyset_rows(rows, chunk, acc, cursor) do
+    shaped = Enum.map(rows, &strip_order_alias/1)
+
+    acc = %{acc | rows: acc.rows + length(rows), cursor: cursor, page: acc.page + 1}
+    next = if length(rows) < chunk, do: %{acc | done: true}, else: acc
+    {shaped, next}
+  end
+
   # The cursor is read from the row's `@rid` key (bare SELECT) or the `_$$$ORDER_BY_ALIAS$$$_0`
-  # column (projection) — both probed. Validate against the allowlist BEFORE it is interpolated; a
-  # missing/malformed cursor is protocol drift → raise a value-free error (never silently continue,
-  # which could skip or duplicate rows). No caller statement/value is echoed (Rule 3).
-  defp extract_rid_cursor!(row) do
+  # column (projection, ArcadeDB ≤ 26.9). Returns the validated cursor or nil — the CALLER
+  # decides whether nil is fatal. No caller statement/value is ever echoed (Rule 3).
+  defp rid_cursor(row) do
     raw = row["@rid"] || row["_$$$ORDER_BY_ALIAS$$$_0"]
 
-    if is_binary(raw) and Regex.match?(@rid_cursor_re, raw) do
-      raw
-    else
-      raise %Error{
-        reason: :server_error,
-        message: "HTTP keyset stream: page row carried no parseable @rid cursor"
-      }
-    end
+    if is_binary(raw) and Regex.match?(@rid_cursor_re, raw), do: raw, else: nil
   end
 
   # `\bwhere\b` (case-insensitive, word-bounded) — a false positive routes to the correct O(n²)
