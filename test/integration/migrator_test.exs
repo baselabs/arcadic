@@ -117,11 +117,7 @@ defmodule Arcadic.Integration.MigratorTest do
     :ok = Server.create_database!(conn, db)
     on_exit(fn -> Server.drop_database(conn, db) end)
 
-    {:ok, _marker_before} =
-      Task.async_nolink(fn ->
-        Migrator.migrate(scoped, KillerRegistry)
-      end)
-      |> await_killed()
+    {:ok, :killed} = kill_during_migrate(scoped, KillerRegistry)
 
     # The marker is durable: interrupted/1 sees version 9.
     assert {:ok, [9]} = Migrator.interrupted(scoped)
@@ -165,13 +161,12 @@ defmodule Arcadic.Integration.MigratorTest do
 
     # A hand-forged down_started marker (a down that died before the DELETE) refuses the
     # next rollback AND migrate, until resolved :applied (the migration is still applied).
-    :ok =
-      Arcadic.command!(
-        scoped,
-        "UPDATE _arcadic_migrations SET status = 'down_started' WHERE version = 1",
-        %{},
-        language: "sql"
-      )
+    Arcadic.command!(
+      scoped,
+      "UPDATE _arcadic_migrations SET status = 'down_started' WHERE version = 1",
+      %{},
+      language: "sql"
+    )
 
     assert {:error, %Arcadic.Error{reason: :interrupted_migration}} =
              Migrator.rollback(scoped, Registry)
@@ -180,15 +175,19 @@ defmodule Arcadic.Integration.MigratorTest do
     assert {:ok, [{1, :up}, {2, :up}]} = Migrator.status(scoped, Registry)
   end
 
-  defp await_killed(task) do
-    ref = Process.monitor(task.pid)
+  # An UNLINKED process runs the killer migration (a linked Task would take the TEST
+  # process down with it); the monitor must observe exactly :killed — any other exit
+  # reason means the crash simulation itself is broken and the test is vacuous.
+  defp kill_during_migrate(conn, registry) do
+    pid = spawn(fn -> Migrator.migrate(conn, registry) end)
+    ref = Process.monitor(pid)
 
     receive do
-      {:DOWN, ^ref, :process, _pid, :killed} ->
+      {:DOWN, ^ref, :process, ^pid, :killed} ->
         {:ok, :killed}
 
-      {:DOWN, ^ref, :process, _pid, reason} ->
-        {:ok, reason}
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        flunk("killer migration exited #{inspect(reason)} instead of :killed")
     after
       30_000 -> flunk("killer migration task did not die")
     end

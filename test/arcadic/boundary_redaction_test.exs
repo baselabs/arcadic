@@ -126,14 +126,21 @@ defmodule Arcadic.BoundaryRedactionTest do
   end
 
   describe "streaming opts" do
-    test "query_stream accepts a per-call :request_timeout" do
+    test "query_stream accepts a per-call :request_timeout and still pages" do
+      Req.Test.stub(__MODULE__, fn c ->
+        # A keyset page row must carry the @rid cursor (the stream guard refuses otherwise).
+        Req.Test.json(c, %{"result" => [%{"n" => 1, "@rid" => "#1:0"}]})
+      end)
+
       assert {:ok, stream} =
                Arcadic.query_stream(conn(), "SELECT FROM V", %{},
                  language: "sql",
                  request_timeout: 500
                )
 
-      assert is_function(stream, 2)
+      # Acceptance + one real enumerated page (the option value itself is a Req option,
+      # not visible through the plug — the plumbing is code-reviewed, the opt-in is tested).
+      assert [%{"n" => 1}] = Enum.to_list(stream)
     end
   end
 end

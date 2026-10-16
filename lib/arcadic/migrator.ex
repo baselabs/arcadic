@@ -44,7 +44,7 @@ defmodule Arcadic.Migrator do
   @started_statuses ["up_started", "down_started"]
 
   @doc "Run all pending migrations (up). Returns `{:ok, count_run}`."
-  @spec migrate(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t()}
+  @spec migrate(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t() | term()}
   def migrate(%Conn{session_id: sid} = conn, registry) when is_atom(registry) do
     reject_session!(sid)
 
@@ -132,11 +132,14 @@ defmodule Arcadic.Migrator do
     end
   end
 
-  def resolve(%Conn{session_id: sid}, _version, _outcome), do: reject_session!(sid)
+  # Total value-free fallback: an invalid version/outcome must RAISE, never match a
+  # session-reject clause that returns :ok on a session-free conn (a silent no-op resolve).
+  def resolve(%Conn{}, _version, _outcome),
+    do: raise(ArgumentError, "resolve/3 requires an integer version and :applied | :not_applied")
 
   @doc "Roll back the last `n` applied migrations (down), newest first. Returns `{:ok, count}`."
   @spec rollback(Conn.t(), module(), pos_integer()) ::
-          {:ok, non_neg_integer()} | {:error, Exception.t()}
+          {:ok, non_neg_integer()} | {:error, Exception.t() | term()}
   def rollback(%Conn{session_id: sid} = conn, registry, n \\ 1)
       when is_atom(registry) and is_integer(n) and n > 0 do
     reject_session!(sid)
@@ -155,7 +158,7 @@ defmodule Arcadic.Migrator do
   end
 
   @doc "Roll back every applied migration, then migrate all. Returns `{:ok, migrated_count}`."
-  @spec reset(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t()}
+  @spec reset(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t() | term()}
   def reset(%Conn{session_id: sid} = conn, registry) when is_atom(registry) do
     reject_session!(sid)
 
@@ -180,7 +183,7 @@ defmodule Arcadic.Migrator do
   defp run_down(_conn, [], count), do: {:ok, count}
 
   defp run_down(conn, [mod | rest], count) do
-    with :ok <- mark_started(conn, mod.version(), "down_started"),
+    with {:ok, _} <- mark_down_started(conn, mod.version()),
          :ok <- mod.down(conn),
          :ok <- delete_version(conn, mod.version()) do
       run_down(conn, rest, count + 1)
@@ -200,6 +203,15 @@ defmodule Arcadic.Migrator do
         "s" => status
       }
     )
+  end
+
+  # The down marker TRANSITIONS the existing done row (never INSERTs a second one — a
+  # failed down must leave exactly ONE row for the version, resolvable either way).
+  defp mark_down_started(conn, version) do
+    tracked_count(conn, "UPDATE #{@type_name} SET status = :s WHERE version = :v", %{
+      "v" => version,
+      "s" => "down_started"
+    })
   end
 
   defp finalize(conn, version) do
@@ -255,7 +267,7 @@ defmodule Arcadic.Migrator do
 
   # A transition that touched zero rows is a FAILURE, not a silent success — resolve
   # must not claim an outcome it did not record.
-  defp verified_transition({:ok, n}) when n > 0, do: :ok
+  defp verified_transition({:ok, n}) when is_integer(n) and n > 0, do: :ok
 
   defp verified_transition({:ok, _}),
     do: {:error, %Arcadic.Error{reason: :invalid_state, message: "transition matched no rows"}}

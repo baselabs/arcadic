@@ -450,6 +450,8 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  defp handle_status_only({:error, %Error{} = err}), do: {:error, err}
+
   defp handle_status_only({:ok, %Req.Response{status: status}}) when status in 200..299, do: :ok
 
   defp handle_status_only({:ok, %Req.Response{status: status, body: body}}) when is_map(body),
@@ -584,6 +586,9 @@ defmodule Arcadic.Transport.HTTP do
   # success type stays inside plan_result() (a real EXPLAIN always returns a map body; the empty
   # branch is defensive). Kept SEPARATE from the monomorphic handle_result/1 so execute/4's
   # list-shaped result() contract is not polluted by normalize_plan's map (dialyzer).
+  # An already-typed Arcadic.Error (the param-encoding boundary) passes through untouched.
+  defp handle_plan_result({:error, %Error{} = err}), do: {:error, err}
+
   defp handle_plan_result({:ok, %Req.Response{status: status, body: body}})
        when status in 200..299 and is_map(body),
        do: Result.normalize_plan(body)
@@ -910,6 +915,9 @@ defmodule Arcadic.Transport.HTTP do
     body = request |> build_body(opts) |> Map.put(:awaitResponse, false)
 
     case post(conn, "/api/v1/#{endpoint(:write)}/#{conn.database}", body, opts) do
+      {:error, %Error{}} = err ->
+        err
+
       {:ok, %Req.Response{status: status}} when status in 200..299 ->
         :ok
 
@@ -954,6 +962,8 @@ defmodule Arcadic.Transport.HTTP do
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Req.get()
   end
+
+  defp unwrap_body({:error, %Error{} = err}), do: {:error, err}
 
   defp unwrap_body({:ok, %Req.Response{status: status, body: body}}) when status in 200..299,
     do: {:ok, body}

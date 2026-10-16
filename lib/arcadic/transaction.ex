@@ -248,7 +248,9 @@ defmodule Arcadic.Transaction do
   def rollback(%Conn{session_id: nil}), do: :ok
   def rollback(%Conn{} = conn), do: conn.transport.rollback(conn)
 
-  # Rollback during unwinding must never mask the original failure.
+  # Rollback during unwinding must never mask the original failure — neither an {:error, _}
+  # return, nor a raise, nor an EXIT (a Bolt rollback under DBConnection can exit; an exit
+  # here would otherwise REPLACE the commit error the caller actually needs to see).
   defp safe_rollback(tx) do
     case conn_rollback(tx) do
       :ok ->
@@ -257,6 +259,14 @@ defmodule Arcadic.Transaction do
       {:error, error} ->
         Logger.warning("arcadic: rollback failed during unwind: #{inspect(error.__struct__)}")
     end
+  rescue
+    _ ->
+      Logger.warning("arcadic: rollback raised during unwind")
+      :ok
+  catch
+    _, _ ->
+      Logger.warning("arcadic: rollback exited during unwind")
+      :ok
   end
 
   defp conn_rollback(%Conn{} = tx), do: tx.transport.rollback(tx)

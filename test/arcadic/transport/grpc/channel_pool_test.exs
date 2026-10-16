@@ -61,25 +61,29 @@ defmodule Arcadic.Transport.Grpc.ChannelPoolTest do
   end
 
   describe "connect runs OUTSIDE the pool GenServer (a dead endpoint must not queue the world)" do
-    test "two concurrent first-connects do not serialize behind each other" do
-      connect = fn ->
+    test "two concurrent first-connects on DISTINCT endpoints do not serialize" do
+      # DISTINCT keys: with the same key the old design also passed (the second checkout
+      # reuses the first connect's channel and never sleeps twice) — only distinct
+      # endpoints force two real connects, which the old GenServer-serialized design
+      # runs back-to-back (2 × 250ms sequential).
+      connect = fn key ->
         Process.sleep(250)
-        {:ok, %{adapter_payload: %{conn_pid: self()}}}
+        {:ok, %{adapter_payload: %{conn_pid: key}}}
       end
 
       {elapsed_us, results} =
         :timer.tc(fn ->
           tasks =
-            for _ <- 1..2 do
-              Task.async(fn -> ChannelPool.checkout({"h", 9, false}, connect) end)
+            for i <- 1..2 do
+              Task.async(fn ->
+                ChannelPool.checkout({"h", 8 + i, false}, fn -> connect.({i}) end)
+              end)
             end
 
           Task.await_many(tasks)
         end)
 
       assert Enum.all?(results, &match?({:ok, _}, &1))
-      # Serialized-in-GenServer (the old design) forces 2 × 250ms sequential = 500ms+; the
-      # caller-process connect finishes both in ~one connect duration. 450ms cuts between.
       assert elapsed_us < 450_000
     end
 

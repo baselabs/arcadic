@@ -119,9 +119,10 @@ defmodule Arcadic.Integration.GrpcTlsTest do
         transport_options: [cacertfile: ca, cacerts: []]
       )
 
-    assert_raise ArgumentError, ~r/at most one of :cacertfile or :cacerts/, fn ->
-      Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
-    end
+    # Re-pinned 2026-10-15: the ambiguous trust config is a TYPED value-free error now
+    # (was an ArgumentError raise — which would crash a caller connecting through the pool).
+    assert {:error, %Arcadic.Error{reason: :invalid_transport_options}} =
+             Grpc.execute(conn, :read, %{statement: "SELECT 1", params: %{}, language: "sql"}, [])
   end
 
   # POOL CROSS-CONTAMINATION (cross-vendor review finding, both peers): the pool key must

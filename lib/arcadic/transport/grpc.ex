@@ -126,13 +126,21 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     @impl true
     def execute(%Conn{} = conn, :read, %{statement: stmt, params: params, language: lang}, opts) do
-      with {:ok, encoded} <- safe_encode_params(params),
+      with :ok <- valid_statement(stmt),
+           {:ok, encoded} <- safe_encode_params(params),
            do: run_query(conn, stmt, encoded, lang, opts)
     end
 
     def execute(%Conn{} = conn, :write, %{statement: stmt, params: params, language: lang}, opts) do
-      with {:ok, encoded} <- safe_encode_params(params),
+      with :ok <- valid_statement(stmt),
+           {:ok, encoded} <- safe_encode_params(params),
            do: run_command(conn, stmt, encoded, lang, opts)
+    end
+
+    # A non-UTF-8 statement makes the protobuf encoder RAISE with the binary echoed (the
+    # Rule-3 leak class) — reject value-free BEFORE any channel is opened.
+    defp valid_statement(stmt) when is_binary(stmt) do
+      if String.valid?(stmt), do: :ok, else: {:error, %Error{reason: :invalid_params}}
     end
 
     # The caller's timeout reaches EVERY stub call: `opts[:timeout]` (per-call) or `conn.timeout`
@@ -230,7 +238,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     def query_stream(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, opts) do
       batch = Keyword.get(opts, :chunk_size, 100)
 
-      with {:ok, encoded} <- safe_encode_params(params) do
+      with :ok <- valid_statement(stmt),
+           {:ok, encoded} <- safe_encode_params(params) do
         req = %StreamQueryRequest{
           database: conn.database,
           query: stmt,
@@ -908,14 +917,20 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # or tear a shared channel out from concurrent callers (pool crashed midway).
     defp connect(%Conn{} = conn) do
       if pool_running?() do
-        tag_mode(
-          ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end),
-          :pooled
-        )
+        ChannelPool.checkout(endpoint_key(conn), fn -> raw_connect(conn, 1) end)
+        |> map_pool_error()
+        |> tag_mode(:pooled)
       else
         tag_mode(raw_connect(conn, 1), :per_call)
       end
     end
+
+    # The pool reports {:error, :pool_stopped} when it was shut down between the connect
+    # and the registration (the channel was already disconnected by the pool) — typed here.
+    defp map_pool_error({:error, :pool_stopped}),
+      do: {:error, %TransportError{reason: :unavailable}}
+
+    defp map_pool_error(other), do: other
 
     defp tag_mode({:ok, ch}, mode), do: {:ok, ch, mode}
     defp tag_mode({:error, _} = err, _mode), do: err
@@ -957,7 +972,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     defp retry_or_fail(conn, reason, retries) do
-      if retries > 0 and transient?(reason) do
+      if retries > 0 and transient?(reason, conn) do
         Process.sleep(25)
         raw_connect(conn, retries - 1)
       else
@@ -979,11 +994,18 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    # A channel-open :unavailable is the cold-socket/connect-churn class worth one retry;
-    # anything else (TLS verification, credential shape) is deterministic and a retry would
-    # only double the wait on the same dead end.
-    defp transient?(%GRPC.RPCError{status: 14}), do: true
-    defp transient?(_), do: false
+    # A plaintext channel's connect failure is the cold-socket/network-churn class worth one
+    # retry: the pinned MINT adapter reports those as binary strings (e.g. "Error while
+    # opening connection: ...") or atoms, and the lib maps some to :unavailable. A TLS
+    # channel's connect failure is usually DETERMINISTIC (trust/handshake) — retry only the
+    # explicit :unavailable there, never a second full handshake wait on a dead end.
+    defp transient?(reason, %Conn{} = conn) do
+      if tls?(conn, URI.parse(conn.base_url)) do
+        match?(%GRPC.RPCError{status: 14}, reason)
+      else
+        match?(%GRPC.RPCError{status: 14}, reason) or is_binary(reason) or is_atom(reason)
+      end
+    end
 
     # TLS is enabled by a secure URL scheme (`grpcs://`, `grpc+tls://`, `https://`) or an explicit
     # `transport_options: [tls: true]`. Plaintext otherwise — the endpoint is credential-bearing, so
@@ -1221,8 +1243,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     @datetime_unix_max 253_402_300_799
 
     defp from_kind({:timestamp_value, %{seconds: s, nanos: n}})
-         when is_integer(s) and s >= @datetime_unix_min and s <= @datetime_unix_max,
-         do: DateTime.from_unix!(s * 1_000_000_000 + n, :nanosecond)
+         when is_integer(s) and is_integer(n) and s >= @datetime_unix_min and
+                s <= @datetime_unix_max do
+      case DateTime.from_unix(s * 1_000_000_000 + n, :nanosecond) do
+        {:ok, dt} -> dt
+        {:error, _} -> nil
+      end
+    end
 
     defp from_kind({:timestamp_value, _}), do: nil
 

@@ -85,12 +85,13 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
         existing ->
           if alive?(existing) do
-            # Lost the first-connect race: the winner is already shared; disconnect ours here so
-            # its supervisor-owned connection tree is not orphaned.
-            safe_disconnect(ch)
+            # Lost the first-connect race: the winner is already shared; disconnect ours
+            # asynchronously — a disconnect is itself a synchronous GenServer.call into the
+            # grpc connection manager, and the pool must never block a reply on teardown.
+            async_disconnect(ch)
             {:reply, {:ok, existing}, channels}
           else
-            safe_disconnect(existing)
+            async_disconnect(existing)
             {:reply, :stored, Map.put(channels, key, ch)}
           end
       end
@@ -107,10 +108,18 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     defp register(key, ch) do
-      case GenServer.call(__MODULE__, {:register, key, ch}, @call_timeout) do
+      GenServer.call(__MODULE__, {:register, key, ch}, @call_timeout)
+      |> case do
         :stored -> {:ok, ch}
         {:ok, _winner} = ok -> ok
       end
+    catch
+      # The pool stopped between the caller's connect and this registration: nobody owns the
+      # cache entry anymore, so the freshly opened channel is OURS to disconnect — never let
+      # its supervisor-owned connection tree be orphaned. The caller gets a typed error.
+      :exit, _ ->
+        safe_disconnect(ch)
+        {:error, :pool_stopped}
     end
 
     defp safe_disconnect(ch) do
@@ -119,7 +128,12 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     rescue
       _ -> :ok
     catch
-      :exit, _ -> :ok
+      _, _ -> :ok
+    end
+
+    defp async_disconnect(ch) do
+      _ = Task.start(fn -> safe_disconnect(ch) end)
+      :ok
     end
 
     # A channel is alive iff its underlying adapter connection process is alive (mint under grpc 1.x).

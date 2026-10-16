@@ -46,12 +46,16 @@ defmodule Arcadic.MixProject do
     [
       # Runtime
       {:req, "~> 0.7"},
+      # CVE floors for transitive runtime deps (a library's mix.lock does not govern
+      # consumers' resolution): mint >= 1.11 closes CVE-2026-82728/94194 (via req/finch),
+      # protobuf >= 0.17.1 closes CVE-2026-104635 (the gRPC transport's codec).
+      {:mint, "~> 1.11"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:boltx, "~> 0.0.6", optional: true},
       {:mint_web_socket, "~> 1.0", optional: true},
       {:grpc, "~> 1.0", optional: true},
-      {:protobuf, "~> 0.17", optional: true},
+      {:protobuf, "~> 0.17.1", optional: true},
 
       # Dev/Test
       {:plug, "~> 1.0", only: :test},
