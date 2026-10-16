@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-16
 
 ### Added
 
@@ -72,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-existing rows; an unknown time-series FIELD write and an unknown tag-key filter are
   rejected by the server (was fail-open); the B7 streaming fixture seeds 2500 rows in one
   `UNWIND` round trip (sequential inserts blew test budgets on remote substrates).
+- Documented (26.10): a `file://` RESTORE URL is now rejected server-side by default
+  (`RestoreImportUrlNotAllowedException` → `:unauthorized`) unless the server sets
+  `arcadedb.server.restoreImportAllowLocalUrls=true` — `file://` import is unaffected.
+  Found by executing the operations notebook against 26.10 (its Docker recipe now sets
+  the flag).
 
 ### Security
 
@@ -130,11 +135,11 @@ here for the 1.0 record:
   (`http.ex` — forwarded to ArcadeDB's `retries` body param). It was first
   DOCUMENTED in the 0.7.1-era reliability work with a live tripwire
   (100 concurrent writers, ~85 conflicts without → 0 with `retries: 10`).
-- `Arcadic.Transport.execute_with_index/4` — the offset-paging read
+- `execute_with_index/4` on the transport behaviour — the offset-paging read
   underlying HTTP result streaming.
-- `Arcadic.DDLBody` (internal) — the reject-not-escape guard for ArcadeDB
+- the DDL body guard (internal module) — the reject-not-escape guard for ArcadeDB
   DDL body literals (`DEFINE FUNCTION` / `CREATE TRIGGER`), and
-  `Arcadic.Admin` (internal) — the shared, value-free admin span + transport
+  the internal admin span module — the shared, value-free admin span + transport
   delegation plumbing. Both `@moduledoc false` by design; named here so the
   security-relevant guard is on the record.
 - `notebooks/operations.livemd` — the change-events / functions / triggers /

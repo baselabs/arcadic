@@ -143,10 +143,10 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
 The client surface is closed and feature-complete: HTTP, Bolt, and full gRPC transport
 coverage; time-series, server programmability, administration, ingest, graphRAG, HA/read
 consistency, telemetry, migrations (with the crash-recovery marker contract), and the
-reliability surface are all shipped. `arcadic` **1.1.0** is the current release (Hex,
-2026-08-23); `main` past it carries the post-review hardening batch under
-`[Unreleased]` (dependency CVE closures, HTTP-boundary redaction, gRPC timeout/laziness/
-pool fixes, import fail-closed, migrator crash recovery).
+reliability surface are all shipped. `arcadic` **1.2.0** is the current release (Hex,
+2026-10-16): the post-review hardening batch — dependency CVE closures, HTTP-boundary
+redaction, gRPC timeout/laziness/pool fixes, import fail-closed, migrator crash
+recovery, and the ArcadeDB 26.10 drift triage.
 
 Forward product composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
 ArcadeDB transport capabilities still land here first to preserve the tenant-blind
