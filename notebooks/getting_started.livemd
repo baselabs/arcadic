@@ -205,6 +205,9 @@ stream |> Enum.to_list() |> Kino.DataTable.new()
 ## Migrations
 
 `Arcadic.Migrator` runs `Arcadic.Migration`s in order and records applied versions
+(every attempt is bracketed by a crash-recovery marker — a killed migrator makes the
+next run refuse loudly instead of re-running a possibly half-applied migration;
+see `Migrator.interrupted/1` / `Migrator.resolve/3`)
 in the `_arcadic_migrations` type, so re-running is a no-op. In a real app each
 migration is its own module; here we define and run one inline.
 
@@ -214,7 +217,10 @@ defmodule Quickstart.Migrations.V1 do
   @impl true
   def version, do: 1
   @impl true
-  def up(c), do: Arcadic.command!(c, "CREATE VERTEX TYPE Widget IF NOT EXISTS", %{}, language: "sql") && :ok
+  def up(c) do
+    Arcadic.command!(c, "CREATE VERTEX TYPE Widget IF NOT EXISTS", %{}, language: "sql")
+    :ok
+  end
   @impl true
   def down(c), do: Arcadic.command!(c, "DROP TYPE Widget IF EXISTS", %{}, language: "sql") && :ok
 end

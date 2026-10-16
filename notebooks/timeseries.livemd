@@ -143,9 +143,11 @@ builder.
 > - **Mixed-body partial swallow.** When at least one line's type exists, lines naming an
 >   unknown type are silently dropped (HTTP 204) rather than erroring. Verify with
 >   `query/3` or `Arcadic.Schema.types/1` when it matters.
-> - **Unknown FIELD zero-fill.** A line whose field name is not on the type inserts a
->   zero-filled row (204, no error).
-> - **Unknown tag KEY fails open** on `query/3`/`latest/3` — the filter is ignored
+> - **Unknown FIELD: version-split** — on ArcadeDB ≤ 26.9 a line whose field name is
+>   not on the type inserted a zero-filled row (204, no error); on ≥ 26.10 the write is
+>   rejected (HTTP 400).
+> - **Unknown tag KEY: version-split** — on ≤ 26.9 an unknown tag key on
+>   `query/3`/`latest/3` was silently ignored; on ≥ 26.10 it is rejected.
 >   server-side rather than rejected.
 
 ## Querying

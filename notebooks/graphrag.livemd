@@ -173,8 +173,8 @@ Arcadic.query!(conn, "MATCH (p:Person) RETURN count(p) AS total", %{})
 search over a float embedding. `create_sparse_index!/5` builds an `LSM_SPARSE_VECTOR`
 index over a `(tokens, weights)` pair for a learned-sparse / BM25-style search.
 
-**Ordering matters for the sparse index**: unlike dense (and unlike `FullText`, next
-section), a sparse index does **not** retro-index rows that already exist — only rows
+**Ordering matters for the sparse index** (version-split): on ArcadeDB ≤ 26.9 a
+sparse index does **not** retro-index rows that already exist — only rows
 written *after* the index is created become searchable. We create both indexes before
 setting any vector data on the `Document` rows the bulk step above already created.
 

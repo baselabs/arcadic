@@ -13,7 +13,8 @@ This notebook needs a running **ArcadeDB**. The quickest way is Docker:
 ```
 docker run -d --name arcadic-operations \
   -p 2480:2480 \
-  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata \
+                -Darcadedb.server.restoreImportAllowLocalUrls=true" \
   arcadedata/arcadedb:latest
 ```
 

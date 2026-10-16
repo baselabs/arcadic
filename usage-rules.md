@@ -37,10 +37,11 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   another database (clears the session); `with_bearer/2` derives a
   Bearer-authenticated handle from a Basic one (typically fed
   `Arcadic.Security.login/1`'s token) — **HTTP-only**, raises `ArgumentError`
-  on a Bolt conn (Bolt authenticates from `transport_options`, never
-  `conn.auth`). `with_consistency/2` derives a handle at a given read-consistency
+  on a Bolt or gRPC conn (both authenticate from `transport_options`/metadata,
+  never `conn.auth`). `with_consistency/2` derives a handle at a given read-consistency
   level, and `connect(hosts: [...])` adds multi-host failover targets, both
-  **HTTP-only**; see Reliability below.
+  **HTTP-only** — rejected value-free on a Bolt or gRPC conn (the knob is silently
+  meaningless there); see Reliability below.
 - **`Arcadic.Server`** — server/database admin, HTTP-only, not delegated from
   the `Arcadic` facade: `create_database/2` (+ `!`), `drop_database/2` (+ `!`),
   `database_exists?/2`, `list_databases/1`, `ready?/1`, `database_info/1`,
@@ -73,11 +74,21 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   bad one returns `{:error, :invalid_url}`. **SSRF note:** whether the server
   blocks a private/loopback restore source is server-config-dependent —
   `restore/3`'s URL is trusted operator input, never pass it caller-supplied
-  values.
-- **Migrations** — `Arcadic.Migration` (behaviour: `version/0`, `up/1`, `down/1`),
+  values. On ArcadeDB ≥ 26.10 a `file://` restore URL is rejected server-side by
+  default (`RestoreImportUrlNotAllowedException` → `:unauthorized`) unless the
+  server sets `arcadedb.server.restoreImportAllowLocalUrls=true` (`file://`
+  import is unaffected).
+- **Migrations** — `Arcadic.Migration` (behaviour: `version/0`, `up/1`, `down/1` —
+  only `:ok` finalizes; `{:error, reason}` leaves the attempt's marker in place),
   `Arcadic.MigrationRegistry` (`use` + `migrations [...]`), `Arcadic.Migrator`
-  (`migrate/2`, `status/2`, `rollback/3`, `reset/2`, `pending_migrations/2`),
-  tracking applied versions in `_arcadic_migrations`.
+  (`migrate/2`, `status/2`, `rollback/3`, `reset/2`, `pending_migrations/2`), tracking
+  applied versions in `_arcadic_migrations`. **Crash-recovery marker**: every attempt
+  is bracketed by a durable `up_started`/`down_started` row (ArcadeDB sessions do not
+  roll back DDL, so `up` + recording cannot be atomic); an interrupted migration makes
+  the next run REFUSE with `:interrupted_migration` — reconcile with
+  `interrupted/1` (the stuck versions) and `resolve/3` (`:applied` | `:not_applied`).
+  All entry points reject a session-scoped conn (marker writes are autocommit by
+  construction).
 - **`Arcadic.Vector`** — dense + sparse vector search over ArcadeDB `LSM_VECTOR` /
   `LSM_SPARSE_VECTOR`: `create_dense_index/5`, `drop_dense_index/3`, `neighbors/6`,
   `fuse/3`, `index_ref/2`, plus `create_sparse_index/5`, `sparse_index_ref/3`,
@@ -88,8 +99,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `#bucket:pos` RID candidate set), `group_by` (`Identifier`-shape-guarded), `group_size`
   — all param-bound. `distance` scale is similarity-dependent; `fuse/3` and
   `sparse_neighbors/8` rank by `score` (sparse rows carry no `distance`). Create sparse
-  indexes **before** loading rows — they do not retro-index existing data (a
-  `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires if you do).
+  indexes **before** loading rows — on ArcadeDB ≤ 26.9 a late-created sparse index does
+  NOT cover pre-existing rows (26.10+ retro-indexes them); the
+  `[:arcadic, :vector, :sparse_index_preexisting]` telemetry event fires on any version
+  whenever the DDL response reports pre-existing rows.
 - **`Arcadic.Schema`** — read-only schema introspection: `types/1`, `properties/2`,
   `indexes/2` (with a `:type` filter), `buckets/1`, `database/1` (the engine config,
   `schema:database`), `stats/1` (`schema:stats` per-database operation counters, a single
@@ -105,7 +118,10 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   rejection; `with:` takes number, boolean, and charset-allowlisted string settings (injection-inert),
   emitted as ArcadeDB's no-parens `WITH k = v` grammar. A private/loopback host trips ArcadeDB's SSRF
   guard (`:unauthorized` / `java.lang.SecurityException`, distinct from an auth failure via
-  `error.exception`); `file://` is server-local.
+  `error.exception`); `file://` is server-local. A 2xx whose result row reports
+  `"result" => "FAIL"` (how ArcadeDB ≥ 26.10 surfaces a bad `with:` setting) returns
+  `{:error, %Arcadic.Error{reason: :import_failed}}` — the server's reason text rides
+  the quarantined `detail`, never the message.
 - **`Arcadic.Export`** — `database/3` (+ `!`): `EXPORT DATABASE file://<name>` server-side, symmetric
   to `Arcadic.Import`. The bare export name is guarded by a positive allowlist (no path / traversal /
   quote, value-free); `with:` settings reuse the import grammar (e.g. `format: "jsonl"`,
@@ -115,10 +131,16 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   statement must NOT carry its own `ORDER BY`/`SKIP`/`LIMIT`, or a comment (`--`/`/*` for SQL,
   `//` for Cypher, which would neutralize arcadic's appended suffix) — each rejected value-free
   (`reason: :not_supported`), as is a param named `__arcadic_skip`/`__arcadic_limit` (reserved).
-  `chunk_size` must be a positive integer. A WHERE-less **SQL** statement pages by an O(n)
+  `chunk_size` must be a positive integer; `:timeout` bounds each page POST (default
+  `:infinity` — a stream is long-running, so it does NOT inherit the conn's per-call
+  timeout) and `:request_timeout` bounds each page's whole response (falls back to the
+  conn-level value). A WHERE-less **SQL** statement pages by an O(n)
   arcadic-owned `@rid` keyset cursor (`WHERE @rid > <cursor> ORDER BY @rid LIMIT`); a statement
   with its own `WHERE` falls back to `ORDER BY @rid SKIP/LIMIT` offset (O(n²) — arcadic cannot
-  inject a keyset predicate without parsing). **Cypher** streams via a caller-supplied
+  inject a keyset predicate without parsing). On ArcadeDB ≥ 26.10, which stopped returning
+  the synthetic ordering column on projected rows, a projection whose first page carries no
+  readable cursor falls back to offset paging automatically (same rows, O(n²), one
+  value-free warning); a cursor that disappears mid-stream still fails loud. **Cypher** streams via a caller-supplied
   `order_key: "id(v)"` (restricted to `id(<identifier>)`, the only total, unique order), offset-paged
   with Cypher `$name` placeholders:
   `Arcadic.query_stream(conn, "MATCH (v:Person) RETURN v", %{}, language: "cypher", order_key: "id(v)")`.
@@ -288,7 +310,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `Arcadic.Conn.with_consistency(conn, level)` sets the read-consistency level for
   subsequent reads: `:eventual` (default, sends no extra header),
   `:read_your_writes`, or `:linearizable`. HTTP-only; a non-default level on a
-  Bolt conn raises `ArgumentError`. Pair `:read_your_writes` with the bookmarked
+  Bolt or gRPC conn raises `ArgumentError` (the transport ignores the knob — arcadic
+  refuses the silent no-op). Pair `:read_your_writes` with the bookmarked
   calls (`query_bookmarked/4` / `command_bookmarked/4`, same opts as
   `query/4`/`command/4`) to guarantee a read observes your own prior write:
   ```elixir
@@ -304,7 +327,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   the level. On a single-server deployment `:read_your_writes` is a harmless
   no-op (there is no replica lag to guard against).
 - **Multi-host availability failover.** `connect(hosts: [url2, url3, ...])` adds
-  failover targets. Reads fail over to the next host on any connection error;
+  failover targets (HTTP-only — rejected on Bolt/gRPC conns; point a gRPC conn at a
+  load balancer instead). Reads fail over to the next host on any connection error;
   writes fail over only on a pre-send connect error (never on an ambiguous
   post-send close, so a write is never blindly resent to a second host after it
   may already have landed on the first). A session (`transaction/3`) pins to
@@ -314,6 +338,16 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   `command_bookmarked/4`) target the primary host and do **not** participate in
   failover (the bookmark is host-relative); point `base_url` at a load balancer,
   or use non-bookmarked `query/4`/`command/4` when you need failover.
+
+## Timeouts
+
+Two bounds, set per call or per conn (`Arcadic.connect/3`), both overridable, both
+off by default: `:timeout` (the receive timeout — max wait **per received chunk**;
+HTTP → Finch `receive_timeout`, gRPC → the RPC deadline) and `:request_timeout`
+(the **whole-response** bound — defeats a peer that trickles bytes forever; HTTP
+only, also accepted per call on `query_stream/4` where it bounds every page POST).
+Streaming pages default their per-page `:timeout` to `:infinity` by design — set it
+(or `request_timeout:`) explicitly to bound a stalled server.
 
 ## Server-side programmability: functions, triggers & materialized views
 
@@ -504,21 +538,24 @@ rejected value-free (it would match nothing deterministically-uselessly).
   know server type existence (tenant-blind, no schema cache) — a typo'd
   `type:` in a mixed batch is silent; verify with `query/3` or
   `Arcadic.Schema.types/1`.
-- **Unknown FIELD zero-fill.** A line whose field name is not on the type
-  inserts a zero-filled row (204, no error).
+- **Unknown FIELD: version-split.** On ArcadeDB ≤ 26.9 a line whose field name is
+  not on the type inserted a zero-filled row (204, no error); on ≥ 26.10 the write is
+  **rejected** (HTTP 400 → `%Arcadic.Error{reason: :server_error}`) — pin your server
+  version when relying on either behavior.
 - **int64 bound.** An integer field value or timestamp outside signed int64
   (±9223372036854775807/8) is a 204 + silent line drop server-side (probed
   both signs). As of the S13 closeout, `write/3` raises a value-free
   `ArgumentError` client-side instead — including on a `DateTime` whose
   converted timestamp overflows (e.g. year 2263+ at `:ns`); previously the
   out-of-range line was silently dropped server-side.
-- **Unknown tag KEY fails open** on `query/3`/`latest/3` — the filter is
-  ignored server-side rather than rejected.
+- **Unknown tag KEY: version-split.** On ArcadeDB ≤ 26.9 an unknown tag key on
+  `query/3`/`latest/3` was silently ignored (fail-open); on ≥ 26.10 it is **rejected**
+  (fail-closed).
 - `write_lines/3` (raw passthrough) additionally inherits the malformed-line
   silent-skip: a syntactically bad line is dropped, not rejected.
 
-**Known upstream defect (26.7.2) — `fields` projection.** `query/3`'s
-`:fields` projection returns a `columns` list carrying the right names but row
+**Known upstream defect (26.7.2, still present on 26.10.2) — `fields` projection.**
+`query/3`'s `:fields` projection returns a `columns` list carrying the right names but row
 *values* misaligned under a wrong-width header (pending an upstream fix).
 Until fixed, treat a `:fields`-projected
 query's row values as unverified — omit `:fields` (the
@@ -579,6 +616,7 @@ Which options each function accepts (an unknown key is rejected value-free):
 | `:retries` | no | yes | no | no |
 | `:auto_commit` | no | yes | no | no |
 | `:timeout` | yes | yes | yes | yes |
+| `:request_timeout` | yes | yes | yes | no |
 | `:chunk_size` | no | no | yes | no |
 | `:order_key` | no | no | yes (Cypher only) | no |
 
@@ -596,7 +634,14 @@ it as retriable, since nothing was applied), `:invalid_begin_body` (bad
 (generic fallback), `:use_explain` (call `explain/4`/`profile/4` instead), and
 `:not_supported` (the transport lacks the called capability, e.g. `explain/4`
 without a transport impl, HTTP streaming in a transaction, Bolt database admin —
-or the statement/opts fail a streaming-eligibility check).
+or the statement/opts fail a streaming-eligibility check). Client-side reasons
+(raised by arcadic, never the server): `:invalid_params` (a param or statement that
+cannot be encoded for the wire — invalid UTF-8, an unrepresentable term; rejected
+value-free at the boundary, never a mid-encode raise that echoes the value),
+`:import_failed` (an import 2xx whose result row reports `"result" => "FAIL"`),
+`:interrupted_migration` / `:invalid_state` (the migrator crash-recovery contract —
+see Migrations), and `:invalid_transport_options` (e.g. both `:cacertfile` and
+`:cacerts` on a gRPC conn).
 
 `Arcadic.TransportError.reason` is a connection-level failure with **no HTTP
 response** — the underlying transport's own atom, not a fixed enum: for HTTP,
@@ -691,7 +736,7 @@ the connect-time reject closes that window. Unset the var and pass
 ## gRPC transport (optional)
 
 `Arcadic.Transport.Grpc` runs over ArcadeDB's gRPC plugin (`GrpcServerPlugin`), behind the optional
-`{:grpc, "~> 1.0"}` + `{:protobuf, "~> 0.17"}` deps (the transport and its vendored protobuf stubs are
+`{:grpc, "~> 1.0"}` + `{:protobuf, "~> 0.17.1"}` deps (the transport and its vendored protobuf stubs are
 compile-guarded — HTTP/Bolt-only consumers who don't add them are unaffected; the gRPC channel uses the
 mint adapter, already a runtime dependency via req). Select it with a
 `grpc://host:port` URL (or `grpcs://` for TLS) and `transport: Arcadic.Transport.Grpc`; credentials come
@@ -725,8 +770,19 @@ Cypher only. It implements the full surface it can: `execute`/`query_stream`, tr
   return `{:error, %Arcadic.Error{reason: :transaction_unsupported}}` (BulkInsert/GraphBatchLoad do not
   honor an outer session tx), rather than silently auto-commit outside it; single-record CRUD DOES join
   the tx. Use an `UNWIND $rows`/`INSERT` statement for transactional bulk writes.
+- **Timeouts reach every RPC** — a per-call `timeout:` or conn-level `timeout:` is honored on
+  unary and streaming calls alike. Unset, the grpc library's own defaults apply: **10s for unary
+  calls** (a long-running unary bulk ingest needs an explicit `timeout:`) and `:infinity` for
+  streaming.
+- **`query_stream/4` is lazy end-to-end** — the connect and the server-cursor open run on the
+  first enumeration pull, so an abandoned (never-enumerated) stream leaks neither a channel nor
+  a server cursor; connect/open errors surface as a raise at enumeration (the same shape as
+  HTTP's mid-stream page errors); an early halt cancels the in-flight server stream on a pooled
+  channel.
 - **Channel pooling** — add `{Arcadic.Transport.Grpc.ChannelPool, []}` to your supervision tree to reuse
-  one long-lived HTTP/2-multiplexed channel per endpoint; absent it, each call opens a fresh channel.
+  one long-lived HTTP/2-multiplexed channel per endpoint; absent it, each call opens a fresh
+  channel. Connects run in the caller's process — one dead endpoint never queues other
+  endpoints' checkouts behind its connect timeout.
 - **HTTP-only** — server settings, user management (unimplemented server-side over gRPC), token
   login/logout, time-series, and HA read-consistency return `:not_supported`; use an HTTP conn for those.
 
