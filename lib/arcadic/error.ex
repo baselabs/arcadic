@@ -17,7 +17,8 @@ defmodule Arcadic.Error do
   - `:parse_error` — the statement failed to parse (`Parsing`/`ParseException`).
   - `:unauthorized` — bad credentials, or an HTTP 403 (`SecurityException`).
   - `:database_not_found` — the target database doesn't exist
-    (`DatabaseOperationException`).
+    (`DatabaseOperationException`; the 26.10 line's 404
+    `DatabaseNotAvailableException`).
   - `:transaction_error` — a transaction-lifecycle failure, both server-derived
     (`TransactionException`) and client-raised (no active/already-open session;
     a Bolt commit failure).
@@ -99,7 +100,11 @@ defmodule Arcadic.Error do
     {"ParsingException", :parse_error},
     {"ParseException", :parse_error},
     {"SecurityException", :unauthorized},
+    # <=26.9 answers 500 DatabaseOperationException; the 26.10 line answers 404
+    # DatabaseNotAvailableException (live-probed on 26.10.2) — both mean the
+    # target database does not exist.
     {"DatabaseOperationException", :database_not_found},
+    {"DatabaseNotAvailableException", :database_not_found},
     {"TransactionException", :transaction_error},
     {"ConcurrentModificationException", :concurrent_modification},
     {"NeedRetryException", :concurrent_modification},

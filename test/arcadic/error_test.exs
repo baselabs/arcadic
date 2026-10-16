@@ -9,6 +9,9 @@ defmodule Arcadic.ErrorTest do
         {"com.arcadedb.exception.CommandParsingException", 500, :parse_error},
         {"com.arcadedb.server.security.ServerSecurityException", 403, :unauthorized},
         {"com.arcadedb.exception.DatabaseOperationException", 500, :database_not_found},
+        # 26.10 answers a missing database 404 with this class (was 500
+        # DatabaseOperationException — live-probed on 26.10.2, 2026-10-15).
+        {"com.arcadedb.exception.DatabaseNotAvailableException", 404, :database_not_found},
         {"com.arcadedb.exception.TransactionException", 500, :transaction_error},
         {"com.arcadedb.exception.ConcurrentModificationException", 500, :concurrent_modification},
         {"com.arcadedb.exception.DuplicatedKeyException", 500, :duplicate_key},
