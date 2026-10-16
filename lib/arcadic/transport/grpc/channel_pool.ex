@@ -114,11 +114,17 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         {:ok, _winner} = ok -> ok
       end
     catch
-      # The pool stopped between the caller's connect and this registration: nobody owns the
-      # cache entry anymore, so the freshly opened channel is OURS to disconnect — never let
-      # its supervisor-owned connection tree be orphaned. The caller gets a typed error.
-      :exit, _ ->
+      # The pool is GONE (noproc): nobody owns the cache entry anymore, so the freshly
+      # opened channel is OURS to disconnect — never orphan its supervisor-owned tree.
+      :exit, :noproc ->
         safe_disconnect(ch)
+        {:error, :pool_stopped}
+
+      # A TIMEOUT does NOT cancel the queued registration: the pool may still apply it and
+      # hand OUR channel to later callers — disconnecting here could tear a shared channel
+      # out from under them. Ownership is ambiguous, so the caller abandons the channel
+      # (never uses it) but does NOT disconnect it; the pool owns it if the call landed.
+      :exit, :timeout ->
         {:error, :pool_stopped}
     end
 

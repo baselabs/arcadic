@@ -199,7 +199,8 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     # `executionPlanAsString` (human string) + `executionPlan` (the raw plan map).
     @impl true
     def explain(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, opts) do
-      with {:ok, encoded} <- safe_encode_params(params),
+      with :ok <- valid_statement(stmt),
+           {:ok, encoded} <- safe_encode_params(params),
            do: run_explain(conn, stmt, encoded, lang, opts)
     end
 
@@ -268,19 +269,30 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     defp open_cursor(conn, req, opts) do
       case connect(conn) do
         {:ok, ch, mode} ->
-          case ArcadeDbService.Stub.stream_query(ch, req, rpcopts(conn, opts)) do
-            {:ok, grpc_stream} ->
-              %{ch: ch, mode: mode, stream: grpc_stream}
-
-            {:error, e} ->
+          try do
+            case ArcadeDbService.Stub.stream_query(ch, req, rpcopts(conn, opts)) do
+              {:ok, grpc_stream} -> %{ch: ch, mode: mode, stream: grpc_stream}
+              {:error, e} -> raise map_error(e)
+            end
+          rescue
+            # A raise DURING the cursor open (e.g. an encode failure on metadata/credentials)
+            # must still release the acquired channel — the downstream finalizer is not
+            # installed yet — and must surface typed + value-free with the ORIGINAL
+            # stacktrace, never the raw raise whose message can echo the offending value.
+            e ->
               release(ch, mode)
-              raise map_error(e)
+              :erlang.raise(:error, map_or_value_free(e), __STACKTRACE__)
           end
 
         {:error, e} ->
           raise e
       end
     end
+
+    # Already-typed arcadic errors pass through; anything else (an encoder raise) becomes a
+    # value-free typed error — never the raw raise whose message echoes the value.
+    defp map_or_value_free(%Error{} = e), do: e
+    defp map_or_value_free(_), do: %Error{reason: :invalid_params}
 
     # The inner, ELEMENT-driven transform over the wire stream: each wire batch maps to its
     # decoded rows; the after-fun closes the cursor (cancel a pooled stream, release the channel)
@@ -994,17 +1006,15 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
-    # A plaintext channel's connect failure is the cold-socket/network-churn class worth one
-    # retry: the pinned MINT adapter reports those as binary strings (e.g. "Error while
-    # opening connection: ...") or atoms, and the lib maps some to :unavailable. A TLS
-    # channel's connect failure is usually DETERMINISTIC (trust/handshake) — retry only the
-    # explicit :unavailable there, never a second full handshake wait on a dead end.
-    defp transient?(reason, %Conn{} = conn) do
-      if tls?(conn, URI.parse(conn.base_url)) do
-        match?(%GRPC.RPCError{status: 14}, reason)
-      else
-        match?(%GRPC.RPCError{status: 14}, reason) or is_binary(reason) or is_atom(reason)
-      end
+    # A connect failure is the cold-socket/network-churn class worth one bounded retry: the
+    # pinned MINT adapter reports connect failures as binary strings (e.g. "Error while
+    # opening connection: ...") or atoms, and the lib maps some to :unavailable — that is
+    # true for TLS endpoints too (refusal/timeout reach us the same way, so the TLS branch
+    # must not be treated as always-deterministic). Accepted cost: a genuinely deterministic
+    # TLS failure (untrusted CA) pays one extra connect timeout once, bounded by the single
+    # retry; losing the transient retry on a down TLS host would be worse.
+    defp transient?(reason, %Conn{} = _conn) do
+      match?(%GRPC.RPCError{status: 14}, reason) or is_binary(reason) or is_atom(reason)
     end
 
     # TLS is enabled by a secure URL scheme (`grpcs://`, `grpc+tls://`, `https://`) or an explicit

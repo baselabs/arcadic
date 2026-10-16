@@ -168,12 +168,38 @@ defmodule Arcadic.MigratorTest do
       assert {:ok, [7]} = Migrator.interrupted(conn())
     end
 
-    test "an up error KEEPS the marker (no cleanup — an error return proves nothing about committed effects)" do
+    test "an up error KEEPS the marker — no UPDATE and no DELETE cleanup" do
       stub()
 
       assert {:error, :nope} = Migrator.migrate(conn(), FailingRegistry)
       assert_received {:cmd, _, %{"v" => 3, "s" => "up_started"}}
       refute_received {:cmd, "UPDATE _arcadic_migrations" <> _, %{"v" => 3}}
+      refute_received {:cmd, "DELETE FROM _arcadic_migrations" <> _, %{"v" => 3}}
+    end
+
+    test "a FAILED finalization (lost response after up) keeps the marker and returns the error" do
+      # The stub's UPDATE branch answers a transport timeout (Req.Test.transport_error),
+      # which the transport layer surfaces as %TransportError{reason: :timeout} — the
+      # finalization's outcome is unknown, so the marker must survive.
+      Req.Test.stub(__MODULE__, fn c ->
+        decoded = Jason.decode!(Req.Test.raw_body(c))
+        cmd = decoded["command"]
+        send(self(), {:cmd, cmd, decoded["params"]})
+
+        cond do
+          cmd =~ "SELECT version" -> Req.Test.json(c, %{"result" => []})
+          cmd =~ "UPDATE _arcadic_migrations" -> Req.Test.transport_error(c, :timeout)
+          cmd =~ "INSERT INTO _arcadic_migrations" -> Req.Test.json(c, %{"result" => []})
+          true -> Req.Test.json(c, %{"result" => []})
+        end
+      end)
+
+      assert {:error, %Arcadic.TransportError{reason: :timeout}} =
+               Migrator.migrate(conn(), Registry)
+
+      # The marker from the completed V1 attempt SURVIVES the lost finalization.
+      assert_received {:cmd, _, %{"v" => 1, "s" => "up_started"}}
+      refute_received {:cmd, "DELETE FROM _arcadic_migrations" <> _, %{"v" => 1}}
     end
 
     test "an up RAISE keepS the marker and propagates" do
@@ -254,6 +280,64 @@ defmodule Arcadic.MigratorTest do
       assert_raise ArgumentError, ~r/session/, fn -> Migrator.status(tx, Registry) end
       assert_raise ArgumentError, ~r/session/, fn -> Migrator.interrupted(tx) end
       assert_raise ArgumentError, ~r/session/, fn -> Migrator.resolve(tx, 1, :applied) end
+    end
+  end
+
+  describe "rollback/3 down lifecycle" do
+    test "down TRANSITIONS the existing done row (never inserts a second one)" do
+      stub([%{"version" => 1, "status" => "done"}])
+
+      assert {:ok, 1} = Migrator.rollback(conn(), Registry, 1)
+
+      assert_received {:cmd, "UPDATE _arcadic_migrations SET status = :s WHERE version = :v",
+                       %{"v" => 1, "s" => "down_started"}}
+
+      assert_received {:cmd, "DROP TYPE Foo IF EXISTS", _}
+      assert_received {:cmd, "DELETE FROM _arcadic_migrations WHERE version = :v", %{"v" => 1}}
+      refute_received {:cmd, "INSERT INTO _arcadic_migrations" <> _, _}
+    end
+
+    test "a down ERROR keeps the down_started row (no delete cleanup)" do
+      stub([%{"version" => 3, "status" => "done"}])
+
+      assert {:error, :nope} = Migrator.rollback(conn(), FailingRegistry, 1)
+
+      assert_received {:cmd, "UPDATE _arcadic_migrations SET status = :s WHERE version = :v",
+                       %{"v" => 3, "s" => "down_started"}}
+
+      refute_received {:cmd, "DELETE FROM _arcadic_migrations" <> _, %{"v" => 3}}
+    end
+
+    test "an unverified marker transition (zero rows) refuses to run the down" do
+      Req.Test.stub(__MODULE__, fn c ->
+        cmd = Jason.decode!(Req.Test.raw_body(c))["command"]
+
+        cond do
+          cmd =~ "SELECT version" ->
+            Req.Test.json(c, %{"result" => [%{"version" => 1, "status" => "done"}]})
+
+          cmd =~ "UPDATE _arcadic_migrations" ->
+            Req.Test.json(c, %{"result" => [%{"count" => 0}]})
+
+          true ->
+            Req.Test.json(c, %{"result" => []})
+        end
+      end)
+
+      assert {:error, %Arcadic.Error{reason: :invalid_state}} =
+               Migrator.rollback(conn(), Registry, 1)
+
+      refute_received {:cmd, "DROP TYPE Foo IF EXISTS", _}
+    end
+  end
+
+  defp collect_cmds(n) do
+    for _ <- 1..n do
+      receive do
+        {:cmd, c, p} -> {:cmd, c, p}
+      after
+        0 -> :missing
+      end
     end
   end
 

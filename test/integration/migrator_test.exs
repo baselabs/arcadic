@@ -151,10 +151,9 @@ defmodule Arcadic.Integration.MigratorTest do
     :ok =
       Arcadic.command!(scoped, "CREATE DOCUMENT TYPE _arcadic_migrations", %{}, language: "sql")
 
-    :ok =
-      Arcadic.command!(scoped, "INSERT INTO _arcadic_migrations SET version = 1", %{},
-        language: "sql"
-      )
+    Arcadic.command!(scoped, "INSERT INTO _arcadic_migrations SET version = 1", %{},
+      language: "sql"
+    )
 
     assert {:ok, [{1, :up}, {2, :down}]} = Migrator.status(scoped, Registry)
     assert {:ok, 1} = Migrator.migrate(scoped, Registry)
@@ -179,8 +178,9 @@ defmodule Arcadic.Integration.MigratorTest do
   # process down with it); the monitor must observe exactly :killed — any other exit
   # reason means the crash simulation itself is broken and the test is vacuous.
   defp kill_during_migrate(conn, registry) do
-    pid = spawn(fn -> Migrator.migrate(conn, registry) end)
-    ref = Process.monitor(pid)
+    # spawn_monitor: a bare spawn-then-monitor races a child that dies before the monitor
+    # lands (a :noproc DOWN would fail a valid kill scenario).
+    {pid, ref} = spawn_monitor(fn -> Migrator.migrate(conn, registry) end)
 
     receive do
       {:DOWN, ^ref, :process, ^pid, :killed} ->

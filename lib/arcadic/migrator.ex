@@ -183,7 +183,11 @@ defmodule Arcadic.Migrator do
   defp run_down(_conn, [], count), do: {:ok, count}
 
   defp run_down(conn, [mod | rest], count) do
-    with {:ok, _} <- mark_down_started(conn, mod.version()),
+    # The down marker transition must be VERIFIED (a positive integer row count) before any
+    # destructive work — a zero-row or malformed response means the marker never landed, and
+    # running `down` anyway would lose the crash-recovery guarantee.
+    with {:ok, _} = ok <- mark_down_started(conn, mod.version()),
+         :ok <- verified_transition(ok),
          :ok <- mod.down(conn),
          :ok <- delete_version(conn, mod.version()) do
       run_down(conn, rest, count + 1)

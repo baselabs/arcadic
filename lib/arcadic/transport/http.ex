@@ -858,6 +858,10 @@ defmodule Arcadic.Transport.HTTP do
       {:ok, %Req.Response{status: status}} ->
         {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
 
+      # Already-typed arcadic errors (the param/credentials encoding boundary) pass through.
+      {:error, %Error{}} = err ->
+        err
+
       {:error, %{reason: reason}} ->
         {:error, %TransportError{reason: reason}}
 

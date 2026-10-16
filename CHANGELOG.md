@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer burns a second connect-timeout retry.
 - `Conn` rejects `consistency:`/`hosts:` on a gRPC conn value-free (the transport ignores
   both — the same silent no-op Bolt already rejected).
+- Passing BOTH `:cacertfile` and `:cacerts` on a gRPC conn now returns
+  `{:error, %Error{reason: :invalid_transport_options}}` instead of raising `ArgumentError`
+  (a raise would crash a caller connecting through the ChannelPool).
 - `Ingest.insert/4` validates option VALUES (a string `chunk_size` crashed deep in the
   gRPC layer with encoded rows in the blame; `0` silently coerced to row-at-a-time).
 
