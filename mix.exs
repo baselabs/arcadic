@@ -30,7 +30,9 @@ defmodule Arcadic.MixProject do
   end
 
   def cli do
-    [preferred_envs: [credo: :test, dialyzer: :test]]
+    # `test` is listed so the nested `mix test` inside the `quality` alias runs in the
+    # test environment instead of refusing from dev (Mix's own recommended fix).
+    [preferred_envs: [credo: :test, dialyzer: :test, test: :test, quality: :test]]
   end
 
   def application do
