@@ -78,10 +78,6 @@ it.
   Inside a session the param is a no-op (conflicts surface at commit). Schema
   lever: `CREATE VERTEX TYPE X BUCKETS <n>` (server caps ~32; `BUCKETS 128` →
   HTTP 400) sizes a hot type for its write concurrency.
-- **Session transactions do NOT roll back DDL** (probed 2026-10-15, v26.10.2):
-  `begin → CREATE VERTEX TYPE T → INSERT → rollback` discards the INSERT and KEEPS
-  the type; a session stays valid after an in-tx statement error. Only DML is
-  transactional.
 
 ## Development workflow
 
@@ -96,8 +92,29 @@ mix dialyzer
 mix quality
 ```
 
-All gates must pass before a commit/PR. Update `CHANGELOG.md` under
-`[Unreleased]`.
+`mix quality` is the declared local gate. Update `CHANGELOG.md` under `[Unreleased]`.
+
+## Workflow (owner ruling, October 28, 2026)
+
+Process is sized to the risk of the specific change, never the repository. Each check, gate,
+record or review names the failure it prevents.
+
+- **Heavy** when the diff touches statement or param building (the command/query paths in
+  `lib/arcadic.ex`, `lib/arcadic/param.ex`), identifier validation
+  (`lib/arcadic/identifier.ex`), the redaction boundary (`lib/arcadic/error.ex`,
+  `transport_error.ex`, `opts.ex`), user and token admin (`lib/arcadic/security.ex`),
+  transport TLS or auth (`lib/arcadic/transport/`), or the migrator's crash-recovery marker
+  (`lib/arcadic/migrator.ex`). Write the failing test first, get one independent
+  review and do one fix round, and run the declared local gate once before pushing. Heavy
+  pushes need the owner's approval.
+- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
+  is the gate. No outcome record, gauge or review; the commit message is the record. A light
+  change the owner asked for lands without a separate push approval.
+- Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
+- A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
+  change that finds it.
+- Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
+  a contract changes.
 
 ## Testing
 
@@ -124,9 +141,7 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   (`ARCADIC_BOLT_*` and the B6 describe's `ARCADIC_TEST_BOLT_*`), and the
   `arcadedb.ssl.*` keystore spellings for bolt TLS are in `bolt_test.exs`'s
   moduledoc. TLS material: `test/support/tls/gen-grpc-certs.sh` (shared with
-  the gRPC TLS suite). Benchmark to beat (2026-08-22, 26.9.1-SNAPSHOT): 22 +
-  2 green; the full session ran all 139 integration tests live.
-- **TDD:** write the test first.
+  the gRPC TLS suite).
 
 ## Docs & lifecycle-artifact policy
 
@@ -136,27 +151,15 @@ All gates must pass before a commit/PR. Update `CHANGELOG.md` under
   specs, plans, exec notes, reviews, and handoffs. They live under `/docs/`,
   which is **gitignored** (matching the `ash_age` convention). Do not move
   `docs/` artifacts out to the repo root.
+- **Instruction history:** `docs/reference/agent-history.md` (force-tracked) holds dated
+  narratives and superseded instructions moved out of this file; not binding.
 - AI-tool state dirs (`.claude/`, `.serena/`, etc.) are gitignored.
-
-## Current status
-
-The client surface is closed and feature-complete: HTTP, Bolt, and full gRPC transport
-coverage; time-series, server programmability, administration, ingest, graphRAG, HA/read
-consistency, telemetry, migrations (with the crash-recovery marker contract), and the
-reliability surface are all shipped. `arcadic` **1.2.0** is the current release (Hex,
-2026-10-16): the post-review hardening batch — dependency CVE closures, HTTP-boundary
-redaction, gRPC timeout/laziness/pool fixes, import fail-closed, migrator crash
-recovery, and the ArcadeDB 26.10 drift triage.
-
-Forward product composition is consumer-side through `ash_arcadic` (`~> 0.7`), while new
-ArcadeDB transport capabilities still land here first to preserve the tenant-blind
-boundary.
 
 ## Verified ArcadeDB drift notes
 
 - **DDL is NOT transactional in session transactions** (probed 2026-10-15 on 26.10.2:
-  `begin → CREATE TYPE → INSERT → rollback` discards the row, keeps the type). The
-  migrator's marker contract exists because of this.
+  `begin → CREATE TYPE → INSERT → rollback` discards the row, keeps the type; a session stays valid after an in-tx
+  statement error). The migrator's marker contract exists because of this.
 - **Import failures moved into the result row** (26.10): a bad `WITH` setting answers
   HTTP 2xx with `"result": "FAIL"` in the row — `Import.database` fails closed on it.
 - **26.10 behavior changes** (pinned in the integration suite): the sparse-vector
@@ -164,11 +167,3 @@ boundary.
   unknown tag-key filter are rejected (was fail-open); projected rows no longer carry the
   synthetic `_$$$ORDER_BY_ALIAS$$$` ordering column, so HTTP keyset streaming of a
   projection falls back to offset paging (value-free warning, same rows).
-
-## graphify (code knowledge graph)
-
-`graphify-out/graph.json` maps this repo (tree-sitter AST; rebuilt by the git post-commit hook; gitignored).
-
-- For orientation ("where is X handled", "what connects A to B", "explain module M"), prefer `graphify query "<question>"` / `graphify explain "<Module>"` / `graphify path "<A>" "<B>"` over grep/Read fan-outs — one call returns a scoped subgraph with file:line hits.
-- Graph output is NAVIGATION, never evidence. Edges reflect the last build, not the working tree, and cross-module call edges can be incomplete (Elixir: file-local only — alias-mediated calls are NOT resolved). Consumer sweeps and every load-bearing claim (review finding, plan anchor) still verify against live code: grep + file:line read.
-- After large uncommitted changes, `graphify update .` refreshes the graph (AST-only, no API cost, no key).
