@@ -123,9 +123,9 @@ record or review names the failure it prevents.
   its built-in test stubs cover request/response shaping without a real ArcadeDB.
 - **Integration tests** (`test/integration/**`, tag `@moduletag :integration`):
   require a live server. Gate them on an env var (`ARCADIC_TEST_URL`); skip when
-  unset so the pure-unit suite runs anywhere. Spin ArcadeDB locally with
+  unset so the pure-unit suite runs anywhere. Contributors without a server can start one with
   `docker run -p 2480:2480 -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" \
-  arcadedata/arcadedb:latest`. When a shared server already runs, its values sit
+  arcadedata/arcadedb:latest`. Maintainer machines use the shared server; its values sit
   in the gitignored `.env` under the names the suites read (`ARCADIC_TEST_*`,
   `ARCADIC_TS_TEST_*`, `ARCADIC_BOLT_*`, `ARCADIC_GRPC_TEST_*`); load them with
   `set -a; . ./.env; set +a` before a lane. The TLS and admin-shutdown suites
