@@ -144,7 +144,7 @@ defmodule Arcadic.MixProject do
 
   defp aliases do
     [
-      # The full declared gate (AGENTS.md workflow): format, compile, credo, unit tests, dialyzer.
+      # The quality bundle: format, compile, credo, unit tests, dialyzer.
       quality: [
         "format --check-formatted",
         "compile --warnings-as-errors",

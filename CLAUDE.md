@@ -2,7 +2,7 @@
 
 Read **`AGENTS.md`** first: the binding critical rules (params-only, validated identifiers,
 redaction, tenant-blind boundary, `MERGE`-is-fine-here), the verified ArcadeDB HTTP contract,
-and the workflow tiers. `docs/CHARTER.md` (local, gitignored) holds mission, layering, scope
+and the workflow. `docs/CHARTER.md` (local, gitignored) holds mission, layering, scope
 and open design questions.
 
 Arcadic is the **tenant-blind, framework-agnostic ArcadeDB client** — the "`postgrex` of

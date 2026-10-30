@@ -79,42 +79,26 @@ it.
   lever: `CREATE VERTEX TYPE X BUCKETS <n>` (server caps ~32; `BUCKETS 128` →
   HTTP 400) sizes a hot type for its write concurrency.
 
-## Development workflow
+## Workflow
+
+Make the change, run the tests that cover it, commit with named paths, and push to `main`.
+CI runs once on `main`; if it goes red, fix forward.
 
 ```bash
 mix deps.get
 mix format
-mix credo --strict
-mix compile --warnings-as-errors
 mix test
-mix dialyzer
-# or all quality gates at once:
-mix quality
 ```
 
-`mix quality` is the declared local gate. Update `CHANGELOG.md` under `[Unreleased]`.
+CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
+`mix audit`, `mix test`, `mix dialyzer` (all but `audit` bundled as `mix quality`), plus the live
+integration lanes. Run the ones that cover your change.
 
-## Workflow (owner ruling, October 28, 2026)
-
-Process is sized to the risk of the specific change, never the repository. Each check, gate,
-record or review names the failure it prevents.
-
-- **Heavy** when the diff touches statement or param building (the command/query paths in
-  `lib/arcadic.ex`, `lib/arcadic/param.ex`), identifier validation
-  (`lib/arcadic/identifier.ex`), the redaction boundary (`lib/arcadic/error.ex`,
-  `transport_error.ex`, `opts.ex`), user and token admin (`lib/arcadic/security.ex`),
-  transport TLS or auth (`lib/arcadic/transport/`), or the migrator's crash-recovery marker
-  (`lib/arcadic/migrator.ex`). Write the failing test first, get one independent
-  review and do one fix round, and run the declared local gate once before pushing. Heavy
-  pushes need the owner's approval.
-- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
-  is the gate. No outcome record, gauge or review; the commit message is the record. A light
-  change the owner asked for lands without a separate push approval.
 - Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
   change that finds it.
-- Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
-  a contract changes.
+- Update `CHANGELOG.md` under `[Unreleased]` when behavior, a dependency or a contract changes;
+  other docs only when a contract changes.
 
 ## Testing
 
