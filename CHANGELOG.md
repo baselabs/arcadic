@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Dependency lock refreshed: bandit 1.14.1 closes the 2026-11 advisory batch — 10 HIGH
+  (CVE-2026-111101, -114213, -113436, -110499, -111103, -115269, -108525, -116078,
+  -109584, -108529) and 2 MEDIUM (CVE-2026-114216, -110314) — and plug_crypto 2.2.1
+  closes CVE-2026-105963 (MEDIUM). Both are test-only dependencies. `mix audit` is clean.
+
 ## [1.2.1] - 2026-10-16
 
 ### Fixed
