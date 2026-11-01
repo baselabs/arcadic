@@ -574,7 +574,10 @@ default, full-width columns) when the values matter.
   `Arcadic.Error` exposes a typed `reason`, `http_status`, and `exception` class;
   its `detail` field is quarantined (absent from `message/1` and `inspect/1`).
   `Arcadic.TransportError` carries only the value-free reason atom. Never surface
-  raw parameter values or response rows.
+  raw parameter values or response rows. Every public conn-first function guards
+  its first argument the same way (since 1.2.2): a wrong-typed value there raises
+  a static `ArgumentError` ("expected an Arcadic.Conn as the first argument"),
+  never a clause-mismatch crash that echoes the caller's arguments.
 - **Validate identifiers.** Database names and other identifiers reaching a URL
   path or statement go through `Arcadic.Identifier.validate/1` first (a failure
   carries the invalid-shape fact only, never the offending string). Values are

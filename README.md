@@ -23,7 +23,9 @@ ArcadeDB").
   (`$name`), never string interpolation, so the injection surface stays closed.
 - **Typed errors with boundary redaction** — `Arcadic.Error` carries a typed
   `reason`, HTTP status, and error class; raw parameter values and response rows
-  never enter an error message, log line, or `inspect/1` output.
+  never enter an error message, log line, or `inspect/1` output. Passing a
+  wrong-typed value where a `Conn` belongs raises a value-free `ArgumentError` —
+  a crash can never echo the caller's arguments.
 - **Session transactions** — `transaction/3` opens an ArcadeDB session and commits
   on normal return, rolls back and reraises on exception (postgrex semantics).
 - **Pluggable transport** — HTTP (Req/Finch) by default, plus two optional transports:
@@ -389,6 +391,13 @@ quoted DDL literal can't hold (a literal `"`, a backslash, or a newline); `Arcad
 returns `{:error, :mint_web_socket_not_available}` from `start_link/1` when the optional
 `mint_web_socket` dependency is absent, and `{:error, :subscriber_conflict}` from
 `subscribe/3` for a second subscriber pid on an already-bound process.
+
+Finally, every public function whose first positional argument is an `Arcadic.Conn` (and
+both exception structs' `message/1`) carries a value-free type guard: passing anything
+else there raises `ArgumentError` with the static message
+`"expected an Arcadic.Conn as the first argument"` (or `"expected an Arcadic.Error"` /
+`"expected an Arcadic.TransportError"` for the two callbacks) — never a
+`FunctionClauseError`, whose blame echoes the caller's arguments into crash reports.
 
 ## Telemetry
 
