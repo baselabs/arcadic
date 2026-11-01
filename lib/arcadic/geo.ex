@@ -19,7 +19,12 @@ defmodule Arcadic.Geo do
   """
   @spec create_index(Conn.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create_index(%Conn{} = conn, type, property, opts \\ []) do
+  def create_index(conn, type, property, opts \\ [])
+
+  def create_index(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create_index(%Conn{} = conn, type, property, opts) do
     Opts.validate_keys!(opts, @create_opts)
 
     with :ok <- Identifier.validate(type),
@@ -29,10 +34,18 @@ defmodule Arcadic.Geo do
     end
   end
 
+  def create_index!(conn, type, property, opts \\ [])
+
+  def create_index!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a GEOSPATIAL index, raising on error."
   @spec create_index!(Conn.t(), String.t(), String.t(), keyword()) :: :ok
-  def create_index!(%Conn{} = conn, type, property, opts \\ []),
+  def create_index!(%Conn{} = conn, type, property, opts),
     do: bang(create_index(conn, type, property, opts))
+
+  def drop_index(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a GEOSPATIAL index (idempotent — `IF EXISTS`)."
   @spec drop_index(Conn.t(), String.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -42,6 +55,9 @@ defmodule Arcadic.Geo do
       command_ok(conn, "DROP INDEX `#{type}[#{property}]` IF EXISTS")
     end
   end
+
+  def drop_index!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a GEOSPATIAL index, raising on error."
   @spec drop_index!(Conn.t(), String.t(), String.t()) :: :ok

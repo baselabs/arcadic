@@ -42,7 +42,12 @@ defmodule Arcadic.Ingest do
   """
   @spec insert(Conn.t(), String.t(), [map()], keyword()) ::
           {:ok, map()} | {:error, :invalid_record | :invalid_identifier | atom() | Exception.t()}
-  def insert(%Conn{} = conn, target_class, rows, opts \\ []) do
+  def insert(conn, target_class, rows, opts \\ [])
+
+  def insert(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def insert(%Conn{} = conn, target_class, rows, opts) do
     # Value-free TOTAL guards BEFORE any coercion: a non-binary class or non-list rows must raise a
     # STATIC message, never a FunctionClauseError whose blame echoes the caller value (Rule 3).
     unless is_binary(target_class), do: raise(ArgumentError, "target_class must be a string")
@@ -59,9 +64,14 @@ defmodule Arcadic.Ingest do
     end
   end
 
+  def insert!(conn, target_class, rows, opts \\ [])
+
+  def insert!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Insert `rows`, returning the counts map or raising."
   @spec insert!(Conn.t(), String.t(), [map()], keyword()) :: map()
-  def insert!(%Conn{} = conn, target_class, rows, opts \\ []) do
+  def insert!(%Conn{} = conn, target_class, rows, opts) do
     case insert(conn, target_class, rows, opts) do
       {:ok, summary} -> summary
       {:error, %{__exception__: true} = e} -> raise e

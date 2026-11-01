@@ -130,12 +130,18 @@ defmodule Arcadic.Conn do
     end
   end
 
+  def with_database(conn, _) when not is_struct(conn, __MODULE__),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Derive a same-pool handle on another database; validates and clears the session."
   @spec with_database(t(), String.t()) :: t()
   def with_database(%__MODULE__{} = conn, database) when is_binary(database) do
     validate_identifier!(database)
     %{conn | database: database, session_id: nil}
   end
+
+  def with_bearer(conn, _) when not is_struct(conn, __MODULE__),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Derive a Bearer-auth handle from a Basic one (typically after `Arcadic.Security.login/1`)."
   @spec with_bearer(t(), String.t()) :: t()
@@ -151,6 +157,9 @@ defmodule Arcadic.Conn do
   # A non-binary token would otherwise FunctionClauseError, echoing the token in the blame (Rule 3).
   def with_bearer(%__MODULE__{}, _token),
     do: raise(ArgumentError, "bearer token must be a string")
+
+  def with_consistency(conn, _) when not is_struct(conn, __MODULE__),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Derive a handle with a read-consistency level; validates and clears the session. HTTP-only."
   @spec with_consistency(t(), consistency()) :: t()

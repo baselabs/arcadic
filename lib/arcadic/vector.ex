@@ -40,7 +40,12 @@ defmodule Arcadic.Vector do
   """
   @spec create_dense_index(Conn.t(), String.t(), String.t(), pos_integer(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create_dense_index(%Conn{} = conn, type, property, dimensions, opts \\ []) do
+  def create_dense_index(conn, type, property, dimensions, opts \\ [])
+
+  def create_dense_index(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create_dense_index(%Conn{} = conn, type, property, dimensions, opts) do
     with {:ok, _ref} <- index_ref(type, property) do
       metadata = build_metadata(dimensions, opts)
 
@@ -51,19 +56,30 @@ defmodule Arcadic.Vector do
     end
   end
 
+  def create_dense_index!(conn, type, property, dimensions, opts \\ [])
+
+  def create_dense_index!(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a dense vector index, raising on error."
   @spec create_dense_index!(Conn.t(), String.t(), String.t(), pos_integer(), keyword()) :: :ok
-  def create_dense_index!(%Conn{} = conn, type, property, dimensions, opts \\ []),
+  def create_dense_index!(%Conn{} = conn, type, property, dimensions, opts),
     do: bang(create_dense_index(conn, type, property, dimensions, opts))
 
   @doc "Drops a dense vector index (idempotent — `IF EXISTS`)."
   @spec drop_dense_index(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
+  def drop_dense_index(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def drop_dense_index(%Conn{} = conn, type, property) do
     with {:ok, ref} <- index_ref(type, property) do
       command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
     end
   end
+
+  def drop_dense_index!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a dense vector index, raising on error."
   @spec drop_dense_index!(Conn.t(), String.t(), String.t()) :: :ok
@@ -94,7 +110,12 @@ defmodule Arcadic.Vector do
   """
   @spec create_sparse_index(Conn.t(), String.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create_sparse_index(%Conn{} = conn, type, tokens_property, weights_property, opts \\ []) do
+  def create_sparse_index(conn, type, tokens_property, weights_property, opts \\ [])
+
+  def create_sparse_index(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create_sparse_index(%Conn{} = conn, type, tokens_property, weights_property, opts) do
     with {:ok, _ref} <- sparse_index_ref(type, tokens_property, weights_property) do
       metadata = build_sparse_metadata(opts)
 
@@ -114,19 +135,30 @@ defmodule Arcadic.Vector do
     end
   end
 
+  def create_sparse_index!(conn, type, tokens_property, weights_property, opts \\ [])
+
+  def create_sparse_index!(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a sparse vector index, raising on error."
   @spec create_sparse_index!(Conn.t(), String.t(), String.t(), String.t(), keyword()) :: :ok
-  def create_sparse_index!(%Conn{} = conn, type, tokens_property, weights_property, opts \\ []),
+  def create_sparse_index!(%Conn{} = conn, type, tokens_property, weights_property, opts),
     do: bang(create_sparse_index(conn, type, tokens_property, weights_property, opts))
 
   @doc "Drops a sparse vector index (idempotent — `IF EXISTS`)."
   @spec drop_sparse_index(Conn.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
+  def drop_sparse_index(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def drop_sparse_index(%Conn{} = conn, type, tokens_property, weights_property) do
     with {:ok, ref} <- sparse_index_ref(type, tokens_property, weights_property) do
       command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
     end
   end
+
+  def drop_sparse_index!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a sparse vector index, raising on error."
   @spec drop_sparse_index!(Conn.t(), String.t(), String.t(), String.t()) :: :ok
@@ -152,7 +184,12 @@ defmodule Arcadic.Vector do
   """
   @spec neighbors(Conn.t(), String.t(), String.t(), [number()], pos_integer(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
-  def neighbors(%Conn{} = conn, type, property, query_vector, k, opts \\ []) do
+  def neighbors(conn, type, property, query_vector, k, opts \\ [])
+
+  def neighbors(conn, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def neighbors(%Conn{} = conn, type, property, query_vector, k, opts) do
     with {:ok, ref} <- index_ref(type, property) do
       k = require_pos_int!(k, "k")
       query_vector = require_list!(query_vector, "query_vector")
@@ -169,10 +206,20 @@ defmodule Arcadic.Vector do
   @spec neighbors!(Conn.t(), String.t(), String.t(), [number()], pos_integer(), keyword()) :: [
           map()
         ]
-  def neighbors!(%Conn{} = conn, type, property, query_vector, k, opts \\ []),
+  def neighbors!(conn, type, property, query_vector, k, opts \\ [])
+
+  def neighbors!(conn, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def neighbors!(%Conn{} = conn, type, property, query_vector, k, opts),
     do: bang(neighbors(conn, type, property, query_vector, k, opts))
 
   @sparse_query_opts [:filter, :group_by, :group_size]
+
+  def sparse_neighbors(conn, _, _, _, _, _, _, _ \\ [])
+
+  def sparse_neighbors(conn, _, _, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Runs a sparse (learned-sparse / BM25-style) nearest-neighbour search over an
@@ -199,7 +246,7 @@ defmodule Arcadic.Vector do
         query_tokens,
         query_weights,
         k,
-        opts \\ []
+        opts
       ) do
     with {:ok, ref} <- sparse_index_ref(type, tokens_property, weights_property) do
       k = require_pos_int!(k, "k")
@@ -216,6 +263,11 @@ defmodule Arcadic.Vector do
       )
     end
   end
+
+  def sparse_neighbors!(conn, _, _, _, _, _, _, _ \\ [])
+
+  def sparse_neighbors!(conn, _, _, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Runs a sparse nearest-neighbour search, returning rows or raising."
   @spec sparse_neighbors!(
@@ -236,7 +288,7 @@ defmodule Arcadic.Vector do
         query_tokens,
         query_weights,
         k,
-        opts \\ []
+        opts
       ),
       do:
         bang(
@@ -293,7 +345,12 @@ defmodule Arcadic.Vector do
 
   @spec fuse(Conn.t(), [fuse_spec()], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
-  def fuse(%Conn{} = conn, neighbor_specs, opts \\ []) do
+  def fuse(conn, neighbor_specs, opts \\ [])
+
+  def fuse(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def fuse(%Conn{} = conn, neighbor_specs, opts) do
     Opts.validate_keys!(opts, @fuse_opts)
     fusion = enum!(@fusions, Keyword.get(opts, :fusion, :rrf), "fusion")
     filter = fuse_filter!(opts)
@@ -339,9 +396,14 @@ defmodule Arcadic.Vector do
   defp add_fuse_group_opt(:group_size, value, frag, params),
     do: {frag <> ", groupSize: :gs", Map.put(params, "gs", require_pos_int!(value, "group_size"))}
 
+  def fuse!(conn, neighbor_specs, opts \\ [])
+
+  def fuse!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Runs a hybrid fusion, returning rows or raising."
   @spec fuse!(Conn.t(), [fuse_spec()], keyword()) :: [map()]
-  def fuse!(%Conn{} = conn, neighbor_specs, opts \\ []),
+  def fuse!(%Conn{} = conn, neighbor_specs, opts),
     do: bang(fuse(conn, neighbor_specs, opts))
 
   # --- private ---

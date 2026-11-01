@@ -42,18 +42,28 @@ defmodule Arcadic do
   @spec with_database(Conn.t(), String.t()) :: Conn.t()
   defdelegate with_database(conn, database), to: Conn
 
+  def query(conn, statement, params \\ %{}, opts \\ [])
+
+  def query(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Run a read statement (`POST /api/v1/query`). The server rejects non-idempotent
   statements. Returns `{:ok, rows}` or `{:error, Arcadic.Error.t() | Arcadic.TransportError.t()}`.
   """
   @spec query(Conn.t(), String.t(), map(), keyword()) :: {:ok, [map()]} | {:error, Exception.t()}
-  def query(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def query(%Conn{} = conn, statement, params, opts) do
     run(conn, :read, statement, params, validate_opts!(opts, @query_opts))
   end
 
+  def query!(conn, statement, params \\ %{}, opts \\ [])
+
+  def query!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Run a read statement, returning the rows or raising."
   @spec query!(Conn.t(), String.t(), map(), keyword()) :: [map()]
-  def query!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def query!(%Conn{} = conn, statement, params, opts),
     do: bang(query(conn, statement, params, opts))
 
   @doc """
@@ -78,14 +88,29 @@ defmodule Arcadic do
   """
   @spec command(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t()}
-  def command(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def command(conn, statement, params \\ %{}, opts \\ [])
+
+  def command(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def command(%Conn{} = conn, statement, params, opts) do
     run(conn, :write, statement, params, validate_opts!(opts, @command_opts))
   end
 
+  def command!(conn, statement, params \\ %{}, opts \\ [])
+
+  def command!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Run a write statement, returning the rows or raising."
   @spec command!(Conn.t(), String.t(), map(), keyword()) :: [map()]
-  def command!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def command!(%Conn{} = conn, statement, params, opts),
     do: bang(command(conn, statement, params, opts))
+
+  def command_async(conn, statement, params \\ %{}, opts \\ [])
+
+  def command_async(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Fire-and-forget write: sends `awaitResponse: false`; the server enqueues and
@@ -93,7 +118,7 @@ defmodule Arcadic do
   landed (that is the defined semantic; use `command/4` for confirmable writes).
   """
   @spec command_async(Conn.t(), String.t(), map(), keyword()) :: :ok | {:error, Exception.t()}
-  def command_async(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def command_async(%Conn{} = conn, statement, params, opts) do
     opts = validate_opts!(opts, @command_opts)
     validate_statement!(statement)
     validate_params!(params)
@@ -125,13 +150,23 @@ defmodule Arcadic do
   """
   @spec query_bookmarked(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, [map()], Conn.t()} | {:error, Exception.t()}
-  def query_bookmarked(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def query_bookmarked(conn, statement, params \\ %{}, opts \\ [])
+
+  def query_bookmarked(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def query_bookmarked(%Conn{} = conn, statement, params, opts) do
     run_bookmarked(conn, :read, statement, params, validate_opts!(opts, @query_opts))
   end
 
+  def query_bookmarked!(conn, statement, params \\ %{}, opts \\ [])
+
+  def query_bookmarked!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Like `query_bookmarked/4` but returns `{rows, conn'}` or raises."
   @spec query_bookmarked!(Conn.t(), String.t(), map(), keyword()) :: {[map()], Conn.t()}
-  def query_bookmarked!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def query_bookmarked!(%Conn{} = conn, statement, params, opts),
     do: bang_bookmarked(query_bookmarked(conn, statement, params, opts))
 
   @doc """
@@ -140,14 +175,29 @@ defmodule Arcadic do
   """
   @spec command_bookmarked(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, [map()], Conn.t()} | {:error, Exception.t()}
-  def command_bookmarked(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def command_bookmarked(conn, statement, params \\ %{}, opts \\ [])
+
+  def command_bookmarked(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def command_bookmarked(%Conn{} = conn, statement, params, opts) do
     run_bookmarked(conn, :write, statement, params, validate_opts!(opts, @command_opts))
   end
 
+  def command_bookmarked!(conn, statement, params \\ %{}, opts \\ [])
+
+  def command_bookmarked!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Like `command_bookmarked/4` but returns `{rows, conn'}` or raises."
   @spec command_bookmarked!(Conn.t(), String.t(), map(), keyword()) :: {[map()], Conn.t()}
-  def command_bookmarked!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def command_bookmarked!(%Conn{} = conn, statement, params, opts),
     do: bang_bookmarked(command_bookmarked(conn, statement, params, opts))
+
+  def explain(conn, statement, params \\ %{}, opts \\ [])
+
+  def explain(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Return the execution plan for a statement WITHOUT running it: prepends `EXPLAIN `
@@ -162,15 +212,25 @@ defmodule Arcadic do
   not implement `explain/3`.
   """
   @spec explain(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def explain(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def explain(%Conn{} = conn, statement, params, opts) do
     validate_statement!(statement)
     run_explain(conn, :read, "EXPLAIN " <> statement, params, validate_opts!(opts, @explain_opts))
   end
 
+  def explain!(conn, statement, params \\ %{}, opts \\ [])
+
+  def explain!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Like `explain/4` but returns the plan map or raises."
   @spec explain!(Conn.t(), String.t(), map(), keyword()) :: map()
-  def explain!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def explain!(%Conn{} = conn, statement, params, opts),
     do: bang_plan(explain(conn, statement, params, opts))
+
+  def profile(conn, statement, params \\ %{}, opts \\ [])
+
+  def profile(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Profile a statement by EXECUTING it, returning its plan annotated with real runtime
@@ -185,7 +245,7 @@ defmodule Arcadic do
   when the active transport does not implement `explain/3`.
   """
   @spec profile(Conn.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def profile(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def profile(%Conn{} = conn, statement, params, opts) do
     validate_statement!(statement)
 
     run_explain(
@@ -197,9 +257,14 @@ defmodule Arcadic do
     )
   end
 
+  def profile!(conn, statement, params \\ %{}, opts \\ [])
+
+  def profile!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Like `profile/4` but returns the plan map or raises."
   @spec profile!(Conn.t(), String.t(), map(), keyword()) :: map()
-  def profile!(%Conn{} = conn, statement, params \\ %{}, opts \\ []),
+  def profile!(%Conn{} = conn, statement, params, opts),
     do: bang_plan(profile(conn, statement, params, opts))
 
   @doc """
@@ -259,7 +324,12 @@ defmodule Arcadic do
   """
   @spec query_stream(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Arcadic.Error.t()}
-  def query_stream(%Conn{} = conn, statement, params \\ %{}, opts \\ []) do
+  def query_stream(conn, statement, params \\ %{}, opts \\ [])
+
+  def query_stream(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def query_stream(%Conn{} = conn, statement, params, opts) do
     opts = validate_opts!(opts, @query_stream_opts)
     validate_chunk_size!(opts[:chunk_size])
     validate_params!(params)

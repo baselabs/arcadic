@@ -21,20 +21,32 @@ defmodule Arcadic.Admin do
     end)
   end
 
+  def get(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Guarded authenticated admin GET (optional `server_get/2` callback)."
   @spec get(Conn.t(), String.t()) :: {:ok, map()} | {:error, Exception.t()}
   def get(%Conn{} = conn, path),
     do: guard(conn, :server_get, 2, fn -> conn.transport.server_get(conn, path) end)
+
+  def command(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Guarded server command (optional `server_command/2` callback)."
   @spec command(Conn.t(), String.t()) :: {:ok, map()} | {:error, Exception.t()}
   def command(%Conn{} = conn, cmd),
     do: guard(conn, :server_command, 2, fn -> conn.transport.server_command(conn, cmd) end)
 
+  def call(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Guarded 0/1-arity admin callback (health?/login/logout)."
   @spec call(Conn.t(), atom()) :: term()
   def call(%Conn{} = conn, fun),
     do: guard(conn, fun, 1, fn -> apply(conn.transport, fun, [conn]) end)
+
+  def sql(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Run a fixed SQL admin statement over the required `execute/4` callback (no params, write mode)."
   @spec sql(Conn.t(), String.t()) :: {:ok, [map()]} | {:error, Exception.t()}

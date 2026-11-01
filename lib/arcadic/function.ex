@@ -51,7 +51,12 @@ defmodule Arcadic.Function do
   """
   @spec define(Conn.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def define(%Conn{} = conn, name, body, opts \\ []) do
+  def define(conn, name, body, opts \\ [])
+
+  def define(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def define(%Conn{} = conn, name, body, opts) do
     Opts.validate_keys!(opts, @define_opts)
 
     with {:ok, lang} <- resolve_language(opts),
@@ -65,10 +70,18 @@ defmodule Arcadic.Function do
     end
   end
 
+  def define!(conn, name, body, opts \\ [])
+
+  def define!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Defines a function, raising on error."
   @spec define!(Conn.t(), String.t(), String.t(), keyword()) :: :ok
-  def define!(%Conn{} = conn, name, body, opts \\ []),
+  def define!(%Conn{} = conn, name, body, opts),
     do: bang(define(conn, name, body, opts))
+
+  def delete(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Deletes a function `name` (a dotted `library.fn`); idempotent server-side once the library exists (deleting from a never-defined library errors). Value-free on a bad name."
   @spec delete(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -77,6 +90,9 @@ defmodule Arcadic.Function do
       command_ok(conn, "DELETE FUNCTION #{name}")
     end
   end
+
+  def delete!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Deletes a function, raising on error."
   @spec delete!(Conn.t(), String.t()) :: :ok

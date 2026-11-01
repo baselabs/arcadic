@@ -12,6 +12,11 @@ defmodule Arcadic.TransportError do
   @spec message(t()) :: String.t()
   def message(%__MODULE__{reason: reason}), do: "ArcadeDB transport error: #{inspect(reason)}"
 
+  # Value-free fallback: a wrong-typed argument raises instead of echoing it via
+  # FunctionClauseError blame.
+  def message(other) when not is_struct(other, __MODULE__),
+    do: raise(ArgumentError, "expected an Arcadic.TransportError")
+
   defimpl Inspect do
     def inspect(err, _opts), do: "#Arcadic.TransportError<#{inspect(err.reason)}>"
   end

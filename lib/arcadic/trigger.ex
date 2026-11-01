@@ -42,7 +42,12 @@ defmodule Arcadic.Trigger do
   """
   @spec create(Conn.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create(%Conn{} = conn, name, type, opts \\ []) do
+  def create(conn, name, type, opts \\ [])
+
+  def create(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create(%Conn{} = conn, name, type, opts) do
     Opts.validate_keys!(opts, @create_opts)
 
     with {:ok, lang_atom, code} <- fetch_execute(opts),
@@ -59,10 +64,18 @@ defmodule Arcadic.Trigger do
     end
   end
 
+  def create!(conn, name, type, opts \\ [])
+
+  def create!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a trigger, raising on error."
   @spec create!(Conn.t(), String.t(), String.t(), keyword()) :: :ok
-  def create!(%Conn{} = conn, name, type, opts \\ []),
+  def create!(%Conn{} = conn, name, type, opts),
     do: bang(create(conn, name, type, opts))
+
+  def drop(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a trigger `name` (no `IF EXISTS` — a missing trigger is a server error). Value-free on a bad name."
   @spec drop(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -71,6 +84,9 @@ defmodule Arcadic.Trigger do
       command_ok(conn, "DROP TRIGGER #{name}")
     end
   end
+
+  def drop!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a trigger, raising on error."
   @spec drop!(Conn.t(), String.t()) :: :ok

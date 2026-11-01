@@ -179,6 +179,9 @@ if Code.ensure_loaded?(Boltx) do
       end
     end
 
+    def execute(conn, _, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def execute(%Conn{} = conn, _mode, %{statement: statement, params: params}, opts) do
       query = %Boltx.Query{statement: statement, extra: run_extra(conn)}
@@ -211,6 +214,9 @@ if Code.ensure_loaded?(Boltx) do
     @impl true
     @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
             Arcadic.Transport.plan_result()
+    def explain(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     def explain(%Conn{} = conn, %{statement: statement, params: params}, opts) do
       # statement already carries EXPLAIN/PROFILE (facade-prepended). Bolt returns the plan in
       # resp.plan (EXPLAIN) or resp.profile (PROFILE) — pick whichever is set. `plan` (the human
@@ -250,6 +256,9 @@ if Code.ensure_loaded?(Boltx) do
       %{plan: plan, plan_tree: summary, rows: resp.results}
     end
 
+    def run_extra(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # The `db` extra selects the ArcadeDB database per RUN/BEGIN (Boltx's RunMessage
     # defaults mode to "w" — kept statement-agnostic). Shared by execute, transaction,
     # and query_stream so conn.database is honored uniformly across Bolt ops.
@@ -283,6 +292,9 @@ if Code.ensure_loaded?(Boltx) do
       do: {name, Point.format_param(p)}
 
     defp format_param({name, value}), do: {name, {:ok, value}}
+
+    def query_stream(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def query_stream(%Conn{session_id: sid} = conn, %{statement: statement, params: params}, opts)
@@ -597,6 +609,9 @@ if Code.ensure_loaded?(Boltx) do
     def stream_error(reason) when is_atom(reason), do: %TransportError{reason: reason}
     def stream_error(other), do: %TransportError{reason: transport_reason(other)}
 
+    def transaction(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
       # `Boltx.transaction/4` is a thin wrapper over `DBConnection.transaction/3`
@@ -649,6 +664,9 @@ if Code.ensure_loaded?(Boltx) do
 
     def map_transaction_outcome({:error, _other}),
       do: {:error, %TransportError{reason: :transaction_error}}
+
+    def ready?(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def ready?(%Conn{} = conn) do

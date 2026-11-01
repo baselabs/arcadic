@@ -124,6 +124,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       UpdateRecordRequest
     }
 
+    def execute(conn, _, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def execute(%Conn{} = conn, :read, %{statement: stmt, params: params, language: lang}, opts) do
       with :ok <- valid_statement(stmt),
@@ -195,6 +198,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
+    def explain(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # EXPLAIN/PROFILE: the facade prepends the prefix; the plan comes back as a row carrying
     # `executionPlanAsString` (human string) + `executionPlan` (the raw plan map).
     @impl true
@@ -234,6 +240,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         rows: []
       }
     end
+
+    def query_stream(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def query_stream(%Conn{} = conn, %{statement: stmt, params: params, language: lang}, opts) do
@@ -325,6 +334,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     catch
       _, _ -> :ok
     end
+
+    def batch_ingest(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     # --- Bulk graph ingest → GraphBatchLoad (client-streaming; the twin of HTTP POST /api/v1/batch) ---
     @impl true
@@ -424,6 +436,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         "idMapping" => r.id_mapping || %{}
       }
     end
+
+    def insert_rows(conn, _, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     # --- Document ingest → BulkInsert (unary; rows into a target class, InsertSummary counts) ---
     @impl true
@@ -576,6 +591,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     defp safe_code(_), do: nil
 
+    def create_record(conn, _, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # --- Single-record CRUD (CreateRecord/LookupByRid/UpdateRecord/DeleteRecord; raw maps) ---
     @impl true
     def create_record(%Conn{} = conn, type, props, opts) do
@@ -600,6 +618,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         end
       end)
     end
+
+    def lookup_record(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def lookup_record(%Conn{} = conn, rid, opts) do
@@ -628,6 +649,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         err -> {:error, err}
       end
     end
+
+    def update_record(conn, _, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def update_record(%Conn{} = conn, rid, props, opts) do
@@ -660,6 +684,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
+    def delete_record(conn, _, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def delete_record(%Conn{} = conn, rid, opts) do
       req = %DeleteRecordRequest{
@@ -686,11 +713,20 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end
     end
 
+    def ready?(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def ready?(%Conn{} = conn), do: ping(conn)
 
+    def health?(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def health?(%Conn{} = conn), do: ping(conn)
+
+    def begin(conn, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     # --- Transactions (BeginTransaction/CommitTransaction/RollbackTransaction, DATA plane) ---
     # The gRPC tx is a server-side `transaction_id` (portable across separate channels — proven live:
@@ -713,6 +749,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
+    def commit(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def commit(%Conn{session_id: sid} = conn) when is_binary(sid) do
       req = %CommitTransactionRequest{
@@ -730,6 +769,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
     end
 
     def commit(%Conn{}), do: {:error, %Error{reason: :transaction_error}}
+
+    def rollback(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def rollback(%Conn{session_id: sid} = conn) when is_binary(sid) do
@@ -749,6 +791,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     def rollback(%Conn{}), do: {:error, %Error{reason: :transaction_error}}
 
+    def list_databases(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # --- Admin plane (ArcadeDbAdminService — authenticates by the body `credentials` field, NOT
     # metadata; live-proven: metadata-only → Unauthenticated) ---
     @impl true
@@ -763,6 +808,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
+    def database_exists?(conn, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def database_exists?(%Conn{} = conn, name) do
       with_channel(conn, fn ch ->
@@ -774,6 +822,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
         end
       end)
     end
+
+    def database_info(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
     @impl true
     def database_info(%Conn{} = conn) do
@@ -797,6 +848,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
       end)
     end
 
+    def server_command(conn, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # `Arcadic.Server` builds command strings routed through `server_command`. Only the stable verbs
     # gRPC has typed RPCs for are recognized (create/drop database — the name is already
     # Identifier-validated by Server); anything else (settings, open/close/align/events/shutdown/
@@ -812,6 +866,9 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     def server_command(%Conn{}, _command), do: {:error, %Error{reason: :not_supported}}
 
+    def server_get(conn, _) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # `server_get` is HTTP-path-shaped; only `/api/v1/server` (server info) maps to a gRPC RPC.
     # NOTE (gRPC divergence): GetServerInfo has no `metrics` and no `mode` — so `Server.metrics/1`
     # returns `{:ok, %{}}` and a `mode:` option is ignored over gRPC (documented in the moduledoc).
@@ -826,9 +883,16 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
 
     def server_get(%Conn{}, _path), do: {:error, %Error{reason: :not_supported}}
 
+    def login(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     # gRPC has no token-session model (auth is metadata/body-creds) — login/logout are HTTP-only.
     @impl true
     def login(%Conn{}), do: {:error, %Error{reason: :not_supported}}
+
+    def logout(conn) when not is_struct(conn, Conn),
+      do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
     @impl true
     def logout(%Conn{}), do: {:error, %Error{reason: :not_supported}}
 

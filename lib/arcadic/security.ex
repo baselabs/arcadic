@@ -17,34 +17,55 @@ defmodule Arcadic.Security do
   """
   alias Arcadic.{Admin, Conn, Identifier}
 
+  def login(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Mint a session token from the conn's credentials (`POST /api/v1/login`)."
   @spec login(Conn.t()) :: {:ok, String.t()} | {:error, Exception.t()}
   def login(%Conn{} = conn), do: Admin.span(:login, fn -> Admin.call(conn, :login) end)
 
+  def logout(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Revoke the current session (`POST /api/v1/logout`)."
   @spec logout(Conn.t()) :: :ok | {:error, Exception.t()}
   def logout(%Conn{} = conn), do: Admin.span(:logout, fn -> Admin.call(conn, :logout) end)
+
+  def sessions(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "List active sessions (`GET /api/v1/sessions`). Rows carry caller-owned tokens — do not log them."
   @spec sessions(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def sessions(%Conn{} = conn),
     do: Admin.span(:sessions, fn -> Admin.result(Admin.get(conn, "/api/v1/sessions")) end)
 
+  def users(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "List server users (`GET /api/v1/server/users`)."
   @spec users(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def users(%Conn{} = conn),
     do: Admin.span(:users, fn -> Admin.result(Admin.get(conn, "/api/v1/server/users")) end)
+
+  def groups(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "The server security-groups map (`GET /api/v1/server/groups`)."
   @spec groups(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
   def groups(%Conn{} = conn),
     do: Admin.span(:groups, fn -> Admin.result(Admin.get(conn, "/api/v1/server/groups")) end)
 
+  def api_tokens(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "List server API tokens (`GET /api/v1/server/api-tokens`)."
   @spec api_tokens(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def api_tokens(%Conn{} = conn),
     do:
       Admin.span(:api_tokens, fn -> Admin.result(Admin.get(conn, "/api/v1/server/api-tokens")) end)
+
+  def create_user(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Create a server user from `%{name:, password:, databases: %{db => [roles]}}` (`databases` optional).
@@ -66,6 +87,9 @@ defmodule Arcadic.Security do
   # leak). Reject value-free instead, mirroring drop_user's total-on-input posture.
   def create_user(%Conn{} = _conn, _spec), do: {:error, :invalid_user_spec}
 
+  def drop_user(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Drop a server user. Validates `name`."
   @spec drop_user(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def drop_user(%Conn{} = conn, name) do
@@ -74,21 +98,52 @@ defmodule Arcadic.Security do
            Admin.span(:drop_user, fn -> Admin.to_ok(Admin.command(conn, "drop user #{name}")) end)
   end
 
+  def login!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   # Bangs
   @spec login!(Conn.t()) :: String.t()
   def login!(%Conn{} = conn), do: bang(login(conn))
+
+  def logout!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec logout!(Conn.t()) :: :ok
   def logout!(%Conn{} = conn), do: bang(logout(conn))
+
+  def sessions!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec sessions!(Conn.t()) :: [map()]
   def sessions!(%Conn{} = conn), do: bang(sessions(conn))
+
+  def users!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec users!(Conn.t()) :: [map()]
   def users!(%Conn{} = conn), do: bang(users(conn))
+
+  def groups!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec groups!(Conn.t()) :: map()
   def groups!(%Conn{} = conn), do: bang(groups(conn))
+
+  def api_tokens!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec api_tokens!(Conn.t()) :: [map()]
   def api_tokens!(%Conn{} = conn), do: bang(api_tokens(conn))
+
+  def create_user!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec create_user!(Conn.t(), map()) :: :ok
   def create_user!(%Conn{} = conn, spec), do: bang(create_user(conn, spec))
+
+  def drop_user!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec drop_user!(Conn.t(), String.t()) :: :ok
   def drop_user!(%Conn{} = conn, name), do: bang(drop_user(conn, name))
 

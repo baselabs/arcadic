@@ -163,6 +163,11 @@ defmodule Arcadic.Error do
     "ArcadeDB error (#{inspect(reason)}, HTTP #{status}): #{exception || "unknown"}"
   end
 
+  # Value-free fallback: a wrong-typed argument raises instead of echoing it via
+  # FunctionClauseError blame.
+  def message(other) when not is_struct(other, __MODULE__),
+    do: raise(ArgumentError, "expected an Arcadic.Error")
+
   defimpl Inspect do
     import Inspect.Algebra
 

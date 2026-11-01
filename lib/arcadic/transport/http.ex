@@ -14,6 +14,9 @@ defmodule Arcadic.Transport.HTTP do
   alias Arcadic.{Conn, Error, Result, Telemetry, TransportError}
   require Logger
 
+  def execute(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   # Writes may have been applied before a post-send close (ambiguous), so a WRITE fails over only
   # on PRE-SEND connect-phase errors; a READ is idempotent → fails over on any connection error.
   # A :not_leader response body is a rejection (nothing applied) → fails over for both modes.
@@ -55,6 +58,9 @@ defmodule Arcadic.Transport.HTTP do
   @impl true
   @spec execute_with_index(Conn.t(), :read | :write, Arcadic.Transport.request(), keyword()) ::
           {:ok, [map()], integer() | nil} | {:error, Error.t() | TransportError.t()}
+  def execute_with_index(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def execute_with_index(%Conn{} = conn, mode, request, opts) when mode in [:read, :write] do
     path = "/api/v1/#{endpoint(mode)}/#{conn.database}"
     body = build_body(request, opts)
@@ -90,6 +96,9 @@ defmodule Arcadic.Transport.HTTP do
   @impl true
   @spec explain(Conn.t(), Arcadic.Transport.request(), keyword()) ::
           Arcadic.Transport.plan_result()
+  def explain(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def explain(%Conn{} = conn, request, opts) do
     conn
     |> post("/api/v1/command/#{conn.database}", build_body(request, opts), opts)
@@ -145,6 +154,9 @@ defmodule Arcadic.Transport.HTTP do
   @impl true
   @spec query_stream(Conn.t(), Arcadic.Transport.request(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
+  def query_stream(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def query_stream(%Conn{session_id: sid}, _request, _opts) when is_binary(sid) do
     {:error,
      %Error{
@@ -436,6 +448,9 @@ defmodule Arcadic.Transport.HTTP do
 
   defp strip_order_alias(row), do: row
 
+  def begin(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def begin(%Conn{} = conn, opts) do
     body = isolation_body(opts[:isolation])
@@ -456,9 +471,15 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  def commit(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def commit(%Conn{} = conn),
     do: handle_status_only(post(conn, "/api/v1/commit/#{conn.database}", nil))
+
+  def rollback(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def rollback(%Conn{} = conn),
@@ -516,7 +537,12 @@ defmodule Arcadic.Transport.HTTP do
   @doc false
   @spec post(Conn.t(), String.t(), map() | nil, keyword()) ::
           {:ok, Req.Response.t()} | {:error, Exception.t()}
-  def post(%Conn{} = conn, path, body, opts \\ []) do
+  def post(conn, path, body, opts \\ [])
+
+  def post(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def post(%Conn{} = conn, path, body, opts) do
     req_opts =
       [
         url: conn.base_url <> path,
@@ -544,6 +570,9 @@ defmodule Arcadic.Transport.HTTP do
   # req_opts is a keyword list — use Keyword.put, NOT put_if (which does Map.put → BadMapError).
   defp maybe_put_json(opts, nil), do: opts
   defp maybe_put_json(opts, body), do: Keyword.put(opts, :json, body)
+
+  def headers(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc false
   @spec headers(Conn.t()) :: [{String.t(), String.t()}]
@@ -641,10 +670,16 @@ defmodule Arcadic.Transport.HTTP do
   defp handle_plan_result({:error, exception}),
     do: {:error, %TransportError{reason: inspect_reason(exception)}}
 
+  def server_command(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def server_command(%Conn{} = conn, command) do
     conn |> post("/api/v1/server", %{command: command}, []) |> unwrap_body()
   end
+
+  def batch_ingest(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def batch_ingest(%Conn{} = conn, ndjson, opts) do
@@ -685,6 +720,9 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  def ts_write(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def ts_write(%Conn{} = conn, lines, opts) do
     query = precision_query(opts[:precision])
@@ -722,6 +760,9 @@ defmodule Arcadic.Transport.HTTP do
   defp precision_query(nil), do: ""
   defp precision_query(p) when is_binary(p), do: "?" <> URI.encode_query([{"precision", p}])
   defp precision_query(_p), do: raise(ArgumentError, "invalid :precision")
+
+  def ts_query(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def ts_query(%Conn{} = conn, body, opts) do
@@ -789,6 +830,9 @@ defmodule Arcadic.Transport.HTTP do
 
   defp drop_ok({:error, _} = err), do: err
 
+  def ts_latest(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def ts_latest(%Conn{} = conn, params, opts) do
     path = "/api/v1/ts/#{conn.database}/latest?" <> URI.encode_query(params)
@@ -812,6 +856,9 @@ defmodule Arcadic.Transport.HTTP do
     labels: "labels",
     series: "series"
   }
+
+  def ts_prom_get(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def ts_prom_get(%Conn{} = conn, op, params, opts) do
@@ -846,6 +893,9 @@ defmodule Arcadic.Transport.HTTP do
   defp prom_suffix(op) when is_map_key(@prom_paths, op), do: @prom_paths[op]
   defp prom_suffix(_op), do: raise(ArgumentError, "unknown prom op")
 
+  def server_get(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   # Inlines a map-guarded success branch (NOT the shared unwrap_body/1, whose 2xx clause returns
   # {:ok, term()}) so the success type stays the monomorphic {:ok, map()} the @callback declares.
   @impl true
@@ -868,6 +918,9 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  def health?(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def health?(%Conn{} = conn) do
     case raw_get(conn, "/api/v1/health") do
@@ -877,6 +930,9 @@ defmodule Arcadic.Transport.HTTP do
       {:error, _} -> {:error, %TransportError{reason: :unknown}}
     end
   end
+
+  def login(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def login(%Conn{} = conn) do
@@ -903,8 +959,14 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  def logout(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def logout(%Conn{} = conn), do: handle_status_only(post(conn, "/api/v1/logout", nil))
+
+  def list_databases(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def list_databases(%Conn{} = conn) do
@@ -922,10 +984,16 @@ defmodule Arcadic.Transport.HTTP do
     end
   end
 
+  def database_exists?(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @impl true
   def database_exists?(%Conn{} = conn, name) do
     with {:ok, names} <- list_databases(conn), do: {:ok, name in names}
   end
+
+  def database_info(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def database_info(%Conn{} = conn) do
@@ -946,6 +1014,9 @@ defmodule Arcadic.Transport.HTTP do
         err
     end
   end
+
+  def execute_async(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def execute_async(%Conn{} = conn, request, opts) do
@@ -971,6 +1042,9 @@ defmodule Arcadic.Transport.HTTP do
         {:error, %TransportError{reason: :unknown}}
     end
   end
+
+  def ready?(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @impl true
   def ready?(%Conn{} = conn) do

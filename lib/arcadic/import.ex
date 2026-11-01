@@ -42,6 +42,11 @@ defmodule Arcadic.Import do
   # main source URL is the only SSRF vector, server-blocked by importBlockLocalNetworks).
   @setting_string_pattern ~r/\A[A-Za-z0-9 \-._~:\/?#\[\]@!$&()*+,;=%]+\z/
 
+  def database(conn, url, opts \\ [])
+
+  def database(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Imports `url` into `conn.database` via `IMPORT DATABASE '<url>'[ WITH …]`. Returns
   `{:ok, rows}` (rows carry `operation`/`fromUrl`/`parsedRecords`/`result`) or
@@ -58,7 +63,7 @@ defmodule Arcadic.Import do
   Raises `ArgumentError` (value-free, before any request) on an invalid URL or `with:` entry.
   """
   @spec database(Conn.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, Exception.t()}
-  def database(%Conn{} = conn, url, opts \\ []) do
+  def database(%Conn{} = conn, url, opts) do
     validate_url!(url)
     Opts.validate_keys!(opts, [:with])
     with_clause = build_with(Keyword.get(opts, :with, []))
@@ -89,9 +94,14 @@ defmodule Arcadic.Import do
     end
   end
 
+  def database!(conn, url, opts \\ [])
+
+  def database!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Imports `url`, returning the rows or raising."
   @spec database!(Conn.t(), String.t(), keyword()) :: [map()]
-  def database!(%Conn{} = conn, url, opts \\ []), do: bang(database(conn, url, opts))
+  def database!(%Conn{} = conn, url, opts), do: bang(database(conn, url, opts))
 
   # --- URL validation: delegates to the shared audited allowlist validator, mapping its value-free
   # reasons to Import's messages; still fail-closed (raises) before any wire call. ---

@@ -12,6 +12,9 @@ defmodule Arcadic.Schema do
   """
   alias Arcadic.{Conn, Opts}
 
+  def types(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Lists every type (vertex / edge / document). Each row carries `name`, `type`, `records`,
   `buckets`, `properties`, `indexes`, and the type's other metadata, `@props`-stripped.
@@ -19,17 +22,29 @@ defmodule Arcadic.Schema do
   @spec types(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def types(%Conn{} = conn), do: query(conn, "SELECT FROM schema:types")
 
+  def types!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Lists every type, returning the rows or raising."
   @spec types!(Conn.t()) :: [map()]
   def types!(%Conn{} = conn), do: bang(types(conn))
+
+  def buckets(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Lists the physical buckets (`name`, `fileId`, `records`, `purpose`), `@props`-stripped."
   @spec buckets(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def buckets(%Conn{} = conn), do: query(conn, "SELECT FROM schema:buckets")
 
+  def buckets!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Lists the physical buckets, returning the rows or raising."
   @spec buckets!(Conn.t()) :: [map()]
   def buckets!(%Conn{} = conn), do: bang(buckets(conn))
+
+  def database(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Returns the database engine config as a single map — `name`, `path`, `mode`, `dateFormat`,
@@ -46,6 +61,9 @@ defmodule Arcadic.Schema do
     end
   end
 
+  def database!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Returns the database config map, or raises."
   @spec database!(Conn.t()) :: map()
   def database!(%Conn{} = conn), do: bang(database(conn))
@@ -59,6 +77,9 @@ defmodule Arcadic.Schema do
   """
   @spec properties(Conn.t(), String.t()) ::
           {:ok, [map()]} | {:error, Exception.t() | :invalid_identifier}
+  def properties(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def properties(%Conn{} = conn, type) do
     with :ok <- Arcadic.Identifier.validate(type),
          {:ok, rows} <-
@@ -71,6 +92,9 @@ defmodule Arcadic.Schema do
       {:ok, unwrap_properties(rows)}
     end
   end
+
+  def properties!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Lists the properties of `type`, returning them or raising."
   @spec properties!(Conn.t(), String.t()) :: [map()]
@@ -85,7 +109,12 @@ defmodule Arcadic.Schema do
   """
   @spec indexes(Conn.t(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t() | :invalid_identifier}
-  def indexes(%Conn{} = conn, opts \\ []) do
+  def indexes(conn, opts \\ [])
+
+  def indexes(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def indexes(%Conn{} = conn, opts) do
     Opts.validate_keys!(opts, [:type])
 
     case Keyword.fetch(opts, :type) do
@@ -99,29 +128,52 @@ defmodule Arcadic.Schema do
     end
   end
 
+  def indexes!(conn, opts \\ [])
+
+  def indexes!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Lists indexes, returning them or raising."
   @spec indexes!(Conn.t(), keyword()) :: [map()]
-  def indexes!(%Conn{} = conn, opts \\ []), do: bang(indexes(conn, opts))
+  def indexes!(%Conn{} = conn, opts), do: bang(indexes(conn, opts))
+
+  def stats(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Per-database operation counters (`schema:stats`), `@props`-stripped. Returns the single stats map."
   @spec stats(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
   def stats(%Conn{} = conn), do: single(query(conn, "SELECT FROM schema:stats"))
 
+  def stats!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Returns the single stats map, or raises."
   @spec stats!(Conn.t()) :: map()
   def stats!(%Conn{} = conn), do: bang(stats(conn))
+
+  def dictionary(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "The record dictionary (`schema:dictionary`), `@props`-stripped. Returns the single dictionary map."
   @spec dictionary(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
   def dictionary(%Conn{} = conn), do: single(query(conn, "SELECT FROM schema:dictionary"))
 
+  def dictionary!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Returns the single dictionary map, or raises."
   @spec dictionary!(Conn.t()) :: map()
   def dictionary!(%Conn{} = conn), do: bang(dictionary(conn))
 
+  def materialized_views(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Lists materialized views (`schema:materializedviews`), each `@props`-stripped."
   @spec materialized_views(Conn.t()) :: {:ok, [map()]} | {:error, Exception.t()}
   def materialized_views(%Conn{} = conn), do: query(conn, "SELECT FROM schema:materializedviews")
+
+  def materialized_views!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Lists materialized views, or raises."
   @spec materialized_views!(Conn.t()) :: [map()]

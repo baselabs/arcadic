@@ -15,6 +15,9 @@ defmodule Arcadic.MaterializedView do
   """
   alias Arcadic.{Conn, Identifier}
 
+  def create(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Creates a materialized view `name` from `select_sql`, emitting
   `CREATE MATERIALIZED VIEW name AS select_sql` — `select_sql` rides through verbatim (see
@@ -32,9 +35,15 @@ defmodule Arcadic.MaterializedView do
 
   def create(_conn, _name, _select_sql), do: raise(ArgumentError, "select must be a string")
 
+  def create!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a materialized view, raising on error."
   @spec create!(Conn.t(), String.t(), String.t()) :: :ok
   def create!(%Conn{} = conn, name, select_sql), do: bang(create(conn, name, select_sql))
+
+  def drop(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Drops a materialized view `name` (no `IF EXISTS` — a missing view is a server error). Value-free
@@ -46,6 +55,9 @@ defmodule Arcadic.MaterializedView do
       command_ok(conn, "DROP MATERIALIZED VIEW #{name}")
     end
   end
+
+  def drop!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a materialized view, raising on error."
   @spec drop!(Conn.t(), String.t()) :: :ok

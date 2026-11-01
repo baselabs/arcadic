@@ -40,6 +40,9 @@ defmodule Arcadic.Migrator do
 
   alias Arcadic.Conn
 
+  def migrate(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @type_name "_arcadic_migrations"
   @started_statuses ["up_started", "down_started"]
 
@@ -61,6 +64,9 @@ defmodule Arcadic.Migrator do
   """
   @spec status(Conn.t(), module()) ::
           {:ok, [{pos_integer(), :up | :down}]} | {:error, Exception.t()}
+  def status(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def status(%Conn{session_id: sid} = conn, registry) when is_atom(registry) do
     reject_session!(sid)
 
@@ -86,6 +92,9 @@ defmodule Arcadic.Migrator do
     |> Enum.reject(fn mod -> mod.version() in applied end)
   end
 
+  def interrupted(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   The versions with an interrupted marker (`up_started`/`down_started`), ascending —
   the structured reader for a `:interrupted_migration` refusal (the refusal itself is
@@ -100,6 +109,9 @@ defmodule Arcadic.Migrator do
       {:ok, Enum.sort(state.interrupted)}
     end
   end
+
+  def resolve(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Record the operator's established outcome for an interrupted migration:
@@ -140,7 +152,12 @@ defmodule Arcadic.Migrator do
   @doc "Roll back the last `n` applied migrations (down), newest first. Returns `{:ok, count}`."
   @spec rollback(Conn.t(), module(), pos_integer()) ::
           {:ok, non_neg_integer()} | {:error, Exception.t() | term()}
-  def rollback(%Conn{session_id: sid} = conn, registry, n \\ 1)
+  def rollback(conn, registry, n \\ 1)
+
+  def rollback(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def rollback(%Conn{session_id: sid} = conn, registry, n)
       when is_atom(registry) and is_integer(n) and n > 0 do
     reject_session!(sid)
 
@@ -156,6 +173,9 @@ defmodule Arcadic.Migrator do
       run_down(conn, to_roll, 0)
     end
   end
+
+  def reset(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Roll back every applied migration, then migrate all. Returns `{:ok, migrated_count}`."
   @spec reset(Conn.t(), module()) :: {:ok, non_neg_integer()} | {:error, Exception.t() | term()}

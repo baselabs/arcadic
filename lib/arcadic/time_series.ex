@@ -75,7 +75,12 @@ defmodule Arcadic.TimeSeries do
   """
   @spec create_type(Conn.t(), String.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create_type(%Conn{} = conn, name, timestamp_col, opts \\ []) do
+  def create_type(conn, name, timestamp_col, opts \\ [])
+
+  def create_type(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create_type(%Conn{} = conn, name, timestamp_col, opts) do
     Opts.validate_keys!(opts, @create_type_opts)
     fields = columns!(Keyword.get(opts, :fields, []), "at least one field is required")
     tags = optional_columns!(Keyword.get(opts, :tags, []))
@@ -96,10 +101,18 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def create_type!(conn, name, timestamp_col, opts \\ [])
+
+  def create_type!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a TIMESERIES type, raising on error."
   @spec create_type!(Conn.t(), String.t(), String.t(), keyword()) :: :ok
-  def create_type!(%Conn{} = conn, name, timestamp_col, opts \\ []),
+  def create_type!(%Conn{} = conn, name, timestamp_col, opts),
     do: bang(create_type(conn, name, timestamp_col, opts))
+
+  def drop_type(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Drops a TIMESERIES type (`DROP TIMESERIES TYPE name` — no `IF EXISTS`; dropping a missing type
@@ -112,6 +125,9 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def drop_type!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Drops a TIMESERIES type, raising on error."
   @spec drop_type!(Conn.t(), String.t()) :: :ok
   def drop_type!(%Conn{} = conn, name), do: bang(drop_type(conn, name))
@@ -122,6 +138,9 @@ defmodule Arcadic.TimeSeries do
   """
   @spec add_downsampling(Conn.t(), String.t(), keyword()) ::
           :ok | {:error, atom() | Exception.t()}
+  def add_downsampling(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def add_downsampling(%Conn{} = conn, type, opts) do
     Opts.validate_keys!(opts, @downsampling_opts)
     after_sql = required_duration!(opts, :after)
@@ -136,9 +155,15 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def add_downsampling!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Adds a downsampling policy, raising on error."
   @spec add_downsampling!(Conn.t(), String.t(), keyword()) :: :ok
   def add_downsampling!(%Conn{} = conn, type, opts), do: bang(add_downsampling(conn, type, opts))
+
+  def drop_downsampling(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops the type's downsampling policy (`ALTER TIMESERIES TYPE type DROP DOWNSAMPLING POLICY`)."
   @spec drop_downsampling(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -147,6 +172,9 @@ defmodule Arcadic.TimeSeries do
       command_ok(conn, "ALTER TIMESERIES TYPE #{type_ok} DROP DOWNSAMPLING POLICY")
     end
   end
+
+  def drop_downsampling!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops the type's downsampling policy, raising on error."
   @spec drop_downsampling!(Conn.t(), String.t()) :: :ok
@@ -161,6 +189,9 @@ defmodule Arcadic.TimeSeries do
   """
   @spec create_aggregate(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
+  def create_aggregate(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def create_aggregate(%Conn{} = conn, name, select_sql) when is_binary(select_sql) do
     with {:ok, [name_ok]} <- validate_idents([name]) do
       command_ok(conn, "CREATE CONTINUOUS AGGREGATE #{name_ok} AS #{select_sql}")
@@ -173,10 +204,16 @@ defmodule Arcadic.TimeSeries do
   def create_aggregate(_conn, _name, _select_sql),
     do: raise(ArgumentError, "select must be a string")
 
+  def create_aggregate!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a continuous aggregate, raising on error."
   @spec create_aggregate!(Conn.t(), String.t(), String.t()) :: :ok
   def create_aggregate!(%Conn{} = conn, name, select_sql),
     do: bang(create_aggregate(conn, name, select_sql))
+
+  def refresh_aggregate(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Refreshes a continuous aggregate (`REFRESH CONTINUOUS AGGREGATE name`)."
   @spec refresh_aggregate(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -186,9 +223,15 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def refresh_aggregate!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Refreshes a continuous aggregate, raising on error."
   @spec refresh_aggregate!(Conn.t(), String.t()) :: :ok
   def refresh_aggregate!(%Conn{} = conn, name), do: bang(refresh_aggregate(conn, name))
+
+  def drop_aggregate(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a continuous aggregate (no `IF EXISTS` — a missing aggregate is a server error)."
   @spec drop_aggregate(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -197,6 +240,9 @@ defmodule Arcadic.TimeSeries do
       command_ok(conn, "DROP CONTINUOUS AGGREGATE #{name_ok}")
     end
   end
+
+  def drop_aggregate!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a continuous aggregate, raising on error."
   @spec drop_aggregate!(Conn.t(), String.t()) :: :ok
@@ -225,6 +271,11 @@ defmodule Arcadic.TimeSeries do
   @int64_min -9_223_372_036_854_775_808
   @int64_max 9_223_372_036_854_775_807
 
+  def write(conn, points, opts \\ [])
+
+  def write(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Writes structured `points` as InfluxDB line protocol (`POST /api/v1/ts/<db>/write`).
 
@@ -242,7 +293,7 @@ defmodule Arcadic.TimeSeries do
   name returns `{:error, :invalid_identifier}`; caller values never appear in an error.
   """
   @spec write(Conn.t(), [map()], keyword()) :: :ok | {:error, atom() | Exception.t()}
-  def write(%Conn{} = conn, points, opts \\ []) do
+  def write(%Conn{} = conn, points, opts) do
     unless is_list(points) do
       raise ArgumentError, "points must be a list of point maps"
     end
@@ -257,9 +308,19 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def write!(conn, points, opts \\ [])
+
+  def write!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Writes structured points, raising on error."
   @spec write!(Conn.t(), [map()], keyword()) :: :ok
-  def write!(%Conn{} = conn, points, opts \\ []), do: bang(write(conn, points, opts))
+  def write!(%Conn{} = conn, points, opts), do: bang(write(conn, points, opts))
+
+  def write_lines(conn, lines, opts \\ [])
+
+  def write_lines(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Writes raw, already-built line protocol (a relay path — e.g. forwarding a Telegraf batch).
@@ -268,7 +329,7 @@ defmodule Arcadic.TimeSeries do
   Operational contract). `opts`: `:precision`, `:timeout`.
   """
   @spec write_lines(Conn.t(), iodata(), keyword()) :: :ok | {:error, atom() | Exception.t()}
-  def write_lines(%Conn{} = conn, lines, opts \\ []) do
+  def write_lines(%Conn{} = conn, lines, opts) do
     unless is_binary(lines) or is_list(lines) do
       raise ArgumentError, "lines must be a binary or iodata"
     end
@@ -296,14 +357,24 @@ defmodule Arcadic.TimeSeries do
     ArgumentError -> :error
   end
 
+  def write_lines!(conn, lines, opts \\ [])
+
+  def write_lines!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Writes raw line protocol, raising on error."
   @spec write_lines!(Conn.t(), iodata(), keyword()) :: :ok
-  def write_lines!(%Conn{} = conn, lines, opts \\ []), do: bang(write_lines(conn, lines, opts))
+  def write_lines!(%Conn{} = conn, lines, opts), do: bang(write_lines(conn, lines, opts))
 
   @query_opts [:from, :to, :fields, :tags, :limit, :aggregation, :bucket_interval, :timeout]
   @latest_opts [:tag, :timeout]
   # The exact server enum, UPPERCASE and case-sensitive (anything else 500s — probed 26.7.2).
   @agg_types %{sum: "SUM", avg: "AVG", min: "MIN", max: "MAX", count: "COUNT"}
+
+  def query(conn, type, opts \\ [])
+
+  def query(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Time-series query (`POST /api/v1/ts/<db>/query`).
@@ -321,7 +392,7 @@ defmodule Arcadic.TimeSeries do
   (each bucket `%{timestamp, values}`). Deliberately NOT zipped into row-maps.
   """
   @spec query(Conn.t(), String.t(), keyword()) :: {:ok, map()} | {:error, atom() | Exception.t()}
-  def query(%Conn{} = conn, type, opts \\ []) do
+  def query(%Conn{} = conn, type, opts) do
     Opts.validate_keys!(opts, @query_opts)
 
     with :ok <- Identifier.validate(type),
@@ -332,9 +403,14 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def query!(conn, type, opts \\ [])
+
+  def query!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Time-series query, returning the result map or raising."
   @spec query!(Conn.t(), String.t(), keyword()) :: map()
-  def query!(%Conn{} = conn, type, opts \\ []), do: bang(query(conn, type, opts))
+  def query!(%Conn{} = conn, type, opts), do: bang(query(conn, type, opts))
 
   @doc """
   Newest point (`GET /api/v1/ts/<db>/latest`). `opts`: `:tag` — a SINGLE `{key, value}` pair
@@ -345,7 +421,12 @@ defmodule Arcadic.TimeSeries do
   """
   @spec latest(Conn.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, atom() | Exception.t()}
-  def latest(%Conn{} = conn, type, opts \\ []) do
+  def latest(conn, type, opts \\ [])
+
+  def latest(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def latest(%Conn{} = conn, type, opts) do
     Opts.validate_keys!(opts, @latest_opts)
 
     with :ok <- Identifier.validate(type),
@@ -358,9 +439,14 @@ defmodule Arcadic.TimeSeries do
     end
   end
 
+  def latest!(conn, type, opts \\ [])
+
+  def latest!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Newest point, returning the result map or raising."
   @spec latest!(Conn.t(), String.t(), keyword()) :: map()
-  def latest!(%Conn{} = conn, type, opts \\ []), do: bang(latest(conn, type, opts))
+  def latest!(%Conn{} = conn, type, opts), do: bang(latest(conn, type, opts))
 
   @prom_opts [:time, :timeout]
   @timeout_only [:timeout]
@@ -378,15 +464,25 @@ defmodule Arcadic.TimeSeries do
   """
   @spec prom_query(Conn.t(), String.t(), keyword()) ::
           {:ok, map() | list()} | {:error, atom() | Exception.t()}
-  def prom_query(%Conn{} = conn, promql, opts \\ []) do
+  def prom_query(conn, promql, opts \\ [])
+
+  def prom_query(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def prom_query(%Conn{} = conn, promql, opts) do
     Opts.validate_keys!(opts, @prom_opts)
     params = [{"query", promql!(promql)}] ++ time_param(opts[:time])
     prom_get(conn, :query, :prom_query, params, opts)
   end
 
+  def prom_query!(conn, promql, opts \\ [])
+
+  def prom_query!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "PromQL instant query, returning the data or raising."
   @spec prom_query!(Conn.t(), String.t(), keyword()) :: map() | list()
-  def prom_query!(%Conn{} = conn, promql, opts \\ []), do: bang(prom_query(conn, promql, opts))
+  def prom_query!(%Conn{} = conn, promql, opts), do: bang(prom_query(conn, promql, opts))
 
   @doc """
   PromQL range query (`GET …/prom/api/v1/query_range`). `from`/`to` are epoch-seconds integers or
@@ -400,7 +496,12 @@ defmodule Arcadic.TimeSeries do
           integer() | String.t(),
           keyword()
         ) :: {:ok, map() | list()} | {:error, atom() | Exception.t()}
-  def prom_query_range(%Conn{} = conn, promql, from, to, step, opts \\ []) do
+  def prom_query_range(conn, promql, from, to, step, opts \\ [])
+
+  def prom_query_range(conn, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def prom_query_range(%Conn{} = conn, promql, from, to, step, opts) do
     Opts.validate_keys!(opts, @timeout_only)
 
     params = [
@@ -422,19 +523,34 @@ defmodule Arcadic.TimeSeries do
           integer() | String.t(),
           keyword()
         ) :: map() | list()
-  def prom_query_range!(%Conn{} = conn, promql, from, to, step, opts \\ []),
+  def prom_query_range!(conn, promql, from, to, step, opts \\ [])
+
+  def prom_query_range!(conn, _, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def prom_query_range!(%Conn{} = conn, promql, from, to, step, opts),
     do: bang(prom_query_range(conn, promql, from, to, step, opts))
+
+  def prom_labels(conn, opts \\ [])
+
+  def prom_labels(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Label names (`GET …/prom/api/v1/labels`)."
   @spec prom_labels(Conn.t(), keyword()) :: {:ok, list()} | {:error, atom() | Exception.t()}
-  def prom_labels(%Conn{} = conn, opts \\ []) do
+  def prom_labels(%Conn{} = conn, opts) do
     Opts.validate_keys!(opts, @timeout_only)
     prom_get(conn, :labels, :prom_labels, [], opts)
   end
 
+  def prom_labels!(conn, opts \\ [])
+
+  def prom_labels!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Label names, returning the list or raising."
   @spec prom_labels!(Conn.t(), keyword()) :: list()
-  def prom_labels!(%Conn{} = conn, opts \\ []), do: bang(prom_labels(conn, opts))
+  def prom_labels!(%Conn{} = conn, opts), do: bang(prom_labels(conn, opts))
 
   @doc """
   Values of one label (`GET …/prom/api/v1/label/<label>/values`). The label must match the
@@ -442,7 +558,12 @@ defmodule Arcadic.TimeSeries do
   """
   @spec prom_label_values(Conn.t(), String.t(), keyword()) ::
           {:ok, list()} | {:error, atom() | Exception.t()}
-  def prom_label_values(%Conn{} = conn, label, opts \\ []) do
+  def prom_label_values(conn, label, opts \\ [])
+
+  def prom_label_values(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def prom_label_values(%Conn{} = conn, label, opts) do
     Opts.validate_keys!(opts, @timeout_only)
 
     unless is_binary(label) and Regex.match?(@prom_label_re, label) do
@@ -452,9 +573,14 @@ defmodule Arcadic.TimeSeries do
     prom_get(conn, {:label_values, label}, :prom_label_values, [], opts)
   end
 
+  def prom_label_values!(conn, label, opts \\ [])
+
+  def prom_label_values!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Values of one label, returning the list or raising."
   @spec prom_label_values!(Conn.t(), String.t(), keyword()) :: list()
-  def prom_label_values!(%Conn{} = conn, label, opts \\ []),
+  def prom_label_values!(%Conn{} = conn, label, opts),
     do: bang(prom_label_values(conn, label, opts))
 
   @doc """
@@ -464,7 +590,12 @@ defmodule Arcadic.TimeSeries do
   """
   @spec prom_series(Conn.t(), [String.t()], keyword()) ::
           {:ok, list()} | {:error, atom() | Exception.t()}
-  def prom_series(%Conn{} = conn, matches, opts \\ []) do
+  def prom_series(conn, matches, opts \\ [])
+
+  def prom_series(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def prom_series(%Conn{} = conn, matches, opts) do
     Opts.validate_keys!(opts, @timeout_only)
 
     unless is_list(matches) do
@@ -481,9 +612,14 @@ defmodule Arcadic.TimeSeries do
     prom_get(conn, :series, :prom_series, Enum.map(matches, &{"match[]", &1}), opts)
   end
 
+  def prom_series!(conn, matches, opts \\ [])
+
+  def prom_series!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Series matching the selectors, returning the list or raising."
   @spec prom_series!(Conn.t(), [String.t()], keyword()) :: list()
-  def prom_series!(%Conn{} = conn, matches, opts \\ []),
+  def prom_series!(%Conn{} = conn, matches, opts),
     do: bang(prom_series(conn, matches, opts))
 
   # --- private: DDL assembly ---

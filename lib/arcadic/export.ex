@@ -17,6 +17,11 @@ defmodule Arcadic.Export do
   # only the leaf name (probe-verified it rejects `../etc/passwd`, `a/b`, `a'b`, `a\b`).
   @name_pattern ~r/\A[A-Za-z0-9\-_~]+\z/
 
+  def database(conn, name, opts \\ [])
+
+  def database(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc """
   Exports `conn.database` to `file://<name>` server-side. Returns `{:ok, rows}` (rows carry
   `operation`/`toUrl`/`totalRecords`/`documents`/`vertices`/`result`) or
@@ -26,16 +31,21 @@ defmodule Arcadic.Export do
   `Arcadic.Import`. Raises `ArgumentError` (value-free) on a bad name or `with:` entry.
   """
   @spec database(Conn.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, Exception.t()}
-  def database(%Conn{} = conn, name, opts \\ []) do
+  def database(%Conn{} = conn, name, opts) do
     validate_name!(name)
     Opts.validate_keys!(opts, [:with])
     with_clause = Import.build_with(Keyword.get(opts, :with, []))
     Arcadic.command(conn, "EXPORT DATABASE file://#{name}#{with_clause}", %{}, language: "sql")
   end
 
+  def database!(conn, name, opts \\ [])
+
+  def database!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Exports `conn.database`, returning the rows or raising."
   @spec database!(Conn.t(), String.t(), keyword()) :: [map()]
-  def database!(%Conn{} = conn, name, opts \\ []), do: bang(database(conn, name, opts))
+  def database!(%Conn{} = conn, name, opts), do: bang(database(conn, name, opts))
 
   defp validate_name!(name) when is_binary(name) do
     if Regex.match?(@name_pattern, name),

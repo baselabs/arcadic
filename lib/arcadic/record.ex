@@ -19,7 +19,12 @@ defmodule Arcadic.Record do
   @doc "Create a record of `type` from a property map. Returns `{:ok, rid}`."
   @spec create(Conn.t(), String.t(), map(), keyword()) ::
           {:ok, String.t()} | {:error, atom() | Exception.t()}
-  def create(%Conn{} = conn, type, props, opts \\ []) do
+  def create(conn, type, props, opts \\ [])
+
+  def create(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create(%Conn{} = conn, type, props, opts) do
     unless is_binary(type), do: raise(ArgumentError, "type must be a string")
     unless is_map(props), do: raise(ArgumentError, "props must be a map")
 
@@ -29,23 +34,38 @@ defmodule Arcadic.Record do
   @doc "Look up a record by `rid`. Returns `{:ok, map}` (with `@rid`/`@type`), or `{:ok, nil}` if absent."
   @spec lookup(Conn.t(), String.t(), keyword()) ::
           {:ok, map() | nil} | {:error, atom() | Exception.t()}
-  def lookup(%Conn{} = conn, rid, opts \\ []) do
+  def lookup(conn, rid, opts \\ [])
+
+  def lookup(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def lookup(%Conn{} = conn, rid, opts) do
     unless is_binary(rid), do: raise(ArgumentError, "rid must be a string")
     call(conn, :lookup_record, [conn, rid, opts], :lookup)
   end
 
+  def update(conn, rid, props, opts \\ [])
+
+  def update(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Update a record by `rid`. Merges `props` (partial); `replace: true` replaces the record. Returns `:ok`."
   @spec update(Conn.t(), String.t(), map(), keyword()) :: :ok | {:error, atom() | Exception.t()}
-  def update(%Conn{} = conn, rid, props, opts \\ []) do
+  def update(%Conn{} = conn, rid, props, opts) do
     unless is_binary(rid), do: raise(ArgumentError, "rid must be a string")
     unless is_map(props), do: raise(ArgumentError, "props must be a map")
 
     call(conn, :update_record, [conn, rid, props, opts], :update)
   end
 
+  def delete(conn, rid, opts \\ [])
+
+  def delete(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Delete a record by `rid`. Returns `:ok`."
   @spec delete(Conn.t(), String.t(), keyword()) :: :ok | {:error, atom() | Exception.t()}
-  def delete(%Conn{} = conn, rid, opts \\ []) do
+  def delete(%Conn{} = conn, rid, opts) do
     unless is_binary(rid), do: raise(ArgumentError, "rid must be a string")
     call(conn, :delete_record, [conn, rid, opts], :delete)
   end

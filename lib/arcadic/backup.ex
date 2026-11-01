@@ -17,9 +17,14 @@ defmodule Arcadic.Backup do
   """
   alias Arcadic.{Admin, Conn, Identifier, Opts}
 
+  def backup(conn, opts \\ [])
+
+  def backup(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Back up `conn.database`. `:to '<url>'` overrides the server's default backup directory."
   @spec backup(Conn.t(), keyword()) :: {:ok, map()} | {:error, atom() | Exception.t()}
-  def backup(%Conn{} = conn, opts \\ []) do
+  def backup(%Conn{} = conn, opts) do
     Opts.validate_keys!(opts, [:to])
 
     with :ok <- valid_target(opts[:to]) do
@@ -33,6 +38,9 @@ defmodule Arcadic.Backup do
     with {:ok, rows} <- Admin.sql(conn, statement), do: {:ok, List.first(rows, %{})}
   end
 
+  def list(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "List backups for `conn.database` (`list backups <db>`)."
   @spec list(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
   def list(%Conn{} = conn),
@@ -41,16 +49,32 @@ defmodule Arcadic.Backup do
   @doc "Restore a database `name` from a backup `url` (`restore database <name> <url>`). Validates both."
   @spec restore(Conn.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, atom() | Exception.t()}
+  def restore(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def restore(%Conn{} = conn, name, url) do
     with :ok <- Identifier.validate(name), :ok <- valid_url(url) do
       Admin.span(:restore, fn -> Admin.command(conn, "restore database #{name} #{url}") end)
     end
   end
 
+  def backup!(conn, opts \\ [])
+
+  def backup!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec backup!(Conn.t(), keyword()) :: map()
-  def backup!(%Conn{} = conn, opts \\ []), do: bang(backup(conn, opts))
+  def backup!(%Conn{} = conn, opts), do: bang(backup(conn, opts))
+
+  def list!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec list!(Conn.t()) :: map()
   def list!(%Conn{} = conn), do: bang(list(conn))
+
+  def restore!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec restore!(Conn.t(), String.t(), String.t()) :: map()
   def restore!(%Conn{} = conn, name, url), do: bang(restore(conn, name, url))
 

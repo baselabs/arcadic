@@ -32,6 +32,9 @@ defmodule Arcadic.Transaction do
   # (multiple clauses + a per-clause default is a compile warning → gate failure).
   def transaction(conn, fun, opts \\ [])
 
+  def transaction(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def transaction(%Conn{session_id: sid}, _fun, _opts) when is_binary(sid) do
     raise ArgumentError, "nested transactions are not supported (no HTTP savepoint contract)"
   end
@@ -217,6 +220,9 @@ defmodule Arcadic.Transaction do
   defp reason_tag({:ok, _}), do: :commit
   defp reason_tag({:error, _}), do: :rollback
 
+  def rollback(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Abort the current transaction with `reason`; the enclosing `transaction/3` returns `{:error, reason}`."
   @spec rollback(Conn.t(), term()) :: no_return()
   def rollback(%Conn{}, reason), do: throw({@rollback_throw, reason})
@@ -224,6 +230,9 @@ defmodule Arcadic.Transaction do
   @doc "Begin a session; returns a session-scoped conn."
   @spec begin(Conn.t(), keyword()) :: {:ok, Conn.t()} | {:error, Error.t() | TransportError.t()}
   def begin(conn, opts \\ [])
+
+  def begin(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   # A conn already carrying a session must not open a nested one (mirrors the
   # transaction/3 nested guard; low-level begin/2 returns a tagged error).
@@ -236,12 +245,18 @@ defmodule Arcadic.Transaction do
          do: {:ok, %{conn | session_id: session_id}}
   end
 
+  def commit(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Commit a session-scoped conn."
   @spec commit(Conn.t()) :: :ok | {:error, Error.t() | TransportError.t()}
   def commit(%Conn{session_id: nil}),
     do: {:error, %Error{reason: :transaction_error, message: "no active session"}}
 
   def commit(%Conn{} = conn), do: conn.transport.commit(conn)
+
+  def rollback(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Roll back a session-scoped conn."
   @spec rollback(Conn.t()) :: :ok | {:error, Error.t() | TransportError.t()}

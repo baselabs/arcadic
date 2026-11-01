@@ -39,7 +39,12 @@ defmodule Arcadic.FullText do
   """
   @spec create_index(Conn.t(), String.t(), String.t() | [String.t()], keyword()) ::
           :ok | {:error, atom() | Exception.t()}
-  def create_index(%Conn{} = conn, type, property_or_properties, opts \\ []) do
+  def create_index(conn, type, property_or_properties, opts \\ [])
+
+  def create_index(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def create_index(%Conn{} = conn, type, property_or_properties, opts) do
     Opts.validate_keys!(opts, @create_opts)
     require_props!(property_or_properties)
 
@@ -51,14 +56,22 @@ defmodule Arcadic.FullText do
     end
   end
 
+  def create_index!(conn, type, property_or_properties, opts \\ [])
+
+  def create_index!(conn, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Creates a FULL_TEXT index, raising on error."
   @spec create_index!(Conn.t(), String.t(), String.t() | [String.t()], keyword()) :: :ok
-  def create_index!(%Conn{} = conn, type, property_or_properties, opts \\ []),
+  def create_index!(%Conn{} = conn, type, property_or_properties, opts),
     do: bang(create_index(conn, type, property_or_properties, opts))
 
   @doc "Drops a FULL_TEXT index (idempotent — `IF EXISTS`)."
   @spec drop_index(Conn.t(), String.t(), String.t() | [String.t()]) ::
           :ok | {:error, atom() | Exception.t()}
+  def drop_index(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def drop_index(%Conn{} = conn, type, property_or_properties) do
     require_props!(property_or_properties)
 
@@ -66,6 +79,9 @@ defmodule Arcadic.FullText do
       command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
     end
   end
+
+  def drop_index!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drops a FULL_TEXT index, raising on error."
   @spec drop_index!(Conn.t(), String.t(), String.t() | [String.t()]) :: :ok
@@ -79,7 +95,12 @@ defmodule Arcadic.FullText do
   """
   @spec search(Conn.t(), String.t(), String.t() | [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
-  def search(%Conn{} = conn, type, property_or_properties, query, opts \\ []) do
+  def search(conn, type, property_or_properties, query, opts \\ [])
+
+  def search(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def search(%Conn{} = conn, type, property_or_properties, query, opts) do
     unless is_binary(query), do: raise(ArgumentError, "query must be a string")
     Opts.validate_keys!(opts, @search_opts)
     require_props!(property_or_properties)
@@ -92,9 +113,14 @@ defmodule Arcadic.FullText do
     end
   end
 
+  def search!(conn, type, property_or_properties, query, opts \\ [])
+
+  def search!(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Full-text `search`, returning rows or raising."
   @spec search!(Conn.t(), String.t(), String.t() | [String.t()], String.t(), keyword()) :: [map()]
-  def search!(%Conn{} = conn, type, property_or_properties, query, opts \\ []),
+  def search!(%Conn{} = conn, type, property_or_properties, query, opts),
     do: bang(search(conn, type, property_or_properties, query, opts))
 
   @doc """
@@ -106,6 +132,9 @@ defmodule Arcadic.FullText do
   @spec search_fields(Conn.t(), String.t(), [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
   def search_fields(conn, type, properties, query, opts \\ [])
+
+  def search_fields(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   def search_fields(%Conn{} = conn, type, properties, query, opts) when is_list(properties) do
     Opts.validate_keys!(opts, @search_opts)
@@ -127,9 +156,14 @@ defmodule Arcadic.FullText do
     raise ArgumentError, "properties must be a list of property names"
   end
 
+  def search_fields!(conn, type, properties, query, opts \\ [])
+
+  def search_fields!(conn, _, _, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Full-text `search_fields`, returning rows or raising."
   @spec search_fields!(Conn.t(), String.t(), [String.t()], String.t(), keyword()) :: [map()]
-  def search_fields!(%Conn{} = conn, type, properties, query, opts \\ []),
+  def search_fields!(%Conn{} = conn, type, properties, query, opts),
     do: bang(search_fields(conn, type, properties, query, opts))
 
   @doc "Builds the FULL_TEXT index reference `\"Type[p1,p2]\"`, validating every identifier."

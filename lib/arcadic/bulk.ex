@@ -56,7 +56,12 @@ defmodule Arcadic.Bulk do
              id_mapping: %{optional(String.t()) => String.t()}
            }}
           | {:error, :invalid_record | atom() | Exception.t()}
-  def ingest(%Conn{} = conn, records, opts \\ []) do
+  def ingest(conn, records, opts \\ [])
+
+  def ingest(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
+  def ingest(%Conn{} = conn, records, opts) do
     # Value-free list-ness guard BEFORE any other work: a bare `when is_list(records)` head-guard
     # has no total fallback, so a non-list `records` (e.g. a single map) matches no clause and the
     # FunctionClauseError blame ECHOES the record verbatim (Rule 3 — the moduledoc marks records PII).
@@ -75,9 +80,14 @@ defmodule Arcadic.Bulk do
     end
   end
 
+  def ingest!(conn, records, opts \\ [])
+
+  def ingest!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Bulk-create `records`, returning the counts map or raising."
   @spec ingest!(Conn.t(), [map()], keyword()) :: map()
-  def ingest!(%Conn{} = conn, records, opts \\ []) do
+  def ingest!(%Conn{} = conn, records, opts) do
     case ingest(conn, records, opts) do
       {:ok, counts} -> counts
       {:error, %{__exception__: true} = e} -> raise e

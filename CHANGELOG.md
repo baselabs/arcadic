@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Library-wide conn-guard (the routed S9 finding, resolved).** Every public
+  function taking an `Arcadic.Conn` as its first positional argument (234 across
+  `Arcadic`, the facade modules, the three transports, and `Conn`'s own
+  `with_*/2`) plus the two `Exception.message/1` callbacks now carries a
+  value-free guard clause: a wrong-typed first argument raises
+  `ArgumentError("expected an Arcadic.Conn as the first argument")` instead of
+  `FunctionClauseError`, whose blame echoes the caller's arguments (the Rule-3
+  value-echo class — a caller programming slip could surface its own data in a
+  crash report). Defaulted multi-clause functions gained the canonical defaults
+  header. A new reflection-driven probe test derives the guarded surface from
+  the source AST and drives a sentinel through every function — a future facade
+  added without a guard fails the suite (tamper-proven red-capable).
 - Dependency lock refreshed: bandit 1.14.1 closes the 2026-11 advisory batch — 10 HIGH
   (CVE-2026-111101, -114213, -113436, -110499, -111103, -115269, -108525, -116078,
   -109584, -108529) and 2 MEDIUM (CVE-2026-114216, -110314) — and plug_crypto 2.2.1

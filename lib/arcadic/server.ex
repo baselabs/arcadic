@@ -9,6 +9,9 @@ defmodule Arcadic.Server do
 
   alias Arcadic.{Admin, Conn, Identifier, Opts}
 
+  def create_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Create a database. Validates `name`."
   @spec create_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def create_database(%Conn{} = conn, name),
@@ -19,9 +22,15 @@ defmodule Arcadic.Server do
         end)
       end)
 
+  def create_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Create a database, raising on error."
   @spec create_database!(Conn.t(), String.t()) :: :ok
   def create_database!(%Conn{} = conn, name), do: bang(create_database(conn, name))
+
+  def drop_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Drop a database. Validates `name`."
   @spec drop_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -33,6 +42,9 @@ defmodule Arcadic.Server do
         end)
       end)
 
+  def drop_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Drop a database, raising on error."
   @spec drop_database!(Conn.t(), String.t()) :: :ok
   def drop_database!(%Conn{} = conn, name), do: bang(drop_database(conn, name))
@@ -40,20 +52,32 @@ defmodule Arcadic.Server do
   @doc "Whether a database exists."
   @spec database_exists?(Conn.t(), String.t()) ::
           {:ok, boolean()} | {:error, atom() | Exception.t()}
+  def database_exists?(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def database_exists?(%Conn{} = conn, name),
     do:
       with_valid(name, fn ->
         Admin.span(:database_exists?, fn -> conn.transport.database_exists?(conn, name) end)
       end)
 
+  def list_databases(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "List all databases."
   @spec list_databases(Conn.t()) :: {:ok, [String.t()]} | {:error, Exception.t()}
   def list_databases(%Conn{} = conn),
     do: Admin.span(:list_databases, fn -> conn.transport.list_databases(conn) end)
 
+  def ready?(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Server readiness."
   @spec ready?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
   def ready?(%Conn{} = conn), do: Admin.span(:ready?, fn -> conn.transport.ready?(conn) end)
+
+  def database_info(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Database-level info for `conn.database` — `%{database, type, records, classes, size_bytes}`. Fields a
@@ -64,15 +88,23 @@ defmodule Arcadic.Server do
   def database_info(%Conn{} = conn),
     do: Admin.span(:database_info, fn -> Admin.call(conn, :database_info) end)
 
+  def info(conn, opts \\ [])
+
+  def info(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @modes ~w(basic default cluster)a
 
   @doc "Server info map. `:mode` ∈ #{inspect(@modes)} (default `:basic`); `:default`/`:cluster` add metrics/settings."
   @spec info(Conn.t(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def info(%Conn{} = conn, opts \\ []) do
+  def info(%Conn{} = conn, opts) do
     mode = Keyword.get(opts, :mode, :basic)
     unless mode in @modes, do: raise(ArgumentError, "mode must be one of #{inspect(@modes)}")
     Admin.span(:info, fn -> Admin.get(conn, "/api/v1/server?mode=#{mode}") end)
   end
+
+  def metrics(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "The server metrics map (`info(conn, mode: :default)[\"metrics\"]`)."
   @spec metrics(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
@@ -80,10 +112,16 @@ defmodule Arcadic.Server do
     with {:ok, info} <- info(conn, mode: :default), do: {:ok, Map.get(info, "metrics", %{})}
   end
 
+  def health?(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Liveness probe (`GET /api/v1/health` → 204)."
   @spec health?(Conn.t()) :: {:ok, boolean()} | {:error, Exception.t()}
   def health?(%Conn{} = conn),
     do: Admin.span(:health?, fn -> Admin.call(conn, :health?) end)
+
+  def events(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc ~S|Server event log map (`%{"events" => [...], "files" => [...]}`).|
   @spec events(Conn.t()) :: {:ok, map()} | {:error, Exception.t()}
@@ -98,6 +136,9 @@ defmodule Arcadic.Server do
   """
   @spec set_server_setting(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
+  def set_server_setting(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def set_server_setting(%Conn{} = conn, key, value) do
     with :ok <- valid_setting_key(key), :ok <- valid_setting_value(value) do
       Admin.span(:set_server_setting, fn ->
@@ -109,6 +150,9 @@ defmodule Arcadic.Server do
   @doc "Set a setting on `conn.database` (`` set database setting <db> `k` `v` ``). Guards as `set_server_setting/3`."
   @spec set_database_setting(Conn.t(), String.t(), String.t()) ::
           :ok | {:error, atom() | Exception.t()}
+  def set_database_setting(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   def set_database_setting(%Conn{} = conn, key, value) do
     with :ok <- valid_setting_key(key), :ok <- valid_setting_value(value) do
       Admin.span(:set_database_setting, fn ->
@@ -118,6 +162,9 @@ defmodule Arcadic.Server do
       end)
     end
   end
+
+  def open_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc "Open a closed database on the server. Validates `name`."
   @spec open_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
@@ -129,6 +176,9 @@ defmodule Arcadic.Server do
         end)
       end)
 
+  def close_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Close an open database on the server. Validates `name`."
   @spec close_database(Conn.t(), String.t()) :: :ok | {:error, atom() | Exception.t()}
   def close_database(%Conn{} = conn, name),
@@ -138,6 +188,9 @@ defmodule Arcadic.Server do
           Admin.to_ok(Admin.command(conn, "close database #{name}"))
         end)
       end)
+
+  def align_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Cluster-realign a database. **CLUSTER-ONLY** — a single-server node returns a server error
@@ -151,9 +204,14 @@ defmodule Arcadic.Server do
         Admin.span(:align_database, fn -> Admin.command(conn, "align database #{name}") end)
       end)
 
+  def check_database(conn, opts \\ [])
+
+  def check_database(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @doc "Run `CHECK DATABASE [FIX]` on `conn.database`. `fix: true` repairs. Returns the integrity map."
   @spec check_database(Conn.t(), keyword()) :: {:ok, map()} | {:error, Exception.t()}
-  def check_database(%Conn{} = conn, opts \\ []) do
+  def check_database(%Conn{} = conn, opts) do
     Opts.validate_keys!(opts, [:fix])
     # A truthy-but-not-true :fix (e.g. "true", 1) must not silently downgrade the REPAIR to a
     # report — reject value-free so the caller learns their option was ignored-shaped.
@@ -169,6 +227,9 @@ defmodule Arcadic.Server do
     end)
   end
 
+  def profiler(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @profiler_actions ~w(results start stop reset)a
 
   @doc "Control the server profiler. `action` ∈ #{inspect(@profiler_actions)}."
@@ -178,6 +239,9 @@ defmodule Arcadic.Server do
 
   def profiler(%Conn{} = _conn, _action),
     do: raise(ArgumentError, "profiler action must be one of #{inspect(@profiler_actions)}")
+
+  def shutdown(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @doc """
   Shut the server down (`shutdown`). **DESTRUCTIVE — halts shared infrastructure.** The server stops
@@ -189,40 +253,77 @@ defmodule Arcadic.Server do
   def shutdown(%Conn{} = conn),
     do: Admin.span(:shutdown, fn -> Admin.to_ok(Admin.command(conn, "shutdown")) end)
 
+  def info!(conn, opts \\ [])
+
+  def info!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   # Bang variants for the new admin functions (raise on error; mirror create_database!/drop_database!).
   # `health?`/`database_exists?`/`ready?` are predicates — an Elixir name cannot be `health?!`, and
   # their existing convention carries no bang, so they are excluded.
   @spec info!(Conn.t(), keyword()) :: map()
-  def info!(%Conn{} = conn, opts \\ []), do: bang(info(conn, opts))
+  def info!(%Conn{} = conn, opts), do: bang(info(conn, opts))
+
+  def metrics!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @spec metrics!(Conn.t()) :: map()
   def metrics!(%Conn{} = conn), do: bang(metrics(conn))
 
+  def events!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec events!(Conn.t()) :: map()
   def events!(%Conn{} = conn), do: bang(events(conn))
+
+  def set_server_setting!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @spec set_server_setting!(Conn.t(), String.t(), String.t()) :: :ok
   def set_server_setting!(%Conn{} = conn, key, value),
     do: bang(set_server_setting(conn, key, value))
 
+  def set_database_setting!(conn, _, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec set_database_setting!(Conn.t(), String.t(), String.t()) :: :ok
   def set_database_setting!(%Conn{} = conn, key, value),
     do: bang(set_database_setting(conn, key, value))
 
+  def open_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec open_database!(Conn.t(), String.t()) :: :ok
   def open_database!(%Conn{} = conn, name), do: bang(open_database(conn, name))
+
+  def close_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @spec close_database!(Conn.t(), String.t()) :: :ok
   def close_database!(%Conn{} = conn, name), do: bang(close_database(conn, name))
 
+  def align_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec align_database!(Conn.t(), String.t()) :: map()
   def align_database!(%Conn{} = conn, name), do: bang(align_database(conn, name))
 
+  def check_database!(conn, opts \\ [])
+
+  def check_database!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
+
   @spec check_database!(Conn.t(), keyword()) :: map()
-  def check_database!(%Conn{} = conn, opts \\ []), do: bang(check_database(conn, opts))
+  def check_database!(%Conn{} = conn, opts), do: bang(check_database(conn, opts))
+
+  def profiler!(conn, _) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @spec profiler!(Conn.t(), atom()) :: map()
   def profiler!(%Conn{} = conn, action), do: bang(profiler(conn, action))
+
+  def shutdown!(conn) when not is_struct(conn, Conn),
+    do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   @spec shutdown!(Conn.t()) :: :ok
   def shutdown!(%Conn{} = conn), do: bang(shutdown(conn))
