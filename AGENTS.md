@@ -151,3 +151,8 @@ integration lanes. Run the ones that cover your change.
   unknown tag-key filter are rejected (was fail-open); projected rows no longer carry the
   synthetic `_$$$ORDER_BY_ALIAS$$$` ordering column, so HTTP keyset streaming of a
   projection falls back to offset paging (value-free warning, same rows).
+- **26.11 renames the missing-database exception** (probed 2026-11-01 on
+  26.11.1-SNAPSHOT): a never-created database answers HTTP 404
+  `DatabaseNotFoundException` (26.10: `DatabaseNotAvailableException`; <=26.9: 500
+  `DatabaseOperationException`). All three map to `:database_not_found`; the live
+  drift-guard is `test/integration/error_mapping_test.exs`.

@@ -101,10 +101,13 @@ defmodule Arcadic.Error do
     {"ParseException", :parse_error},
     {"SecurityException", :unauthorized},
     # <=26.9 answers 500 DatabaseOperationException; the 26.10 line answers 404
-    # DatabaseNotAvailableException (live-probed on 26.10.2) — both mean the
-    # target database does not exist.
+    # DatabaseNotAvailableException (live-probed on 26.10.2); the 26.11 line
+    # renamed the class to DatabaseNotFoundException (live-probed on
+    # 26.11.1-SNAPSHOT, 2026-11-01) — all three mean the target database does
+    # not exist.
     {"DatabaseOperationException", :database_not_found},
     {"DatabaseNotAvailableException", :database_not_found},
+    {"DatabaseNotFoundException", :database_not_found},
     {"TransactionException", :transaction_error},
     {"ConcurrentModificationException", :concurrent_modification},
     {"NeedRetryException", :concurrent_modification},

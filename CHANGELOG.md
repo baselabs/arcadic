@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-11-01
+
+### Fixed
+
+- **The 26.11 line's missing-database error maps to `:database_not_found` again.**
+  26.11.1-SNAPSHOT renamed the class to `DatabaseNotFoundException` (still HTTP 404;
+  26.10 answered `DatabaseNotAvailableException`, <=26.9 `DatabaseOperationException`/500
+  — live-probed on all three lines), so a never-created database fell through to the
+  `:server_error` fallback. New live drift-guard test (`test/integration/error_mapping_test.exs`)
+  runs the mapping against the real server on every integration lane and prints the raw
+  status + class on failure, so the next upstream rename self-diagnoses.
+
 ## [1.2.2] - 2026-11-01
 
 ### Security

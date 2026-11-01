@@ -12,6 +12,8 @@ defmodule Arcadic.ErrorTest do
         # 26.10 answers a missing database 404 with this class (was 500
         # DatabaseOperationException — live-probed on 26.10.2, 2026-10-15).
         {"com.arcadedb.exception.DatabaseNotAvailableException", 404, :database_not_found},
+        # 26.11 renamed the class (404, live-probed on 26.11.1-SNAPSHOT, 2026-11-01).
+        {"com.arcadedb.exception.DatabaseNotFoundException", 404, :database_not_found},
         {"com.arcadedb.exception.TransactionException", 500, :transaction_error},
         {"com.arcadedb.exception.ConcurrentModificationException", 500, :concurrent_modification},
         {"com.arcadedb.exception.DuplicatedKeyException", 500, :duplicate_key},
