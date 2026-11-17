@@ -5,7 +5,7 @@ defmodule Arcadic.Integration.AdminShutdownTest do
 
   # A DEDICATED throwaway-container URL — NEVER ARCADIC_TEST_URL (which points at the shared,
   # protected qor-arcadedb). Run: docker run --rm -p 2481:2480 -e \
-  # JAVA_OPTS="-Darcadedb.server.rootPassword=throwaway" arcadedata/arcadedb:latest, then
+  # JAVA_OPTS="-Darcadedb.server.rootPassword=throwaway" arcadedata/arcadedb:26.11.1, then
   # ARCADIC_SHUTDOWN_TEST_URL=http://127.0.0.1:2481 ARCADIC_SHUTDOWN_TEST_PASSWORD=throwaway \
   # mix test test/integration/admin_shutdown_test.exs --only integration_shutdown
   test "shutdown/1 halts a throwaway server (success surfaces as :ok OR a transport-closed error)" do

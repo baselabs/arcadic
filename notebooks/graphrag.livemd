@@ -15,7 +15,7 @@ This notebook needs a running **ArcadeDB**. The quickest way is Docker:
 docker run -d --name arcadic-graphrag \
   -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.11.1
 ```
 
 Only the HTTP port (**2480**) is needed — every operation below (`Bulk`, `FullText`,

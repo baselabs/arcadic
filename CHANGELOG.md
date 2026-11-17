@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grpc_core to 1.1.0. grpc 1.1's new client pool is off by default, so the gRPC transport's
   behavior is unchanged. `mix audit` is clean.
 
+### Documentation
+
+- The notebooks', CONTRIBUTING's and the test setup recipes' `docker run` examples pin
+  `arcadedata/arcadedb:26.11.1`, the version CI tests against, instead of the moving `latest`.
+
 ## [1.2.3] - 2026-11-01
 
 ### Fixed

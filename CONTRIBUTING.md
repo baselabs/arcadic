@@ -6,7 +6,8 @@ Thank you for your interest in contributing to Arcadic!
 
 - **Elixir** 1.15+ and **Erlang/OTP** 26+
 - **ArcadeDB** (for integration tests) — e.g. `docker run -p 2480:2480 \
-  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" arcadedata/arcadedb:latest`
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" arcadedata/arcadedb:26.11.1`
+  (the version CI pins)
 
 ## Getting Started
 
@@ -30,7 +31,8 @@ mix test                          # Run tests (add ARCADIC_TEST_URL for the inte
 ```
 
 4. Update `CHANGELOG.md` under `[Unreleased]`.
-5. Open a Pull Request against `main`.
+5. Open a Pull Request against `main`. A maintainer lands it: CI qualifies the commit on a
+   `kci/` branch, and `main` moves only when its `qualified` check passes.
 
 ## Code Style
 

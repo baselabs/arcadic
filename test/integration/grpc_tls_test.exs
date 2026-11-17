@@ -13,7 +13,7 @@ defmodule Arcadic.Integration.GrpcTlsTest do
           -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051 \
           -Darcadedb.grpc.tls.enabled=true \
           -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key \
-          -Darcadedb.server.defaultDatabases=probe[root]" arcadedata/arcadedb:latest
+          -Darcadedb.server.defaultDatabases=probe[root]" arcadedata/arcadedb:26.11.1
 
   The `noOpenSsl` flag works around netty-tcnative's ARM64 LSE-atomics crash in current images
   (TLS then runs on JDK SSL). Run with `ARCADIC_GRPC_TLS_TEST_URL=grpcs://localhost:50252`,

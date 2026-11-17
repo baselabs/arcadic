@@ -6,7 +6,7 @@ defmodule Arcadic.Integration.BoltTest do
       docker run -d --name arcadic-bolt-probe -p 42483:2480 -p 42484:7687 \\
         -e JAVA_OPTS="-Darcadedb.server.rootPassword=<pw> \\
           -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \\
-        arcadedata/arcadedb:latest
+        arcadedata/arcadedb:26.11.1
 
   Env (this file + bolt_explain/bolt_stream): `ARCADIC_BOLT_HOST` / `ARCADIC_BOLT_PORT` /
   `ARCADIC_BOLT_HTTP_PORT` / `ARCADIC_BOLT_PASSWORD`. The B6 Bolt-streaming describe in

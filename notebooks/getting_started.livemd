@@ -15,7 +15,7 @@ docker run -d --name arcadic-quickstart \
   -p 2480:2480 -p 7687:7687 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata \
                 -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.11.1
 ```
 
 Two ports are published: **2480** (the HTTP command API — the default transport)

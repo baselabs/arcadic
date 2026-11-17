@@ -40,8 +40,8 @@ has performance bugs — different engine, different rule. Do not copy AGE's
 
 ## Verified ArcadeDB HTTP API contract
 
-Probed live against `arcadedata/arcadedb:latest`. This is the substrate; build to
-it.
+Probed live against ArcadeDB. CI pins `arcadedata/arcadedb:26.11.1`, and a daily canary
+runs the moving `latest` image. This is the substrate; build to it.
 
 - **Command:** `POST /api/v1/command/<db>` with basic auth and body
   `{"language":"cypher","command":"…","params":{…}}`. `language` also accepts
@@ -81,8 +81,17 @@ it.
 
 ## Workflow
 
-Make the change, run the tests that cover it, commit with named paths, and push to `main`.
-CI runs once on `main`; if it goes red, fix forward.
+Make the change, run the tests that cover it, and commit with named paths. Nobody pushes
+`main`. A commit lands through one CI run on `kci/<full sha>`; that workflow's final
+`qualified` job is the verdict, and `main` moves to the commit only after `qualified` succeeds.
+If it goes red, fix forward in a new commit.
+
+The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on demand
+against the moving upstream image. It never gates a landing: a red canary is upstream drift
+to fix before the next deliberate ArcadeDB pin bump.
+
+Runtime versions live only in `.tool-versions`; `scripts/toolchain.sh` reads it for every
+workflow, so a toolchain bump is a one-file change.
 
 ```bash
 mix deps.get
@@ -91,10 +100,14 @@ mix test
 ```
 
 CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
-`mix audit`, `mix test`, `mix dialyzer` (all but `audit` bundled as `mix quality`), plus the live
-integration lanes. Run the ones that cover your change.
+`mix audit`, `mix test`, `mix dialyzer` (all but `audit` bundled as `mix quality`) and
+`mix docs --warnings-as-errors` on the default toolchain; compile and unit tests on the
+supported floor and newest Elixir/OTP; and the live integration lanes. Run the ones that cover
+your change.
 
-- Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
+- Publishing to Hex goes through `.github/workflows/publish.yml`, dispatched by the owner from
+  `main`. Publishing, deploying and pushes to mirrors always need the owner's approval for that
+  action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
   change that finds it.
 - Update `CHANGELOG.md` under `[Unreleased]` when behavior, a dependency or a contract changes;
@@ -109,7 +122,7 @@ integration lanes. Run the ones that cover your change.
   require a live server. Gate them on an env var (`ARCADIC_TEST_URL`); skip when
   unset so the pure-unit suite runs anywhere. Contributors without a server can start one with
   `docker run -p 2480:2480 -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" \
-  arcadedata/arcadedb:latest`. Maintainer machines use the shared server; its values sit
+  arcadedata/arcadedb:26.11.1`. Maintainer machines use the shared server; its values sit
   in the gitignored `.env` under the names the suites read (`ARCADIC_TEST_*`,
   `ARCADIC_TS_TEST_*`, `ARCADIC_BOLT_*`, `ARCADIC_GRPC_TEST_*`); load them with
   `set -a; . ./.env; set +a` before a lane. The TLS and admin-shutdown suites

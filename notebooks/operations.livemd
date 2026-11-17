@@ -15,7 +15,7 @@ docker run -d --name arcadic-operations \
   -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata \
                 -Darcadedb.server.restoreImportAllowLocalUrls=true" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.11.1
 ```
 
 Only the HTTP port (**2480**) is needed — every operation below, including the
