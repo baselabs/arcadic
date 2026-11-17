@@ -25,7 +25,7 @@ jobs:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -38,27 +38,32 @@ jobs:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
 
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+      # The vendor and the exact version and build both come from .tool-versions.
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          distribution: temurin
           java-version-file: .tool-versions
 
       - name: Verify installed Java
         env:
           EXPECTED_JAVA: ${{ steps.versions.outputs.java }}
         run: |
+          case "$EXPECTED_JAVA" in
+            temurin-*) expected_vendor="Eclipse Adoptium" ;;
+            *) echo "::error::Java: no vendor check for $EXPECTED_JAVA" >&2; exit 1 ;;
+          esac
           expected=${EXPECTED_JAVA#temurin-}
+          vendor=$(sed -n 's/^IMPLEMENTOR="\(.*\)"$/\1/p' "$JAVA_HOME/release")
           actual=$(sed -n 's/^JAVA_RUNTIME_VERSION="\(.*\)"$/\1/p' "$JAVA_HOME/release")
           # Temurin appends its LTS designation after the exact version and build.
           actual=${actual%-LTS}
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::Java: expected $expected, installed $actual" >&2
+          if [ "$vendor" != "$expected_vendor" ] || [ "$actual" != "$expected" ]; then
+            echo "::error::Java: expected $expected_vendor $expected, installed $vendor $actual" >&2
             exit 1
           fi
-          echo "Java $actual"
+          echo "Java $vendor $actual"
 
       - name: Restore deps cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: deps-${{ runner.os }}-integration-elixir${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}
@@ -219,7 +224,7 @@ jobs:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -233,7 +238,7 @@ jobs:
           otp-version: ${{ steps.versions.outputs.otp }}
 
       - name: Restore deps cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: deps-${{ runner.os }}-integration-elixir${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}

@@ -32,7 +32,7 @@ jobs:
       otp: ${{ steps.versions.outputs.otp }}
       beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Read defaults and compatibility lanes
@@ -46,7 +46,7 @@ jobs:
     # 2x 4.5 min, run 44120279901
     timeout-minutes: 9
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -56,13 +56,13 @@ jobs:
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
       - name: Restore deps cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: deps-${{ runner.os }}-elixir${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
 
       - name: Restore PLT cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
           key: plt-${{ runner.os }}-elixir${{ needs.toolchain.outputs.elixir }}-otp${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
@@ -97,7 +97,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.toolchain.outputs.beam_lanes) }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -107,7 +107,7 @@ jobs:
           otp-version: ${{ matrix.otp }}
 
       - name: Restore deps cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps
           key: deps-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
