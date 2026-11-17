@@ -105,6 +105,8 @@ CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mi
 supported floor and newest Elixir/OTP; the live integration lanes; and every notebook the
 package ships, run top to bottom against this checkout and a live server by
 `elixir scripts/run_notebook.exs NOTEBOOK.livemd`. Run the ones that cover your change.
+Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does not match
+`mix.exs` fails CI: commit lock changes with the change that causes them.
 
 - Publishing to Hex goes through `.github/workflows/publish.yml`, dispatched by the owner from
   `main`. Publishing, deploying and pushes to mirrors always need the owner's approval for that

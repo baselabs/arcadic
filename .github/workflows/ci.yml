@@ -61,7 +61,7 @@ jobs:
           path: priv/plts
           key: plt-${{ runner.os }}-elixir${{ needs.toolchain.outputs.elixir }}-otp${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
 
       # Formatter output is Elixir-version-dependent; the default toolchain's is canonical.
       - run: mix format --check-formatted
@@ -103,7 +103,7 @@ jobs:
           path: deps
           key: deps-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
 
       - run: mix compile --warnings-as-errors
 

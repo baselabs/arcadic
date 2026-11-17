@@ -31,7 +31,7 @@ jobs:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix docs --warnings-as-errors
       - run: mix hex.publish --yes
         env:

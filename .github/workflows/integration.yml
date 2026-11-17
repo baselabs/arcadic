@@ -46,7 +46,7 @@ jobs:
           path: deps
           key: deps-${{ runner.os }}-integration-elixir${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
 
       - name: Generate throwaway TLS material
         run: test/support/tls/gen-grpc-certs.sh /tmp/arcadic-tls
@@ -218,7 +218,7 @@ jobs:
           path: deps
           key: deps-${{ runner.os }}-integration-elixir${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
 
       - name: List the notebooks the package ships
         run: |
