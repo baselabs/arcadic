@@ -47,8 +47,8 @@ defmodule Arcadic.QueryStreamTest do
       {:ok, expected_dur} = Duration.format_param(dur)
       {:ok, expected_point} = Point.format_param(point)
 
-      # The formatted value must differ from the raw struct, else this asserts nothing.
-      refute expected_dur == dur
+      # The formatted value must differ from the raw struct, else this asserts nothing. A
+      # Duration formats to a string, which the compiler's type checker already proves.
       refute expected_point == point
 
       assert Bolt.format_params(%{"d" => dur, "p" => point}) == %{

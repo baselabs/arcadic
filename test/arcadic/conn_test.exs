@@ -316,7 +316,7 @@ defmodule Arcadic.ConnTest do
 
     test "non-keyword connect opts are rejected value-free" do
       assert_raise ArgumentError, ~r/keyword list/, fn ->
-        Conn.new("http://a.invalid", "db", %{auth: {"root", "x"}})
+        Conn.new("http://a.invalid", "db", Arcadic.Test.Opaque.value(%{auth: {"root", "x"}}))
       end
     end
   end

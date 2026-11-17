@@ -21,7 +21,10 @@ defmodule Arcadic.OptsTest do
 
   test "rejects a non-keyword opts value-free, never echoing the offending entry (Rule 3)" do
     # a map
-    err_map = assert_raise ArgumentError, fn -> Opts.validate_keys!(%{type: "x"}, [:type]) end
+    err_map =
+      assert_raise ArgumentError, fn ->
+        Opts.validate_keys!(Arcadic.Test.Opaque.value(%{type: "x"}), [:type])
+      end
     assert err_map.message == "opts must be a keyword list"
 
     # an improper list whose bare entry carries a sentinel — Keyword.keys/1 would echo it

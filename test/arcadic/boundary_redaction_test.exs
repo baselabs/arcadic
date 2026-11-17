@@ -51,9 +51,9 @@ defmodule Arcadic.BoundaryRedactionTest do
     end
 
     test "FullText.search rejects a non-binary query value-free" do
-      # Dynamic delivery keeps the atom's type out of the call site (a literal would trip the
-      # success-typing warning; the guard must still catch it at runtime).
-      query = Map.get(%{}, :missing, :not_a_query)
+      # An opaque value keeps the atom's type out of the call site (a literal would trip the
+      # type checker; the guard must still catch it at runtime).
+      query = Arcadic.Test.Opaque.value(:not_a_query)
 
       err =
         assert_raise ArgumentError, fn ->
