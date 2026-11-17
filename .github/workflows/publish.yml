@@ -1,0 +1,37 @@
+name: Publish to Hex.pm
+
+# Dispatched by an owner from the default branch once the version commit has landed; the
+# v<version> tag goes on that same commit. It starts no qualification job.
+on:
+  workflow_dispatch:
+
+env:
+  MIX_ENV: dev
+
+jobs:
+  publish:
+    name: Publish
+    # The Hex key lives only in the protected publish environment, and only an
+    # owner's dispatch from the default branch, and re-run if at all, may use it.
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    environment: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the default toolchain
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
+
+      - run: mix deps.get
+      - run: mix docs --warnings-as-errors
+      - run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
