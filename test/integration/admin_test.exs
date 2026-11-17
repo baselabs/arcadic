@@ -38,7 +38,7 @@ defmodule Arcadic.Integration.AdminTest do
       {:ok, _} = ok ->
         ok
 
-      {:error, %Arcadic.TransportError{reason: :timeout}} = err when attempts > 1 ->
+      {:error, %Arcadic.TransportError{reason: :timeout}} when attempts > 1 ->
         Process.sleep(1_000)
         eventually(fun, attempts - 1)
 

@@ -147,7 +147,7 @@ defmodule Arcadic.MixProject do
         "format --check-formatted",
         "compile --warnings-as-errors",
         "credo --strict",
-        "test",
+        "test --warnings-as-errors",
         "dialyzer"
       ],
       # `mix deps.audit` is MixAudit's own CVE-scan task — do NOT alias it (an alias of

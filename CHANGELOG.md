@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI verifies exact runtime versions from `.tool-versions`, checks package contents and
   metadata before publication, and uses measured job timeouts. Publication refuses a
   non-default branch or an already tagged or published version.
+- CI and `mix quality` run every test command with `--warnings-as-errors`, so a warning
+  in a test file fails the build. Three test-file warnings it would have caught are fixed.
 - CI actions run on the Node.js 24 runtime: `actions/checkout` v7, `actions/cache` v6
   and `actions/setup-java` v6, which reads both the Java vendor and the exact version and
   build from `.tool-versions`.

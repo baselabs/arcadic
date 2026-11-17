@@ -98,21 +98,21 @@ jobs:
             | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
 
       - name: HTTP-family suites (integration, ws, ts, reliability)
-        run: mix test --only integration
+        run: mix test --warnings-as-errors --only integration
         env:
           ARCADIC_TEST_URL: http://localhost:2480
           ARCADIC_TEST_PASSWORD: ${{ env.PW }}
-      - run: mix test --only integration_ws
+      - run: mix test --warnings-as-errors --only integration_ws
         env:
           ARCADIC_TEST_URL: http://localhost:2480
           ARCADIC_TEST_PASSWORD: ${{ env.PW }}
-      - run: mix test --only integration_ts
+      - run: mix test --warnings-as-errors --only integration_ts
         env:
           ARCADIC_TS_TEST_URL: http://localhost:2480
           ARCADIC_TS_TEST_PASSWORD: ${{ env.PW }}
 
       - name: Bolt suites (both env families)
-        run: mix test --only integration_bolt
+        run: mix test --warnings-as-errors --only integration_bolt
         env:
           ARCADIC_BOLT_HOST: localhost
           ARCADIC_BOLT_PORT: "7687"
@@ -124,7 +124,7 @@ jobs:
           ARCADIC_TEST_PASSWORD: ${{ env.PW }}
 
       - name: gRPC suite
-        run: mix test --only integration_grpc
+        run: mix test --warnings-as-errors --only integration_grpc
         env:
           ARCADIC_GRPC_TEST_URL: grpc://localhost:${{ env.GRPC_PORT }}
           ARCADIC_GRPC_TEST_HTTP_URL: http://localhost:2480
@@ -160,7 +160,7 @@ jobs:
           docker logs arcadic-grpc-tls && exit 1
 
       - name: gRPC TLS suite (fail-closed)
-        run: mix test --only integration_grpc_tls
+        run: mix test --warnings-as-errors --only integration_grpc_tls
         env:
           ARCADIC_GRPC_TLS_TEST_URL: grpcs://localhost:${{ env.GRPC_TLS_PORT }}
           ARCADIC_GRPC_TLS_TEST_CACERT: /tmp/arcadic-tls/ca.crt
@@ -189,7 +189,7 @@ jobs:
           docker logs arcadic-bolt-tls && exit 1
 
       - name: Bolt TLS suite (fail-closed)
-        run: mix test --only integration_bolt_tls
+        run: mix test --warnings-as-errors --only integration_bolt_tls
         env:
           ARCADIC_TEST_BOLT_TLS_HOST: localhost
           ARCADIC_TEST_BOLT_TLS_PORT: "7688"
@@ -206,7 +206,7 @@ jobs:
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2482/api/v1/ready)" = "204" ] && break
             sleep 2
           done
-          mix test --only integration_shutdown
+          mix test --warnings-as-errors --only integration_shutdown
         env:
           ARCADIC_SHUTDOWN_TEST_URL: http://localhost:2482
           ARCADIC_SHUTDOWN_TEST_PASSWORD: ${{ env.PW }}

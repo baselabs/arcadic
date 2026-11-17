@@ -49,18 +49,6 @@ defmodule Arcadic.ConnGuardProbeTest do
     end
   end
 
-  defp collect({name, _, args}, module, acc) when is_atom(name) and is_list(args) do
-    args = Enum.map(args, &strip_default/1)
-
-    if args != [] and conn_first?(hd(args)) do
-      [{module, name, length(args)} | acc]
-    else
-      acc
-    end
-  end
-
-  defp collect(_, _module, acc), do: acc
-
   defp walk({:defp, _, _}, _module, acc), do: acc
 
   defp walk(node, module, acc) when is_list(node) do
@@ -72,6 +60,18 @@ defmodule Arcadic.ConnGuardProbeTest do
   end
 
   defp walk(_, _, acc), do: acc
+
+  defp collect({name, _, args}, module, acc) when is_atom(name) and is_list(args) do
+    args = Enum.map(args, &strip_default/1)
+
+    if args != [] and conn_first?(hd(args)) do
+      [{module, name, length(args)} | acc]
+    else
+      acc
+    end
+  end
+
+  defp collect(_, _module, acc), do: acc
 
   defp qualify(nil, {:__aliases__, _, parts}), do: Module.concat(parts)
   defp qualify(parent, {:__aliases__, _, parts}), do: Module.concat(parent, parts)

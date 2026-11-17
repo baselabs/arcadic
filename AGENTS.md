@@ -100,8 +100,8 @@ mix test
 ```
 
 CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
-`mix audit`, `mix test`, `mix dialyzer` (all but `audit` bundled as `mix quality`) and
-`mix docs --warnings-as-errors` on the default toolchain; compile and unit tests on the
+`mix audit`, `mix test --warnings-as-errors`, `mix dialyzer` (all but `audit` bundled as
+`mix quality`) and `mix docs --warnings-as-errors` on the default toolchain; compile and unit tests on the
 supported floor and newest Elixir/OTP; the live integration lanes; and every notebook the
 package ships, run top to bottom against this checkout and a live server by
 `elixir scripts/run_notebook.exs NOTEBOOK.livemd`. Run the ones that cover your change.

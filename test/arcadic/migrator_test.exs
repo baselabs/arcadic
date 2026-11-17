@@ -331,16 +331,6 @@ defmodule Arcadic.MigratorTest do
     end
   end
 
-  defp collect_cmds(n) do
-    for _ <- 1..n do
-      receive do
-        {:cmd, c, p} -> {:cmd, c, p}
-      after
-        0 -> :missing
-      end
-    end
-  end
-
   describe "status/2" do
     test "reports up/down per version" do
       stub([%{"version" => 1, "status" => "done"}])

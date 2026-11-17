@@ -78,7 +78,7 @@ jobs:
 
       - run: mix audit
 
-      - run: mix test
+      - run: mix test --warnings-as-errors
 
       - run: mix dialyzer
 
@@ -120,7 +120,7 @@ jobs:
 
       - run: mix audit
 
-      - run: mix test
+      - run: mix test --warnings-as-errors
 
   integration:
     name: live integration (ArcadeDB 26.11.1)
