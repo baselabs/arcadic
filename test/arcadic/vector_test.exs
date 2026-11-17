@@ -571,7 +571,7 @@ defmodule Arcadic.VectorTest do
       assert_received {:body, %{"command" => cmd, "params" => params}}
       assert cmd =~ "vector.neighbors('Doc[embedding]', :vec0, :k0)"
       assert cmd =~ "vector.sparseNeighbors('Doc[toks,wts]', :toks1, :wts1, :k1)"
-      assert cmd =~ "SEARCH_INDEX('Doc[body]', :q2, {metadata:true}) = true LIMIT :k2"
+      assert cmd =~ "SEARCH_INDEX('Doc[body]', :q2) = true LIMIT :k2"
       assert params["vec0"] == [1.0, 0.0]
       assert params["toks1"] == [1, 2]
       assert params["q2"] == "graph"

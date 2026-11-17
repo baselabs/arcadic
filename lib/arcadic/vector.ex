@@ -477,7 +477,7 @@ defmodule Arcadic.Vector do
       k = require_pos_int!(k, "k")
 
       sub =
-        "(SELECT FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q#{i}, {metadata:true}) = true" <>
+        "(SELECT FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q#{i}) = true" <>
           "#{rid_literals} LIMIT :k#{i})"
 
       {:ok, sub, %{"q#{i}" => query, "k#{i}" => k}}

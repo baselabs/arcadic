@@ -1,7 +1,7 @@
 defmodule Arcadic.MixProject do
   use Mix.Project
 
-  @version "1.2.3"
+  @version "1.2.4"
   @source_url "https://github.com/baselabs/arcadic"
 
   def project do
@@ -48,13 +48,15 @@ defmodule Arcadic.MixProject do
       {:req, "~> 0.7"},
       # CVE floors for transitive runtime deps (a library's mix.lock does not govern
       # consumers' resolution): mint >= 1.11 closes CVE-2026-82728/94194 (via req/finch),
-      # protobuf >= 0.17.1 closes CVE-2026-104635 (the gRPC transport's codec).
+      # protobuf >= 0.17.1 closes CVE-2026-104635 (the gRPC transport's codec), grpc >= 1.1
+      # pulls grpc_core >= 1.1.0, which closes EEF-CVE-2026-121808 (Erlpack codec memory
+      # exhaustion).
       {:mint, "~> 1.11"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:boltx, "~> 0.0.6", optional: true},
       {:mint_web_socket, "~> 1.0", optional: true},
-      {:grpc, "~> 1.0", optional: true},
+      {:grpc, "~> 1.1", optional: true},
       {:protobuf, "~> 0.17.1", optional: true},
 
       # Dev/Test

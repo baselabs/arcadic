@@ -90,8 +90,8 @@ defmodule Arcadic.FullText do
 
   @doc """
   Full-text search via `SEARCH_INDEX('Type[property]', :q)`. `query` binds as `:q`. `opts`:
-  `:limit` (pos_integer → `LIMIT :k`), `:with_score` (project the BM25 `$score` and use the
-  relevance-ranked `{metadata:true}` form). Returns whole records (`+ "score"` when `:with_score`).
+  `:limit` (pos_integer → `LIMIT :k`), `:with_score` (project the BM25 `$score`). Rows come
+  back relevance-ranked either way. Returns whole records (`+ "score"` when `:with_score`).
   """
   @spec search(Conn.t(), String.t(), String.t() | [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -106,9 +106,9 @@ defmodule Arcadic.FullText do
     require_props!(property_or_properties)
 
     with {:ok, ref} <- index_ref(type, property_or_properties) do
-      {proj, meta} = score_fragments(opts)
+      proj = score_projection(opts)
       {limit, params} = limit_fragment(opts, %{"q" => query})
-      sql = "SELECT #{proj}FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q#{meta}) = true#{limit}"
+      sql = "SELECT #{proj}FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q) = true#{limit}"
       Arcadic.query(conn, sql, params, language: "sql")
     end
   end
@@ -208,12 +208,11 @@ defmodule Arcadic.FullText do
     end
   end
 
-  # "" when no :with_score; the {metadata:true} 3rd-arg + $score projection otherwise (relevance-ranked,
-  # no ORDER BY → no synthetic-alias column). {proj, meta}.
-  defp score_fragments(opts) do
-    if Keyword.get(opts, :with_score, false),
-      do: {"*, $score AS score ", ", {metadata:true}"},
-      else: {"", ""}
+  # The $score projection when :with_score, "" otherwise. SEARCH_INDEX stays two-argument: the
+  # server ranks by relevance without ORDER BY (so no synthetic-alias column), and 26.12 rejects
+  # a third options argument (see AGENTS.md drift notes).
+  defp score_projection(opts) do
+    if Keyword.get(opts, :with_score, false), do: "*, $score AS score ", else: ""
   end
 
   defp limit_fragment(opts, params) do

@@ -860,7 +860,7 @@ runs SQL, and Bolt is Cypher-only (a `SELECT` over Bolt is a syntax error; the B
 
 ## gRPC transport (optional)
 
-Behind the optional `{:grpc, "~> 1.0"}` + `{:protobuf, "~> 0.17.1"}` deps,
+Behind the optional `{:grpc, "~> 1.1"}` + `{:protobuf, "~> 0.17.1"}` deps,
 `Arcadic.Transport.Grpc` speaks ArcadeDB's gRPC plugin: a real server-cursor
 `query_stream/4` (the server runs the query once and streams batches as you pull —
 O(n), server-paced, where HTTP can only offset-page), transactions, graph +
@@ -917,7 +917,7 @@ def deps do
     # optional, for the Bolt transport:
     {:boltx, "~> 0.0.6"},
     # optional, for the gRPC transport:
-    {:grpc, "~> 1.0"},
+    {:grpc, "~> 1.1"},
     {:protobuf, "~> 0.17.1"}
   ]
 end

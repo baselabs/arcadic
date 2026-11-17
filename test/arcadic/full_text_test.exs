@@ -103,13 +103,14 @@ defmodule Arcadic.FullTextTest do
       assert params == %{"q" => "fraud"}
     end
 
-    test ":with_score uses {metadata:true} + projects $score (no ORDER BY / no alias column)" do
+    test ":with_score projects $score over the two-argument SEARCH_INDEX (no ORDER BY / no alias column)" do
       capture()
       assert {:ok, []} = FullText.search(conn(), "Article", "body", "graph", with_score: true)
       assert_received {:body, %{"command" => cmd}}
 
+      # 26.12 rejects a third options argument ("expects 2 arguments but got 3").
       assert cmd ==
-               "SELECT *, $score AS score FROM Article WHERE SEARCH_INDEX('Article[body]', :q, {metadata:true}) = true"
+               "SELECT *, $score AS score FROM Article WHERE SEARCH_INDEX('Article[body]', :q) = true"
     end
 
     test ":limit binds :k → LIMIT :k" do

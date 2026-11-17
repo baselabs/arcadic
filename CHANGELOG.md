@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-11-17
+
+### Fixed
+
+- **Full-text search works on ArcadeDB 26.12.** 26.12.1-SNAPSHOT rejects the three-argument
+  `SEARCH_INDEX(ref, q, {metadata:true})` ("expects 2 arguments but got 3"), which
+  `FullText.search(..., with_score: true)` and the `{:fulltext, ...}` arm of `Vector.fuse`
+  emitted. Both now emit the two-argument form, which the server already ranks by relevance
+  and scores with `$score`; rows, order, scores and fuse RRF scores are identical on 26.7.2,
+  26.8.1 and 26.12.1-SNAPSHOT (live-probed).
+
+### Security
+
+- **grpc floor raised to `~> 1.1`** (optional dependency), which pulls grpc_core 1.1.0 and
+  closes EEF-CVE-2026-121808 (Erlpack codec memory exhaustion). The lock moves grpc and
+  grpc_core to 1.1.0. grpc 1.1's new client pool is off by default, so the gRPC transport's
+  behavior is unchanged. `mix audit` is clean.
+
 ## [1.2.3] - 2026-11-01
 
 ### Fixed

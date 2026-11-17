@@ -156,3 +156,8 @@ integration lanes. Run the ones that cover your change.
   `DatabaseNotFoundException` (26.10: `DatabaseNotAvailableException`; <=26.9: 500
   `DatabaseOperationException`). All three map to `:database_not_found`; the live
   drift-guard is `test/integration/error_mapping_test.exs`.
+- **26.12 rejects a third `SEARCH_INDEX` argument** (probed 2026-11-17 on
+  26.12.1-SNAPSHOT): `SEARCH_INDEX(ref, q, {metadata:true})` fails with "expects 2
+  arguments but got 3". The two-argument form returns the same rows, relevance order,
+  `$score` and fuse RRF scores on 26.7.2, 26.8.1 and 26.12.1-SNAPSHOT, so
+  `FullText.search` and the fuse full-text arm emit only the two-argument form.
