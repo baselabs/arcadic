@@ -1,0 +1,26 @@
+name: Canary (ArcadeDB latest)
+
+# Drift tripwire. CI's integration lanes run a digest-pinned ArcadeDB so a landing's verdict
+# is reproducible; this workflow runs the same lanes against the moving `latest` image so an
+# upstream behavior change (e.g. the 26.11 DatabaseNotFoundException rename, or 26.12
+# rejecting a third SEARCH_INDEX argument) surfaces here, loudly, before the next deliberate
+# pin bump. It reads an input that changes outside this repository, so the same commit can
+# pass today and fail tomorrow: it never gates a landing and has no `qualified` job.
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: canary-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: canary (ArcadeDB latest)
+    uses: ./.github/workflows/integration.yml
+    with:
+      image: arcadedata/arcadedb:latest
