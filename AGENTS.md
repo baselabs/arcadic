@@ -108,13 +108,37 @@ package ships, run top to bottom against this checkout and a live server by
 Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does not match
 `mix.exs` fails CI: commit lock changes with the change that causes them.
 
-- Publishing to Hex goes through `.github/workflows/publish.yml`, dispatched by the owner from
-  `main`. Publishing, deploying and pushes to mirrors always need the owner's approval for that
-  action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
   change that finds it.
 - Update `CHANGELOG.md` under `[Unreleased]` when behavior, a dependency or a contract changes;
   other docs only when a contract changes.
+
+## CI/CD and releases
+
+CI/CD, the runners, the build machine and releases belong to the infrastructure owner (infra),
+for every BaseLabs product. Its requirements bind this repository: the section "What infra
+requires of every product" in `baselabs/docs/ci.md` of the BaseLabs infra repository, read from
+that repository's default branch. Re-read it whenever you touch a workflow, a Dockerfile, a
+release script or a secret. This file points at it and does not copy it.
+
+- **Your part ends at `main`.** A change lands only through the landing run on `kci/<full sha>`
+  (see Workflow). Never release, deploy, publish, tag a version, dispatch a workflow, push an
+  image by hand, or handle a release, publish or CI key. When something should go out, send
+  infra one message: repository, full commit, what goes out, and anything it needs. A release
+  is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
+  dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
+- **You write your own workflow changes; infra reviews them.** Before landing any change to
+  `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
+  branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
+  problem goes to infra, not around it.
+- **On the build machine:** gate work on the remote runner's `where` check and your own routed
+  run, never on its `doctor`. Never list process arguments (no `ps` with `args` or `-f`, no
+  `/proc/*/cmdline`); use `ps -eo pid,etimes,pcpu,comm`. A secret never appears on a command
+  line, in a log or in a message; if you see one exposed, tell infra where it sits without
+  copying the value. Nothing that compiles or tests runs on a maintainer's workstation.
+- **Messages to infra:** one per result, complete enough to act on without a reply. No
+  acknowledgements and no status notes.
+- Every brief given to a sub-agent carries these same rules.
 
 ## Testing
 
