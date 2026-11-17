@@ -19,6 +19,7 @@ jobs:
   lanes:
     name: lanes
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
@@ -189,6 +190,7 @@ jobs:
   notebooks:
     name: notebooks
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}

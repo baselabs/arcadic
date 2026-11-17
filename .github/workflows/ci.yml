@@ -25,6 +25,7 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -39,6 +40,7 @@ jobs:
     name: "unit + static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -82,6 +84,7 @@ jobs:
     needs: toolchain
     # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04.
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +123,7 @@ jobs:
     if: always()
     needs: [toolchain, unit, compat, integration]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Require every qualification job to succeed
         env:
