@@ -2,6 +2,7 @@ defmodule Arcadic.ConnTest do
   use ExUnit.Case, async: true
   doctest Arcadic.Conn
   alias Arcadic.{Conn, Transport}
+  alias Arcadic.Test.Opaque
 
   describe "new/3" do
     test "builds a conn with defaults and a trimmed base_url" do
@@ -316,7 +317,7 @@ defmodule Arcadic.ConnTest do
 
     test "non-keyword connect opts are rejected value-free" do
       assert_raise ArgumentError, ~r/keyword list/, fn ->
-        Conn.new("http://a.invalid", "db", Arcadic.Test.Opaque.value(%{auth: {"root", "x"}}))
+        Conn.new("http://a.invalid", "db", Opaque.value(%{auth: {"root", "x"}}))
       end
     end
   end

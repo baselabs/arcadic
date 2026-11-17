@@ -6,6 +6,7 @@ defmodule Arcadic.BoundaryRedactionTest do
   """
   use ExUnit.Case, async: true
   alias Arcadic.{Conn, Import, Server, Vector}
+  alias Arcadic.Test.Opaque
 
   defp conn,
     do:
@@ -53,7 +54,7 @@ defmodule Arcadic.BoundaryRedactionTest do
     test "FullText.search rejects a non-binary query value-free" do
       # An opaque value keeps the atom's type out of the call site (a literal would trip the
       # type checker; the guard must still catch it at runtime).
-      query = Arcadic.Test.Opaque.value(:not_a_query)
+      query = Opaque.value(:not_a_query)
 
       err =
         assert_raise ArgumentError, fn ->

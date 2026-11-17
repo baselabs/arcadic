@@ -1,6 +1,7 @@
 defmodule Arcadic.OptsTest do
   use ExUnit.Case, async: true
   alias Arcadic.Opts
+  alias Arcadic.Test.Opaque
 
   test "returns :ok when every key is allowed (incl. the empty list)" do
     assert :ok = Opts.validate_keys!([], [:type])
@@ -23,8 +24,9 @@ defmodule Arcadic.OptsTest do
     # a map
     err_map =
       assert_raise ArgumentError, fn ->
-        Opts.validate_keys!(Arcadic.Test.Opaque.value(%{type: "x"}), [:type])
+        Opts.validate_keys!(Opaque.value(%{type: "x"}), [:type])
       end
+
     assert err_map.message == "opts must be a keyword list"
 
     # an improper list whose bare entry carries a sentinel — Keyword.keys/1 would echo it
