@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **grpc floor raised to `~> 1.1`** (optional dependency), which pulls grpc_core 1.1.0 and
   closes EEF-CVE-2026-121808 (Erlpack codec memory exhaustion). The lock moves grpc and
   grpc_core to 1.1.0. grpc 1.1's new client pool is off by default, so the gRPC transport's
-  behavior is unchanged. `mix audit` is clean.
+  behavior is unchanged.
+- **plug 1.20.4 in the lock** (test-only dependency), which closes EEF-CVE-2026-120287
+  (multipart `:length` limit not charged for part and header framing). plug is not a runtime
+  dependency, so applications using arcadic are unaffected. `mix audit` is clean.
 
 ### Documentation
 

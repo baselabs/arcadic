@@ -51,15 +51,19 @@ jobs:
       - name: Generate throwaway TLS material
         run: test/support/tls/gen-grpc-certs.sh /tmp/arcadic-tls
 
+      # Fixed host ports stay below 32768. Each gRPC container publishes on a host port Docker
+      # picks: a fixed port in Linux's ephemeral range (32768-60999), such as 50051, can already
+      # be held by a client socket an earlier step left open, and the bind then fails.
       - name: Start ArcadeDB (HTTP + Bolt + gRPC, plaintext)
         run: |
           docker run -d --name arcadic-main \
-            -p 2480:2480 -p 7687:7687 -p 50051:50051 \
+            -p 2480:2480 -p 7687:7687 -p 50051 \
             -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
               -Darcadedb.server.defaultDatabases=probe[root] \
               -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
               -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051" \
             "$ARCADEDB_IMAGE"
+          echo "GRPC_PORT=$(docker port arcadic-main 50051/tcp | head -1 | sed 's/.*://')" >> "$GITHUB_ENV"
           for _ in $(seq 1 60); do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
             sleep 2
@@ -100,7 +104,7 @@ jobs:
       - name: gRPC suite
         run: mix test --only integration_grpc
         env:
-          ARCADIC_GRPC_TEST_URL: grpc://localhost:50051
+          ARCADIC_GRPC_TEST_URL: grpc://localhost:${{ env.GRPC_PORT }}
           ARCADIC_GRPC_TEST_HTTP_URL: http://localhost:2480
           ARCADIC_GRPC_TEST_PASSWORD: ${{ env.PW }}
 
@@ -110,7 +114,7 @@ jobs:
           # LSE-atomics bug; on amd64 runners the native OpenSSL path is the
           # normal one (and JDK-SSL forced TLS has not been proven against the
           # BEAM client on this platform).
-          docker run -d --name arcadic-grpc-tls -p 50052:50051 \
+          docker run -d --name arcadic-grpc-tls -p 50051 \
             -v /tmp/arcadic-tls:/certs:ro \
             -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
               -Darcadedb.server.defaultDatabases=probe[root] \
@@ -119,11 +123,13 @@ jobs:
               -Darcadedb.grpc.tls.enabled=true \
               -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key" \
             "$ARCADEDB_IMAGE"
+          GRPC_TLS_PORT=$(docker port arcadic-grpc-tls 50051/tcp | head -1 | sed 's/.*://')
+          echo "GRPC_TLS_PORT=$GRPC_TLS_PORT" >> "$GITHUB_ENV"
           # CAUTION: openssl prints "Verify return code: 0 (ok)" even when NO cert was
           # received (no-verify-error state), so the gate must also require a completed
           # handshake — "Cipher is (NONE)" means the server never answered.
           for _ in $(seq 1 60); do
-            echo | openssl s_client -connect localhost:50052 -servername localhost \
+            echo | openssl s_client -connect "localhost:$GRPC_TLS_PORT" -servername localhost \
               -CAfile /tmp/arcadic-tls/ca.crt -verify_return_error 2>/dev/null \
               | awk '/Cipher is \(NONE\)/ {bad=1} /Verify return code: 0/ {ok=1} END {exit !(ok && !bad)}' \
               && exit 0
@@ -134,7 +140,7 @@ jobs:
       - name: gRPC TLS suite (fail-closed)
         run: mix test --only integration_grpc_tls
         env:
-          ARCADIC_GRPC_TLS_TEST_URL: grpcs://localhost:50052
+          ARCADIC_GRPC_TLS_TEST_URL: grpcs://localhost:${{ env.GRPC_TLS_PORT }}
           ARCADIC_GRPC_TLS_TEST_CACERT: /tmp/arcadic-tls/ca.crt
           ARCADIC_GRPC_TLS_TEST_UNTRUSTED_CACERT: /tmp/arcadic-tls/untrusted.crt
           ARCADIC_GRPC_TLS_TEST_PASSWORD: ${{ env.PW }}
