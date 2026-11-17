@@ -1,0 +1,190 @@
+name: Cache warmer
+
+# The only writer of the caches CI restores. A cache saved on a `kci/<sha>` ref can be restored
+# by that ref alone, so ci.yml, integration.yml and the canary only restore, and this workflow
+# saves each cache on the default branch, where every ref can restore it. A key that already
+# exists is left alone; a missing one (a new mix.lock or toolchain) is built from scratch, so a
+# cache holds exactly what the lock and the toolchain produce. Paths and keys match the restore
+# steps in ci.yml and integration.yml exactly: change them together.
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warmer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  toolchain:
+    name: toolchain
+    runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.2 min, run 44120279901 (ci.yml's toolchain)
+    timeout-minutes: 5
+    outputs:
+      elixir: ${{ steps.versions.outputs.elixir }}
+      otp: ${{ steps.versions.outputs.otp }}
+      builds: ${{ steps.builds.outputs.builds }}
+    steps:
+      # Each job reads the default branch from the API with this run's read-only token, which
+      # works the same on a schedule and a dispatch.
+      - name: Require the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          default_ref="refs/heads/$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          if [ "$GITHUB_REF" != "$default_ref" ]; then
+            echo "::error::The cache warmer runs only on $default_ref; received $GITHUB_REF" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read defaults and compatibility lanes
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      - name: List every build
+        id: builds
+        env:
+          ELIXIR: ${{ steps.versions.outputs.elixir }}
+          OTP: ${{ steps.versions.outputs.otp }}
+          LANES: ${{ steps.versions.outputs.beam_lanes }}
+        run: |
+          echo "builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
+            '[{elixir: $e, otp: $o}] + $lanes')" >> "$GITHUB_OUTPUT"
+
+  # deps and _build on every build ci.yml and integration.yml run, compiled for dev and test,
+  # which every build's jobs use.
+  mix:
+    name: "deps and _build (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
+    needs: toolchain
+    # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04, as in ci.yml.
+    runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
+    # Until a warmer run is measured: 2x two cold compiles of 0.7 min (the 1.15 lane's
+    # `mix compile`, run 44192483393), raised to the 5 min floor.
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.toolchain.outputs.builds) }}
+    steps:
+      - name: Require the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          default_ref="refs/heads/$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          if [ "$GITHUB_REF" != "$default_ref" ]; then
+            echo "::error::The cache warmer runs only on $default_ref; received $GITHUB_REF" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Elixir/OTP
+        uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Look up deps and _build
+        id: lookup
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          lookup-only: true
+
+      - name: Fetch deps
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: mix deps.get --check-locked
+
+      - name: Compile for dev
+        if: steps.lookup.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: dev
+        run: mix compile
+
+      - name: Compile for test
+        if: steps.lookup.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: test
+        run: mix compile
+
+      - name: Save deps and _build
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ steps.lookup.outputs.cache-primary-key }}
+
+  # The dialyzer PLT, on the default build only (ci.yml's unit job).
+  plt:
+    name: "PLT (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
+    needs: [toolchain, mix]
+    runs-on: ubuntu-24.04
+    # Until a warmer run is measured: 2x 4.5 min, the cold unit job that builds the PLT
+    # (run 44120279901).
+    timeout-minutes: 9
+    env:
+      MIX_ENV: test
+    steps:
+      - name: Require the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          default_ref="refs/heads/$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          if [ "$GITHUB_REF" != "$default_ref" ]; then
+            echo "::error::The cache warmer runs only on $default_ref; received $GITHUB_REF" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Elixir/OTP
+        uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      - name: Look up the PLT
+        id: lookup
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          lookup-only: true
+
+      # The mix job above has just saved this build's deps and _build.
+      - name: Restore deps and _build
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          fail-on-cache-miss: true
+
+      - name: Build the PLT
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: |
+          mix deps.get --check-locked
+          mix dialyzer --plt
+
+      - name: Save the PLT
+        if: steps.lookup.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: priv/plts
+          key: ${{ steps.lookup.outputs.cache-primary-key }}

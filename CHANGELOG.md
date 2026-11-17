@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI actions run on the Node.js 24 runtime: `actions/checkout` v7, `actions/cache` v6
   and `actions/setup-java` v6, which reads both the Java vendor and the exact version and
   build from `.tool-versions`.
+- CI and the canary restore their caches and never write them. A daily
+  `cache-warmer.yml` run on the default branch is the one writer, so every landing run
+  starts from compiled `deps` and `_build` and a built dialyzer PLT; CI previously cached
+  only fetched `deps`.
 - Pin Temurin Java 21, including its build, in `.tool-versions` and refuse a different
   installed Java runtime before generating integration TLS certificates.
 

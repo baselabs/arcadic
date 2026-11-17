@@ -55,17 +55,24 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - name: Restore deps cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: deps
-          key: deps-${{ runner.os }}-elixir${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
 
-      - name: Restore PLT cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore the PLT
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
-          key: plt-${{ runner.os }}-elixir${{ needs.toolchain.outputs.elixir }}-otp${{ needs.toolchain.outputs.otp }}-${{ hashFiles('mix.lock') }}
+          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
 
       - run: mix deps.get --check-locked
 
@@ -90,8 +97,8 @@ jobs:
     needs: toolchain
     # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04.
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
-    # 2x 2.0 min, run 44152257276
-    timeout-minutes: 4
+    # 2x 2.0 min, run 44152257276, raised to the 5 min floor
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -106,11 +113,16 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      - name: Restore deps cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: deps
-          key: deps-${{ runner.os }}-elixir${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
 
       - run: mix deps.get --check-locked
 
