@@ -143,7 +143,7 @@ defmodule Arcadic.FullText do
     with :ok <- Identifier.validate(type),
          {:ok, props} <- validate_each(properties) do
       field_list = Enum.map_join(props, ", ", &"'#{&1}'")
-      {proj, _meta} = score_fragments(opts)
+      proj = score_projection(opts)
       {limit, params} = limit_fragment(opts, %{"q" => query})
       sql = "SELECT #{proj}FROM #{type} WHERE SEARCH_FIELDS([#{field_list}], :q) = true#{limit}"
       Arcadic.query(conn, sql, params, language: "sql")
