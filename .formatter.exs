@@ -4,6 +4,6 @@
 # regenerated output.
 [
   inputs:
-    ["{mix,.formatter}.exs", "{config,test}/**/*.{ex,exs}"] ++
+    ["{mix,.formatter}.exs", "{config,test,scripts}/**/*.{ex,exs}"] ++
       (Path.wildcard("lib/**/*.{ex,exs}") -- Path.wildcard("lib/arcadic/transport/grpc/proto/*"))
 ]

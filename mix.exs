@@ -89,17 +89,7 @@ defmodule Arcadic.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      extras: [
-        "README.md",
-        "notebooks/getting_started.livemd",
-        "notebooks/graphrag.livemd",
-        "notebooks/operations.livemd",
-        "notebooks/timeseries.livemd",
-        "usage-rules.md",
-        "CHANGELOG.md",
-        "CONTRIBUTING.md",
-        "LICENSE"
-      ],
+      extras: extras(),
       groups_for_modules: [
         Core: [
           Arcadic,
@@ -142,6 +132,12 @@ defmodule Arcadic.MixProject do
         Transactions: [Arcadic.Transaction]
       ]
     ]
+  end
+
+  # Every notebook the package ships is also a docs page, so a new notebook needs no edit here.
+  defp extras do
+    ["README.md" | Enum.sort(Path.wildcard("notebooks/*.livemd"))] ++
+      ["usage-rules.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE"]
   end
 
   defp aliases do

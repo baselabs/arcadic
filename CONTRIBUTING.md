@@ -30,6 +30,11 @@ mix quality                       # format --check-formatted + credo --strict + 
 mix test                          # Run tests (add ARCADIC_TEST_URL for the integration suite)
 ```
 
+   A notebook you change or add runs against your checkout and a live server with
+   `elixir scripts/run_notebook.exs notebooks/<name>.livemd` (set `ARCADIC_HTTP_URL` and
+   `ARCADIC_PASSWORD`, plus `ARCADIC_BOLT_HOST`/`ARCADIC_BOLT_PORT` for Bolt). CI runs every
+   notebook the package ships the same way.
+
 4. Update `CHANGELOG.md` under `[Unreleased]`.
 5. Open a Pull Request against `main`. A maintainer lands it: CI qualifies the commit on a
    `kci/` branch, and `main` moves only when its `qualified` check passes.

@@ -1,7 +1,7 @@
 name: Live integration
 
 # The live ArcadeDB lanes (HTTP, WebSocket, time-series, Bolt, gRPC, both TLS listeners,
-# shutdown), shared by two callers: ci.yml runs them against a digest-pinned image so a
+# shutdown) and every notebook the package ships, shared by two callers: ci.yml runs them against a digest-pinned image so a
 # landing's verdict is reproducible, and canary.yml runs them against the moving `latest`
 # image so upstream drift surfaces before the next deliberate pin bump.
 on:
@@ -182,3 +182,78 @@ jobs:
           ARCADIC_SHUTDOWN_TEST_URL: http://localhost:2482
           ARCADIC_SHUTDOWN_TEST_PASSWORD: ${{ env.PW }}
           ARCADIC_TEST_URL: http://localhost:2480
+
+  # Every notebook the Hex package ships runs top to bottom against this checkout and a live
+  # server. The list comes from the built package, so a new notebook is covered with no edit
+  # here; a tracked notebook the package leaves out, or one with no elixir cells, fails.
+  notebooks:
+    name: notebooks
+    runs-on: ubuntu-24.04
+    env:
+      PW: probe-test-pw
+      ARCADEDB_IMAGE: ${{ inputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the default toolchain
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
+
+      - name: Restore deps cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-integration-elixir${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+
+      - name: List the notebooks the package ships
+        run: |
+          mix hex.build --unpack --output "$RUNNER_TEMP/package"
+          (cd "$RUNNER_TEMP/package" && find . -name '*.livemd' | sed 's|^\./||' | sort) > "$RUNNER_TEMP/shipped"
+          git ls-files '*.livemd' | sort > "$RUNNER_TEMP/tracked"
+          unshipped=$(comm -23 "$RUNNER_TEMP/tracked" "$RUNNER_TEMP/shipped")
+          if [ -n "$unshipped" ]; then
+            echo "Notebooks the package does not ship:"; echo "$unshipped"; exit 1
+          fi
+          if [ ! -s "$RUNNER_TEMP/shipped" ]; then
+            echo "The package ships no notebooks"; exit 1
+          fi
+          cat "$RUNNER_TEMP/shipped"
+
+      # The union of what the notebooks' own setup recipes start: HTTP, the Bolt plugin
+      # (getting_started), and local-file restore (operations).
+      - name: Start ArcadeDB (HTTP + Bolt, local-file restore)
+        run: |
+          docker run -d --name arcadic-notebooks -p 2480:2480 -p 7687:7687 \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
+              -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
+              -Darcadedb.server.restoreImportAllowLocalUrls=true" \
+            "$ARCADEDB_IMAGE"
+          for _ in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
+            sleep 2
+          done
+          docker logs arcadic-notebooks && exit 1
+
+      - name: Run every shipped notebook
+        env:
+          ARCADIC_HTTP_URL: http://localhost:2480
+          ARCADIC_PASSWORD: ${{ env.PW }}
+          ARCADIC_BOLT_HOST: localhost
+          ARCADIC_BOLT_PORT: "7687"
+        run: |
+          failed=""
+          while read -r notebook; do
+            echo "::group::$notebook"
+            elixir scripts/run_notebook.exs "$notebook" < /dev/null || failed="$failed $notebook"
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/shipped"
+          if [ -n "$failed" ]; then
+            echo "Failed notebooks:$failed"; exit 1
+          fi
