@@ -25,6 +25,7 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.2 min, run 44120279901
     timeout-minutes: 5
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
@@ -32,6 +33,8 @@ jobs:
       beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -40,11 +43,14 @@ jobs:
     name: "unit + static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 2x 4.5 min, run 44120279901
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
@@ -84,15 +90,18 @@ jobs:
     needs: toolchain
     # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04.
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    # 2x 2.0 min, run 44152257276
+    timeout-minutes: 4
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.toolchain.outputs.beam_lanes) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
@@ -123,6 +132,7 @@ jobs:
     if: always()
     needs: [toolchain, unit, compat, integration]
     runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.1 min, run 44160534612
     timeout-minutes: 5
     steps:
       - name: Require every qualification job to succeed

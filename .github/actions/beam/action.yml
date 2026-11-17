@@ -1,0 +1,45 @@
+name: Exact BEAM toolchain
+description: Install and verify the exact Elixir build and full Erlang/OTP version.
+inputs:
+  elixir-version:
+    description: Exact Elixir version with its -otp-NN build suffix.
+    required: true
+  otp-version:
+    description: Exact full Erlang/OTP version.
+    required: true
+runs:
+  using: composite
+  steps:
+    # setup-beam strips the suffix for strict lookup, then selects that OTP build.
+    - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      with:
+        elixir-version: ${{ inputs.elixir-version }}
+        otp-version: ${{ inputs.otp-version }}
+        version-type: strict
+    - name: Verify installed Elixir and Erlang/OTP
+      shell: bash
+      env:
+        EXPECTED_ELIXIR: ${{ inputs.elixir-version }}
+        EXPECTED_OTP: ${{ inputs.otp-version }}
+      run: |
+        elixir -e '
+          expected_build = System.fetch_env!("EXPECTED_ELIXIR")
+          [_, expected_elixir, expected_major] = Regex.run(~r/\A(.+)-otp-(\d+)\z/, expected_build)
+          actual_elixir = System.version()
+          actual_major = to_string(:erlang.system_info(:otp_release))
+          otp_file = Path.join([to_string(:code.root_dir()), "releases", actual_major, "OTP_VERSION"])
+          actual_otp = otp_file |> File.read!() |> String.trim()
+
+          for {tool, expected, actual} <- [
+                {"Elixir", expected_elixir, actual_elixir},
+                {"OTP major", expected_major, actual_major},
+                {"OTP full version", System.fetch_env!("EXPECTED_OTP"), actual_otp}
+              ] do
+            if actual != expected do
+              IO.puts(:stderr, "::error::#{tool}: expected #{expected}, installed #{actual}")
+              System.halt(1)
+            end
+          end
+
+          IO.puts("Elixir #{actual_elixir} / OTP #{actual_otp} (major #{actual_major})")
+        '

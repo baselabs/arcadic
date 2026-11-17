@@ -90,8 +90,8 @@ The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on 
 against the moving upstream image. It never gates a landing: a red canary is upstream drift
 to fix before the next deliberate ArcadeDB pin bump.
 
-Runtime versions live only in `.tool-versions`; `scripts/toolchain.sh` reads it for every
-workflow, so a toolchain bump is a one-file change.
+Elixir, Erlang and Java versions live only in `.tool-versions`; `scripts/toolchain.sh` reads
+it for every workflow, so a toolchain bump is a one-file change.
 
 ```bash
 mix deps.get
@@ -131,11 +131,13 @@ release script or a secret. This file points at it and does not copy it.
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
   problem goes to infra, not around it.
-- **On the build machine:** gate work on the remote runner's `where` check and your own routed
-  run, never on its `doctor`. Never list process arguments (no `ps` with `args` or `-f`, no
-  `/proc/*/cmdline`); use `ps -eo pid,etimes,pcpu,comm`. A secret never appears on a command
-  line, in a log or in a message; if you see one exposed, tell infra where it sits without
-  copying the value. Nothing that compiles or tests runs on a maintainer's workstation.
+- **Where checks run:** this repository is public, so it never uses a self-hosted runner or
+  the build machine, and nothing that compiles or tests runs on a maintainer's workstation.
+  Its checks run on GitHub-hosted runners: push the branch as `kci/<topic>` (ci.yml starts on
+  `kci/**`), read that run, fix forward, and delete `kci/<topic>` once the change has landed.
+  A secret never appears on a command line, in a log or in a message; if you see one exposed,
+  tell infra where it sits without copying the value. Never list process arguments (no `ps`
+  with `args` or `-f`, no `/proc/*/cmdline`).
 - **Messages to infra:** one per result, complete enough to act on without a reply. No
   acknowledgements and no status notes.
 - Every brief given to a sub-agent carries these same rules.

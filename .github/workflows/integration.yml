@@ -19,18 +19,21 @@ jobs:
   lanes:
     name: lanes
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 2x 1.9 min, run 44158069926
+    timeout-minutes: 4
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Read the default toolchain
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
@@ -38,7 +41,21 @@ jobs:
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
-          java-version: "21"
+          java-version-file: .tool-versions
+
+      - name: Verify installed Java
+        env:
+          EXPECTED_JAVA: ${{ steps.versions.outputs.java }}
+        run: |
+          expected=${EXPECTED_JAVA#temurin-}
+          actual=$(sed -n 's/^JAVA_RUNTIME_VERSION="\(.*\)"$/\1/p' "$JAVA_HOME/release")
+          # Temurin appends its LTS designation after the exact version and build.
+          actual=${actual%-LTS}
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Java: expected $expected, installed $actual" >&2
+            exit 1
+          fi
+          echo "Java $actual"
 
       - name: Restore deps cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -196,18 +213,21 @@ jobs:
   notebooks:
     name: notebooks
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # 2x 1.1 min, run 44122846610
+    timeout-minutes: 3
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Read the default toolchain
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      - uses: ./.github/actions/beam
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
@@ -220,9 +240,12 @@ jobs:
 
       - run: mix deps.get --check-locked
 
-      - name: List the notebooks the package ships
+      - name: Build and inspect the package and list its notebooks
         run: |
+          VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
+          export VERSION
           mix hex.build --unpack --output "$RUNNER_TEMP/package"
+          elixir scripts/inspect_package.exs "$RUNNER_TEMP/package"
           (cd "$RUNNER_TEMP/package" && find . -name '*.livemd' | sed 's|^\./||' | sort) > "$RUNNER_TEMP/shipped"
           git ls-files '*.livemd' | sort > "$RUNNER_TEMP/tracked"
           unshipped=$(comm -23 "$RUNNER_TEMP/tracked" "$RUNNER_TEMP/shipped")

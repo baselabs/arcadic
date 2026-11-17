@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI verifies exact runtime versions from `.tool-versions`, checks package contents and
+  metadata before publication, and uses measured job timeouts. Publication refuses a
+  non-default branch or an already tagged or published version.
+- Pin Temurin Java 21, including its build, in `.tool-versions` and refuse a different
+  installed Java runtime before generating integration TLS certificates.
+
 ## [1.2.4] - 2026-11-17
 
 ### Fixed
