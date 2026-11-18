@@ -89,9 +89,6 @@ jobs:
 
       - run: mix dialyzer
 
-      # The release builds these docs; a warning here would ship on hexdocs.
-      - run: mix docs --warnings-as-errors
-
   compat:
     name: "unit (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     needs: toolchain
@@ -140,9 +137,44 @@ jobs:
     with:
       image: arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 
+  # The release builds these docs; a warning here would ship on hexdocs.
+  # Qualification proves the same inspected, reproducible archives as publication.
+  release-archives:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90 # no green run yet
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      - name: Install the archive-building Hex client
+        run: mix local.hex "$(cat scripts/release/hex-version)" --force
+
+      # The warmer writes deps and both test and dev _build for the default toolchain.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get --check-locked
+
+      - name: Build and inspect reproducible archives
+        run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
+
   qualified:
     if: always()
-    needs: [toolchain, unit, compat, integration]
+    needs: [toolchain, unit, compat, integration, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44160534612
     timeout-minutes: 5

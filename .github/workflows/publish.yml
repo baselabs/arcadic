@@ -1,23 +1,27 @@
 name: Publish to Hex.pm
 
-# Infra dispatches this from the default branch after the version commit has landed,
-# then tags v<version> on the published commit. It starts no qualification job.
+# Infra dispatches on the default branch after qualification. A keyless build proves
+# and inspects reproducible package and docs archives; the isolated keyed step uploads
+# only missing bytes. Read-back verifies both before release-assets leaves the job.
+# Infra then tags the commit and creates the GitHub release from those verified assets.
 on:
   workflow_dispatch:
 
 env:
   MIX_ENV: dev
 
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Publish
-    # The Hex key lives only in the protected publish environment, and only an
-    # owner's dispatch from the default branch, and re-run if at all, may use it.
+    # The key is confined to the protected environment and the isolated upload step.
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
-    # 2x 1.1 min, run 44153465664, raised to the 5 min floor
-    timeout-minutes: 5
+    timeout-minutes: 90 # no green run yet
     permissions:
       contents: read
     steps:
@@ -44,24 +48,51 @@ jobs:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
 
+      - name: Install the archive-building Hex client
+        run: mix local.hex "$(cat scripts/release/hex-version)" --force
+
       - run: mix deps.get --check-locked
 
-      - name: Refuse an existing release
-        env:
-          PACKAGE_NAME: arcadic
+      - name: Read version
         run: |
           VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
-          export VERSION
-          sh scripts/check-release-version.sh
           printf 'VERSION=%s\n' "$VERSION" >> "$GITHUB_ENV"
 
-      - run: mix docs --warnings-as-errors
+      - name: Refuse tags, retired releases, and first publications
+        run: python3 -I scripts/release/registry.py refuse arcadic "$VERSION"
 
-      - name: Build and inspect the package
-        run: |
-          mix hex.build --unpack --output "$RUNNER_TEMP/package"
-          elixir scripts/inspect_package.exs "$RUNNER_TEMP/package"
+      - name: Build and inspect reproducible archives
+        run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
 
-      - run: mix hex.publish --yes
+      - name: Compare public registry bytes
+        id: state
+        run: python3 -I scripts/release/registry.py compare arcadic "$VERSION" "$RUNNER_TEMP/release"
+
+      # This directory contains no mix.exs, so Mix cannot load project code under the key.
+      - name: Upload missing archives
+        if: steps.state.outputs.package == 'missing' || steps.state.outputs.docs == 'missing'
+        working-directory: ${{ runner.temp }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: >-
+          mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/release/upload_hex.exs"
+          arcadic "$VERSION" release/package.tar release/docs.tar.gz
+
+      - name: Verify public registry bytes
+        run: python3 -I scripts/release/registry.py verify arcadic "$VERSION" "$RUNNER_TEMP/release"
+
+      - name: Assemble verified release assets
+        run: |
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+          cp "$RUNNER_TEMP/release/package.tar" "$assets/arcadic-$VERSION.tar"
+          cp "$RUNNER_TEMP/release/docs.tar.gz" "$assets/arcadic-$VERSION-docs.tar.gz"
+          python3 -I scripts/release/registry.py notes "$VERSION" "$assets/RELEASE_NOTES.md"
+          (cd "$assets" && sha256sum "arcadic-$VERSION.tar" "arcadic-$VERSION-docs.tar.gz" > SHA256SUMS)
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error

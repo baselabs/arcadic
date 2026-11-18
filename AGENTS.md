@@ -91,7 +91,7 @@ against the moving upstream image. It never gates a landing: a red canary is ups
 to fix before the next deliberate ArcadeDB pin bump.
 
 CI and the canary only restore caches; `.github/workflows/cache-warmer.yml` is the one writer.
-Daily and on demand, and only on the default branch, it builds any missing cache from scratch:
+On each push, daily and on demand, and only on the default branch, it builds missing caches:
 `deps` and `_build` for each Elixir build, and the dialyzer PLT for the default build. A cache's
 path or key changes in the warmer and in every restore step together.
 
@@ -132,6 +132,14 @@ release script or a secret. This file points at it and does not copy it.
   infra one message: repository, full commit, what goes out, and anything it needs. A release
   is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
   dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
+  Qualification and publication use `scripts/release/build_archives.sh` with the Hex version
+  in `scripts/release/hex-version` to build, compare and inspect both archives before any key
+  is available. Publication has no cache; its isolated `mix run --no-mix-exs` step uploads
+  only missing archives for an existing package name, never replaces a version, and holds
+  the key only for that upload. A redispatch on the same commit resumes only when existing
+  registry bytes match. It refuses existing tags, retired versions and missing changelog
+  sections, then reads back both archives and exports `release-assets`. Infra creates the
+  GitHub release from those verified archives, checksums and release notes after tagging.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key

@@ -1,9 +1,8 @@
 defmodule Arcadic.MigratorTest do
   @moduledoc """
-  Unit proofs for the migrator's crash-recovery marker contract (the corrected-C3 design,
-  .kimosabe/specs/migrator-crash-recovery.md): a migration attempt is bracketed by a durable
-  `up_started`/`down_started` marker that is removed ONLY by successful finalization or explicit
-  `resolve/3` — never by an error cleanup — so an interrupted migration can never silently re-run.
+  Unit proofs for the migrator's crash-recovery marker contract: a migration attempt is
+  bracketed by a durable `up_started`/`down_started` marker removed ONLY by successful finalization
+  or explicit `resolve/3` — never by an error cleanup — so an interrupted migration cannot silently re-run.
   Live durability (a marker surviving process death) is proven by the integration suite.
   """
   use ExUnit.Case, async: true

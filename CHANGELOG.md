@@ -9,18 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Qualification builds the package and docs archives twice with Hex 2.7.0 and inspects
+  the exact reproducible bytes. Publication builds without a cache or key, uploads only
+  missing archives from a directory without a Mix project, and verifies both against Hex.
+  It refuses first publications, retired versions, missing changelog sections and byte
+  mismatches. Verified archives, checksums and release notes leave as `release-assets`
+  for infra to attach to the GitHub release. New archive and unmeasured warmer jobs use
+  a 90-minute timeout until their first green run.
 - CI verifies exact runtime versions from `.tool-versions`, checks package contents and
   metadata before publication, and uses measured job timeouts. Publication refuses a
-  non-default branch or an already tagged or published version.
+  non-default branch or an already tagged version; matching partial publications can resume.
 - CI and `mix quality` run every test command with `--warnings-as-errors`, so a warning
   in a test file fails the build. The seven test-file warnings it exposed are fixed: tests
   that hand a guard a deliberately wrong type now pass it through an opaque test helper.
 - CI actions run on the Node.js 24 runtime: `actions/checkout` v7, `actions/cache` v6
   and `actions/setup-java` v6, which reads both the Java vendor and the exact version and
   build from `.tool-versions`.
-- CI and the canary restore their caches and never write them. A daily
-  `cache-warmer.yml` run on the default branch is the one writer, so every landing run
-  starts from compiled `deps` and `_build` and a built dialyzer PLT; CI previously cached
+- CI and the canary restore their caches and never write them. The
+  `cache-warmer.yml` run on each default-branch push, daily and on demand is the one writer.
+  Every landing run starts from compiled `deps` and `_build` and a built dialyzer PLT; CI previously cached
   only fetched `deps`.
 - Pin Temurin Java 21, including its build, in `.tool-versions` and refuse a different
   installed Java runtime before generating integration TLS certificates.

@@ -251,7 +251,7 @@ jobs:
           VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
           export VERSION
           mix hex.build --unpack --output "$RUNNER_TEMP/package"
-          elixir scripts/inspect_package.exs "$RUNNER_TEMP/package"
+          elixir scripts/inspect_package.exs "$RUNNER_TEMP/package" "$RUNNER_TEMP/package/hex_metadata.config"
           (cd "$RUNNER_TEMP/package" && find . -name '*.livemd' | sed 's|^\./||' | sort) > "$RUNNER_TEMP/shipped"
           git ls-files '*.livemd' | sort > "$RUNNER_TEMP/tracked"
           unshipped=$(comm -23 "$RUNNER_TEMP/tracked" "$RUNNER_TEMP/shipped")

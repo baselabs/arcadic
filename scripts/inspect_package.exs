@@ -1,6 +1,6 @@
 # Shared by qualification and publication. The declared package files exclude
 # development paths; documentation/ and notebooks remain legitimate package content.
-[package] = System.argv()
+[package, metadata_path] = System.argv()
 version = System.fetch_env!("VERSION")
 
 files =
@@ -27,7 +27,7 @@ if missing != [] or forbidden != [] do
   raise "Package inspection failed: missing #{inspect(missing)}, forbidden #{inspect(forbidden)}"
 end
 
-metadata_file = package |> Path.join("hex_metadata.config") |> String.to_charlist()
+metadata_file = String.to_charlist(metadata_path)
 {:ok, metadata} = :file.consult(metadata_file)
 actual = Map.new(metadata)["version"]
 
