@@ -1006,13 +1006,6 @@ Each [GitHub release](https://github.com/baselabs/arcadic/releases) carries the
 package archive, docs archive, `SHA256SUMS` and release notes. Verify the downloaded
 archives with `sha256sum --check SHA256SUMS`.
 
-Qualification and publication build and inspect the same reproducible archives using
-the Hex version in `scripts/release/hex-version`. Publication uploads only missing
-archives, verifies their public Hex bytes, and hands the assets to infra for the tag
-and GitHub release. A dispatch on the same commit can finish a partial publication
-only when the existing bytes match. The cache warmer runs on default-branch pushes,
-daily and on demand; qualification only restores its caches, and publication uses none.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
