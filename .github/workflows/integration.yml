@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   lanes:
     name: lanes
@@ -90,8 +95,11 @@ jobs:
               -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
               -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051" \
             "$ARCADEDB_IMAGE"
-          echo "GRPC_PORT=$(docker port arcadic-main 50051/tcp | head -1 | sed 's/.*://')" >> "$GITHUB_ENV"
-          for _ in $(seq 1 60); do
+          ports=$(docker port arcadic-main 50051/tcp)
+          GRPC_PORT=$(sed -n '1s/.*://p' <<< "$ports")
+          if [ -z "$GRPC_PORT" ]; then echo "::error::no host port for gRPC" >&2; exit 1; fi
+          echo "GRPC_PORT=$GRPC_PORT" >> "$GITHUB_ENV"
+          for _ in {1..60}; do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
             sleep 2
           done
@@ -99,8 +107,8 @@ jobs:
 
       - name: Report the ArcadeDB version under test
         run: |
-          curl -s -u "root:$PW" "http://localhost:2480/api/v1/server?mode=basic" \
-            | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
+          server=$(curl -sS --fail -u "root:$PW" "http://localhost:2480/api/v1/server?mode=basic")
+          python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' <<< "$server"
 
       - name: HTTP-family suites (integration, ws, ts, reliability)
         run: mix test --warnings-as-errors --only integration
@@ -150,12 +158,14 @@ jobs:
               -Darcadedb.grpc.tls.enabled=true \
               -Darcadedb.grpc.tls.cert=/certs/server.crt -Darcadedb.grpc.tls.key=/certs/server.key" \
             "$ARCADEDB_IMAGE"
-          GRPC_TLS_PORT=$(docker port arcadic-grpc-tls 50051/tcp | head -1 | sed 's/.*://')
+          ports=$(docker port arcadic-grpc-tls 50051/tcp)
+          GRPC_TLS_PORT=$(sed -n '1s/.*://p' <<< "$ports")
+          if [ -z "$GRPC_TLS_PORT" ]; then echo "::error::no host port for gRPC TLS" >&2; exit 1; fi
           echo "GRPC_TLS_PORT=$GRPC_TLS_PORT" >> "$GITHUB_ENV"
           # CAUTION: openssl prints "Verify return code: 0 (ok)" even when NO cert was
           # received (no-verify-error state), so the gate must also require a completed
           # handshake — "Cipher is (NONE)" means the server never answered.
-          for _ in $(seq 1 60); do
+          for _ in {1..60}; do
             echo | openssl s_client -connect "localhost:$GRPC_TLS_PORT" -servername localhost \
               -CAfile /tmp/arcadic-tls/ca.crt -verify_return_error 2>/dev/null \
               | awk '/Cipher is \(NONE\)/ {bad=1} /Verify return code: 0/ {ok=1} END {exit !(ok && !bad)}' \
@@ -187,7 +197,7 @@ jobs:
             "$ARCADEDB_IMAGE"
           # The Bolt plugin starts BEFORE_HTTP_ON, so HTTP readiness implies the
           # TLS Bolt listener is up.
-          for _ in $(seq 1 60); do
+          for _ in {1..60}; do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2481/api/v1/ready)" = "204" ] && exit 0
             sleep 2
           done
@@ -207,7 +217,7 @@ jobs:
           docker run -d --name arcadic-shutdown -p 2482:2480 \
             -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW" \
             "$ARCADEDB_IMAGE"
-          for _ in $(seq 1 60); do
+          for _ in {1..60}; do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2482/api/v1/ready)" = "204" ] && break
             sleep 2
           done
@@ -272,7 +282,7 @@ jobs:
               -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
               -Darcadedb.server.restoreImportAllowLocalUrls=true" \
             "$ARCADEDB_IMAGE"
-          for _ in $(seq 1 60); do
+          for _ in {1..60}; do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
             sleep 2
           done

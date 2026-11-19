@@ -14,6 +14,11 @@ concurrency:
   group: publish
   cancel-in-progress: false
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   publish:
     name: Publish

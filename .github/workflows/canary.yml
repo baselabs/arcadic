@@ -18,6 +18,11 @@ concurrency:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   latest:
     name: canary (ArcadeDB latest)

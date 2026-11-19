@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Keyless project build. Inspect and seal the exact archives that publication uploads.
-set -eu
+set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
     echo "usage: build_archives.sh OUTDIR" >&2

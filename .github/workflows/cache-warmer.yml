@@ -20,6 +20,11 @@ concurrency:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   toolchain:
     name: toolchain
@@ -54,8 +59,9 @@ jobs:
           OTP: ${{ steps.versions.outputs.otp }}
           LANES: ${{ steps.versions.outputs.beam_lanes }}
         run: |
-          echo "builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
-            '[{elixir: $e, otp: $o}] + $lanes')" >> "$GITHUB_OUTPUT"
+          builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
+            '[{elixir: $e, otp: $o}] + $lanes')
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
 
   # deps and _build on every build ci.yml and integration.yml run, compiled for dev and test,
   # which every build's jobs use.

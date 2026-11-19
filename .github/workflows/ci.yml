@@ -18,6 +18,11 @@ concurrency:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # .tool-versions is the only home for runtime versions: its first version of each tool is
   # the default every job below runs on, and every other listed Elixir build, paired with
