@@ -6,10 +6,12 @@ kept as a local, **unpublished** working doc at `docs/CHARTER.md` (not tracked).
 
 ## What this is
 
-A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command API.
+A framework-agnostic Elixir client for ArcadeDB, released on Hex as `arcadic`, with three
+verified transports: HTTP over the Cypher command API (the default) and opt-in Bolt and gRPC.
 The "`postgrex` of ArcadeDB." **Tenant-blind, Ash-agnostic, transport-only.**
 Multitenancy, classification, and Ash resources live in the sibling `ash_arcadic`
-data layer — never here.
+data layer — never here. Forward work here is new ArcadeDB transport capabilities that
+preserve the tenant-blind boundary.
 
 ## Critical rules
 
@@ -177,3 +179,11 @@ Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does 
   arguments but got 3". The two-argument form returns the same rows, relevance order,
   `$score` and fuse RRF scores on 26.7.2, 26.8.1 and 26.12.1-SNAPSHOT, so
   `FullText.search` and the fuse full-text arm emit only the two-argument form.
+
+## graphify (code knowledge graph)
+
+`graphify-out/graph.json` maps this repo (tree-sitter AST; rebuilt by the git post-commit hook;
+gitignored). Prefer `graphify query`, `graphify explain` and `graphify path` for orientation.
+Graph output is navigation, never evidence: Elixir edges are file-local only, so verify
+load-bearing claims against live code. `graphify update .` refreshes it after large uncommitted
+changes.
