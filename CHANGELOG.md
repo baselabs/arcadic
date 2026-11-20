@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project, and reads both back. A second dispatch on the same commit finishes the first:
   the served package must equal the build, and served docs are kept, never compared. It
   refuses first publications, retired versions, missing changelog sections and package
-  byte mismatches. The package, the docs Hex serves, checksums and release notes leave as
-  `release-assets` for infra to attach to the GitHub release. New archive and unmeasured warmer jobs use
+  byte mismatches. The package and the docs this job built and inspected, checksums and
+  release notes leave as `release-assets` for infra to attach to the GitHub release. New archive and unmeasured warmer jobs use
   a 90-minute timeout until their first green run.
 - CI verifies exact runtime versions from `.tool-versions`, checks package contents and
   metadata before publication, and uses measured job timeouts. Publication refuses a

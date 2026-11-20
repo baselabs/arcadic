@@ -150,8 +150,9 @@ release script or a secret. This file points at it and does not copy it.
   served docs. A second dispatch on the same commit finishes the first: the package Hex
   serves must equal the build, and docs Hex serves are kept and never compared. It refuses
   existing tags, retired versions and missing changelog sections, then reads back both
-  archives and exports `release-assets`: the package, the docs Hex serves, checksums and
-  release notes. Infra creates the GitHub release from them after tagging.
+  archives and exports `release-assets`: the package and the docs this job built and
+  inspected, checksums and release notes. Infra creates the GitHub release from them after
+  tagging.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key

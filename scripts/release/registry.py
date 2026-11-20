@@ -123,17 +123,13 @@ def report(state):
             handle.write(output)
 
 
-def verify(name, version, build, docs_output):
-    """Read both archives back; write the docs Hex serves, which the GitHub release carries."""
-    slug = urllib.parse.quote(f"{name}-{version}", safe="")
+def verify(name, version, build):
     for attempt in range(10):
         try:
             state = compare(name, version, build)
-            served = download(f"https://repo.hex.pm/docs/{slug}.tar.gz", missing_ok=True)
-            if state != {"package": "present", "docs": "present"} or served is None:
+            if state != {"package": "present", "docs": "present"}:
                 raise Refusal(f"Hex does not yet serve both archives for {name} {version}")
-            docs_output.write_bytes(served)
-            print(f"Verified package bytes, checksum and served docs for {name} {version}")
+            print(f"Verified package bytes, checksum and docs presence for {name} {version}")
             return
         except Refusal as error:
             if attempt == 9:
@@ -151,8 +147,6 @@ def main():
         sub.add_argument("version")
         if command != "refuse":
             sub.add_argument("build", type=Path)
-        if command == "verify":
-            sub.add_argument("docs_output", type=Path)
     notes = commands.add_parser("notes")
     notes.add_argument("version")
     notes.add_argument("output", type=Path)
@@ -172,7 +166,7 @@ def main():
         elif args.command == "compare":
             report(compare(name, version, args.build))
         else:
-            verify(name, version, args.build, args.docs_output)
+            verify(name, version, args.build)
     except (Refusal, OSError) as error:
         message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::error::{message}", file=sys.stderr)
