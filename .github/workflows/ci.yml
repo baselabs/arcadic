@@ -152,7 +152,9 @@ jobs:
     name: "without optional deps (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    # 18 s on a restored cache, run 44737716871, + 102 s cold dependency build, warmer run
+    # 44703750604: under 2.5 min, so the 5 min floor; measure again on its first cold green run
+    timeout-minutes: 5 # 120 s, runs 44737716871 + 44703750604
     env:
       MIX_ENV: test
     steps:
