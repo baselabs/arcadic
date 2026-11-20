@@ -21,7 +21,6 @@ if Code.ensure_loaded?(DBConnection) do
     > statement-agnostic by design (params-only; it never parses statement
     > semantics), so a write issued through `query/4` on Bolt executes. Use
     > `command/4` for writes on Bolt.
-
     """
 
     @behaviour Arcadic.Transport
@@ -36,6 +35,7 @@ if Code.ensure_loaded?(DBConnection) do
     `:username`, `:password`, `:scheme`, `:ssl_opts`, `:connect_timeout`,
     `:versions` (Bolt 4.4–4.1), and DBConnection pool options. `:uri` is rejected.
 
+    ## Transport security (`:scheme`)
 
     - `"bolt"` (default) — plaintext. ArcadeDB's Bolt is plaintext unless the server is
       configured with `arcadedb.bolt.ssl` + a keystore.
@@ -45,7 +45,6 @@ if Code.ensure_loaded?(DBConnection) do
       — this encrypts but does NOT authenticate the peer (MITM-able: an attacker on the Bolt
       path can present any certificate and every param/row flows to it), so it is a deliberate
       caller opt-in, never a silent default.
-
     """
     @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
     def start_link(opts),

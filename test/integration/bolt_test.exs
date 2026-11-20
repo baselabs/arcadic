@@ -159,9 +159,8 @@ defmodule Arcadic.Integration.BoltTest do
 
     # Redaction (Rule 3): the server FAILURE message must not survive on the returned
     # struct, so it cannot ride DBConnection's connect-failure crash_reason / format_banner
-    # log. The error CLASS (bolt.code) is preserved (Rule-3-permitted); the free-text
-    # message is stripped. Goes RED against the pre-fix raw passthrough (bolt.message ==
-    # "Authentication failed").
+    # log. The known wire status class is preserved in exception; free text is
+    # discarded before the error can reach DBConnection or the caller.
     assert err.exception == "Neo.ClientError.Security.Unauthorized"
     assert err.message == nil
     refute String.contains?(inspect(err), pass)
