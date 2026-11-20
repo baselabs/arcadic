@@ -170,7 +170,7 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
   [ArcadeData/arcadedb#5106](https://github.com/ArcadeData/arcadedb/issues/5106).
 - **`Arcadic.Transport`** — the transport behaviour seam; `Arcadic.Transport.HTTP`
   (Req/Finch) is the default, with two optional transports: `Arcadic.Transport.Bolt`
-  (Bolt v4 via `boltx`) and `Arcadic.Transport.Grpc` (via `:grpc`/`:protobuf`).
+  (native Bolt v4) and `Arcadic.Transport.Grpc` (via `:grpc`/`:protobuf`).
 - **`Arcadic.Error` / `Arcadic.TransportError`** — the typed error taxonomy.
 - **`Arcadic.Telemetry`** — value-free `:telemetry.span/3` spans.
 - **`Arcadic.Identifier`** — allowlist identifier validation.
@@ -651,7 +651,7 @@ response** — the underlying transport's own atom, not a fixed enum: for HTTP,
 whatever Mint/Finch reports (e.g. `:timeout`, `:closed`, `:econnrefused`); for
 Bolt, `:timeout` (a RUN/PULL receive timeout), `:bolt_protocol_error`,
 `:transaction_error`, `:cursor_open`/`:cursor_already_open` (the stream
-interleaving guard), a `boltx` error code, or `:unknown`.
+interleaving guard), a socket error atom, or `:unknown`.
 
 A separate, non-`Arcadic.Error` convention: value-free bare-atom validation
 failures, never echoing the offending value. `{:error, :invalid_identifier}`
@@ -709,10 +709,9 @@ rides telemetry.
 
 ## Bolt transport (optional)
 
-The `Arcadic.Transport.Bolt` adapter (optional `boltx` dependency) runs the query
+The `Arcadic.Transport.Bolt` adapter (optional `db_connection ~> 2.10` dependency) runs the query
 hot path over Bolt. Build it with `Arcadic.Transport.Bolt.setup/1`, which pins Bolt
-to **v4** (`versions: [4.4, 4.3, 4.2, 4.1]` — ArcadeDB speaks v4; boltx defaults to
-v5), uses the non-TLS **`bolt` scheme** (ArcadeDB Bolt is TLS-disabled by default),
+to **v4** (`versions: [4.4, 4.3, 4.2, 4.1]` — ArcadeDB speaks v4), uses the non-TLS **`bolt` scheme** (ArcadeDB Bolt is TLS-disabled by default),
 and takes `username`/`password`. `setup/1` starts the pool AND returns the
 `transport_options` for `Arcadic.connect/3` in one call — `[bolt: pool, bolt_opts:
 resolved]` — carrying both the pool (`:bolt`, for `execute`/`transaction`/`ready?`)
@@ -728,13 +727,15 @@ raises on a Bolt conn). **Vector search is HTTP-only too** —
 Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt `RUN` carries no
 SQL-language selector), so keep vector queries on the HTTP transport.
 
-**`BOLT_*` env vars are rejected.** arcadic **raises** if `BOLT_USER`, `BOLT_PWD`,
-`BOLT_HOST`, or `BOLT_TCP_PORT` is set in the environment — at pool setup
-(`start_link/1`/`setup/1`) **and** on every connect/reconnect. boltx reads those with
-precedence over arcadic's explicit config and re-reads them at connect time, so a var
-set after startup would otherwise silently override the connection or its credentials;
-the connect-time reject closes that window. Unset the var and pass
-`:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
+Host, port and credentials come only from `:scheme`/`:hostname`/`:port`/`:username`/
+`:password`; no environment variable is read.
+
+arcadic owns PackStream, framing, sockets, authentication and DBConnection callbacks.
+Use `Arcadic.Transport.Bolt.Types` graph/spatial/temporal/bytes structs instead of
+third-party driver structs. `Temporal` retains the raw signature and fields,
+including nanosecond precision and legacy local versus UTC epoch semantics.
+Decode limits: 64 MiB per message, 128 nested levels; invalid input returns
+`:bolt_protocol_error` without retaining response bytes.
 
 ## gRPC transport (optional)
 

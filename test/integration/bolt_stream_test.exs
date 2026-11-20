@@ -98,8 +98,7 @@ defmodule Arcadic.Integration.BoltStreamTest do
 
   test "a stream to an unreachable endpoint raises a typed (redacted) error, not a MatchError",
        %{host: host, http_port: http_port, pass: pass, db: db} do
-    # A closed Bolt port → Boltx.Connection.connect returns {:error, _}; the stream must
-    # surface a typed Arcadic error (redacted), never a raw MatchError.
+    # A refused connection surfaces a typed, value-free transport error.
     bad_opts = Bolt.resolve_opts(hostname: host, port: 65_535, username: "root", password: pass)
 
     conn =
@@ -120,10 +119,8 @@ defmodule Arcadic.Integration.BoltStreamTest do
 
   test "a stream to an OPEN non-Bolt endpoint (the HTTP port) raises a typed error, not a raw exception",
        %{host: host, http_port: http_port, pass: pass, db: db} do
-    # Point Bolt at the HTTP port: TCP connects, but the handshake reply is non-Bolt
-    # bytes, so boltx's decode_version/1 (single binary clause) FunctionClauseErrors
-    # inside Boltx.Connection.connect. arcadic must convert that raise to a typed
-    # (redacted) TransportError — never let the raw exception escape.
+    # The HTTP endpoint accepts TCP but cannot negotiate Bolt. The failure must
+    # remain a typed, value-free TransportError.
     bad_opts =
       Bolt.resolve_opts(
         hostname: host,

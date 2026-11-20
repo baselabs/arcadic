@@ -74,7 +74,7 @@ defmodule Arcadic.ConnGuardProbeTest do
   defp collect(_, _module, acc), do: acc
 
   defp qualify(nil, {:__aliases__, _, parts}), do: Module.concat(parts)
-  defp qualify(parent, {:__aliases__, _, parts}), do: Module.concat(parent, parts)
+  defp qualify(parent, {:__aliases__, _, parts}), do: Module.concat([parent | parts])
   defp qualify(nil, atom) when is_atom(atom), do: atom
   defp qualify(parent, atom) when is_atom(atom), do: Module.concat(parent, atom)
 
@@ -90,6 +90,18 @@ defmodule Arcadic.ConnGuardProbeTest do
   end
 
   # -- the probe ---------------------------------------------------------------
+
+  test "AST discovery qualifies nested relative module aliases" do
+    source = """
+    defmodule Arcadic do
+      defmodule Nested.Guard do
+        def run(%Conn{} = conn), do: conn
+      end
+    end
+    """
+
+    assert [{Arcadic.Nested.Guard, :run, 1}] = walk(Code.string_to_quoted!(source), nil, [])
+  end
 
   test "every public conn-first function raises value-free on a wrong-typed conn" do
     targets = discover()

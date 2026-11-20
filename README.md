@@ -29,7 +29,7 @@ ArcadeDB").
 - **Session transactions** — `transaction/3` opens an ArcadeDB session and commits
   on normal return, rolls back and reraises on exception (postgrex semantics).
 - **Pluggable transport** — HTTP (Req/Finch) by default, plus two optional transports:
-  **Bolt** v4 (`boltx`) for the query hot path and lazy streaming, and **gRPC**
+  **Bolt** v4 (native client) for the query hot path and lazy streaming, and **gRPC**
   (`Arcadic.Transport.Grpc`, behind optional `:grpc`/`:protobuf` deps) — a real
   server-cursor `query_stream`, transactions, graph + document bulk ingest
   (`Arcadic.Bulk`/`Arcadic.Ingest`), single-record CRUD (`Arcadic.Record`), admin, and
@@ -375,7 +375,7 @@ Non-bang calls return `{:ok, rows}` or `{:error, %Arcadic.Error{} | %Arcadic.Tra
 the underlying transport's own atom, not a fixed enum: for HTTP, whatever Mint/Finch
 reports (e.g. `:timeout`, `:closed`, `:econnrefused`); for Bolt, `:timeout` (a RUN/PULL
 receive timeout), `:bolt_protocol_error`, `:transaction_error`, `:cursor_open` /
-`:cursor_already_open` (the stream-interleaving guard), a `boltx` error code, or
+`:cursor_already_open` (the stream-interleaving guard), a socket error atom, or
 `:unknown` as a last-resort fallback.
 
 A separate, non-`Arcadic.Error` convention: an invalid identifier (e.g. a bad type name
@@ -817,9 +817,8 @@ network path, e.g. local dev).
 
 ## Bolt transport (optional)
 
-The query hot path can run over Bolt via the optional
-[`boltx`](https://hex.pm/packages/boltx) dependency. Add `{:boltx, "~> 0.0.6"}`, then
-build the connection with `Arcadic.Transport.Bolt.setup/1` (it pins Bolt v4 —
+The query hot path runs over arcadic's native Bolt client. Add the optional
+`{:db_connection, "~> 2.10"}` dependency, then build the connection with `Arcadic.Transport.Bolt.setup/1` (it pins Bolt v4 —
 `versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which ArcadeDB uses,
 and takes `username`/`password`). `setup/1` starts the pool AND returns the
 `transport_options` for `Arcadic.connect/3` in one call, carrying both `:bolt` (the pool,
@@ -846,13 +845,17 @@ conn =
 For paging large result sets, `Arcadic.query_stream/4` returns a lazy `Stream.t()`
 of rows over Bolt, chunked via `PULL`.
 
-Bolt **raises** if a `BOLT_USER`, `BOLT_PWD`, `BOLT_HOST`, or `BOLT_TCP_PORT`
-environment variable is set — at pool setup (`start_link/1`/`setup/1`) and on every
-connect/reconnect: boltx reads those with precedence over arcadic's explicit config and
-re-reads them at connect time, so a var set after startup would otherwise silently
-override the connection or its credentials; the connect-time reject closes that window.
-Unset the variable and pass `:scheme`/`:hostname`/`:port`/`:username`/`:password`
-explicitly.
+Bolt reads its host, port and credentials only from the options you pass; no
+environment variable is consulted.
+
+Native graph results use `Arcadic.Transport.Bolt.Types.Node`, `Relationship`,
+`UnboundRelationship`, and `Path`. `Types.Temporal` retains the wire signature,
+seconds, nanoseconds, and zone/offset without losing precision or requiring a time
+zone database. `Types.Duration`, `Types.Point`, and `Types.Bytes` are native bound
+parameters and result values; Elixir dates/times are also accepted as parameters.
+`Types.Structure` preserves extension signatures. Replies are limited to 64 MiB per
+message and PackStream nesting to 128 levels; malformed replies fail value-free
+with `:bolt_protocol_error`.
 
 Vector search is **HTTP-only** — `Arcadic.Vector` (`LSM_VECTOR` / `LSM_SPARSE_VECTOR`)
 runs SQL, and Bolt is Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt
@@ -916,7 +919,7 @@ def deps do
   [
     {:arcadic, "~> 1.0"},
     # optional, for the Bolt transport:
-    {:boltx, "~> 0.0.6"},
+    {:db_connection, "~> 2.10"},
     # optional, for the gRPC transport:
     {:grpc, "~> 1.1"},
     {:protobuf, "~> 0.17.1"}
@@ -991,8 +994,6 @@ ArcadeDB's bulk facilities — far faster than any `INSERT`/`CREATE EDGE` loop:
 - [**ArcadeDB**](https://arcadedb.com) — the multi-model database Arcadic speaks to.
 - [**arcadex**](https://hex.pm/packages/arcadex) — prior-art ArcadeDB client that
   served as a reference for the HTTP command-API request/response shapes.
-- [**boltx**](https://hex.pm/packages/boltx) — the Bolt protocol driver behind the
-  optional Bolt transport.
 - [**Req**](https://hex.pm/packages/req) / [**Finch**](https://hex.pm/packages/finch)
   — the HTTP client and pool behind the default transport.
 - [**DBConnection**](https://hex.pm/packages/db_connection) — connection pooling for

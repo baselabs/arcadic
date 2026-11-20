@@ -54,7 +54,7 @@ defmodule Arcadic.MixProject do
       {:mint, "~> 1.11"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
-      {:boltx, "~> 0.0.6", optional: true},
+      {:db_connection, "~> 2.10", optional: true},
       {:mint_web_socket, "~> 1.0", optional: true},
       {:grpc, "~> 1.1", optional: true},
       {:protobuf, "~> 0.17.1", optional: true},

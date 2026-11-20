@@ -192,6 +192,11 @@ release script or a secret. This file points at it and does not copy it.
   `-Dio.grpc.netty.shaded.io.netty.handler.ssl.noOpenSsl=true`; netty-tcnative
   crashes otherwise). Proves the fail-closed contract: untrusted CA and bare
   OS store both reject the handshake.
+- **Bolt is native** (`lib/arcadic/transport/bolt/`): arcadic owns PackStream v1,
+  chunking, Bolt v4 messages, sockets and DBConnection callbacks. The compile gate
+  is the optional `db_connection` dependency; no third-party Bolt driver is used.
+  Unit byte peers cover hostile/truncated replies and stalls that a live server
+  cannot intentionally generate; the integration tier always uses real ArcadeDB.
 - **Bolt live suites** (tags `:integration_bolt`, `:integration_bolt_tls`):
   Bolt is not enabled by default — the plugin flag, BOTH env families
   (`ARCADIC_BOLT_*` and the B6 describe's `ARCADIC_TEST_BOLT_*`), and the
