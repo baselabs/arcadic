@@ -13,9 +13,21 @@
 #
 # Nothing is compiled or loaded from the dependencies: a lane must test a host its Elixir can
 # run, never a combination Mix accepts only with a requirement warning.
+#
+# `elixir scripts/ci_host_mode.exs --without-optional` removes every optional dependency of
+# the environment the same way, whatever this Elixir satisfies: the smallest host, built on
+# the default toolchain so each optional dependency's absent branch is compiled there too. It
+# fails when the project declares no optional dependency, so it cannot pass vacuously.
 
 defmodule HostMode do
-  def run do
+  def run(argv) do
+    without_optional? =
+      case argv do
+        [] -> false
+        ["--without-optional"] -> true
+        _ -> fail("usage: elixir scripts/ci_host_mode.exs [--without-optional]")
+      end
+
     env = String.to_atom(System.get_env("MIX_ENV", "dev"))
     {:ok, project} = mix_project()
 
@@ -42,16 +54,9 @@ defmodule HostMode do
     end
 
     dropped =
-      for {app, _} <- optional, blockers = unmet(app, lock, elixir), blockers != [] do
-        reasons = Enum.map_join(blockers, ", ", fn {pkg, req} -> "#{pkg} #{req}" end)
-
-        IO.puts(
-          :stderr,
-          "Host mode: without optional #{app}; Elixir #{elixir} does not satisfy #{reasons}"
-        )
-
-        app
-      end
+      if without_optional?,
+        do: without_optional(optional, env),
+        else: unsupported_optional(optional, lock, elixir)
 
     if dropped == [] do
       IO.puts(
@@ -63,6 +68,28 @@ defmodule HostMode do
 
       {_, 0} =
         System.cmd("mix", ["deps.unlock", "--unused"], into: IO.stream(), stderr_to_stdout: true)
+    end
+  end
+
+  defp without_optional([], env),
+    do: fail("--without-optional: no optional dependency for #{env}; nothing to build without")
+
+  defp without_optional(optional, _env) do
+    apps = Enum.map(optional, fn {app, _} -> app end)
+    IO.puts(:stderr, "Host mode: without every optional dependency (#{Enum.join(apps, ", ")})")
+    apps
+  end
+
+  defp unsupported_optional(optional, lock, elixir) do
+    for {app, _} <- optional, blockers = unmet(app, lock, elixir), blockers != [] do
+      reasons = Enum.map_join(blockers, ", ", fn {pkg, req} -> "#{pkg} #{req}" end)
+
+      IO.puts(
+        :stderr,
+        "Host mode: without optional #{app}; Elixir #{elixir} does not satisfy #{reasons}"
+      )
+
+      app
     end
   end
 
@@ -173,4 +200,4 @@ defmodule HostMode do
   end
 end
 
-HostMode.run()
+HostMode.run(System.argv())

@@ -143,6 +143,48 @@ jobs:
 
       - run: mix test --warnings-as-errors
 
+  # The smallest host on the default toolchain: every optional dependency removed (Bolt's
+  # db_connection, mint_web_socket, grpc and protobuf today), so each one's absent branch
+  # compiles with warnings as errors and the unit suite runs without it. Host mode drops an
+  # optional dependency on a lane only when that lane's Elixir cannot run it; this job does
+  # not depend on any lane's Elixir.
+  without-optional:
+    name: "without optional deps (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90 # no green run yet
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
+
+      - run: mix deps.get --check-locked
+
+      - name: Remove every optional dependency
+        run: elixir scripts/ci_host_mode.exs --without-optional
+
+      - run: mix compile --force --warnings-as-errors
+
+      - run: mix test --warnings-as-errors
+
   integration:
     name: live integration (ArcadeDB 26.11.1)
     uses: ./.github/workflows/integration.yml
@@ -190,7 +232,7 @@ jobs:
 
   qualified:
     if: always()
-    needs: [toolchain, unit, compat, integration, release-archives]
+    needs: [toolchain, unit, compat, without-optional, integration, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44160534612
     timeout-minutes: 5 # 7 s, run 44160534612

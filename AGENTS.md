@@ -118,7 +118,9 @@ CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mi
 `mix quality`) and `mix docs --warnings-as-errors` on the default toolchain; compile and unit tests on the
 supported floor and newest Elixir/OTP, each on the dependency tree a host on that Elixir can run
 (`elixir scripts/ci_host_mode.exs` leaves out an optional dependency whose chain needs a newer
-Elixir); the live integration lanes; and every notebook the
+Elixir); compile (`--force --warnings-as-errors`) and unit tests with every optional
+dependency removed on the default toolchain (`ci_host_mode.exs --without-optional`, the
+`without-optional` job); the live integration lanes; and every notebook the
 package ships, run top to bottom against this checkout and a live server by
 `elixir scripts/run_notebook.exs NOTEBOOK.livemd`. Run the ones that cover your change.
 Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does not match

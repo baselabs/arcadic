@@ -43,7 +43,9 @@ These change only the optional Bolt transport; HTTP and gRPC consumers are unaff
   lane runs 1.16.3 on OTP 26 and builds what a consumer's test suite builds (`MIX_ENV=test`)
   on that Elixir: `scripts/ci_host_mode.exs` reads every locked dependency's own Elixir
   requirement, leaves out an optional dependency whose chain needs a newer Elixir (gRPC on
-  1.16), and fails the lane if a required one does.
+  1.16), and fails the lane if a required one does. A `without-optional` job removes every
+  optional dependency (`ci_host_mode.exs --without-optional`) and force-compiles with
+  warnings as errors and unit-tests that smallest host on the default Elixir.
   The dependency audit and other dev-only tools run on the default toolchain, and
   `mix_audit` is a dev-only dependency.
 
