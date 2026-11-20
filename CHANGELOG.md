@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The lock moves to req 0.7.5, finch 0.25.0, mint_web_socket 1.0.6, nimble_options 1.2.0
+  and nimble_pool 1.2.0, and the test-only bandit 1.15.0 and websock_adapter 0.7.2, so CI
+  tests what a fresh consumer resolves. No constraint changes.
+
 - Qualification builds the package archive twice with Hex 2.7.0 and requires identical
   bytes, builds the docs archive once with a `release.json` naming the package, version and
   commit, and inspects both. Publication builds without a
