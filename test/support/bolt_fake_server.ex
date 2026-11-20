@@ -60,7 +60,7 @@ defmodule Arcadic.Test.BoltFakeServer do
     :gen_tcp.send(sock, <<0, 0, 4, 4>>)
     _ = :gen_tcp.recv(sock, 0, 1000)
     # IGNORED with an illegal field carrying data: reject without retaining it.
-    :gen_tcp.send(sock, <<0, 23, 0xB1, 0x7E, 0xD0, 19, "SERVER_HELLO_SECRET!", 0, 0>>)
+    :gen_tcp.send(sock, <<0, 24, 0xB1, 0x7E, 0xD0, 20, "SERVER_HELLO_SECRET!", 0, 0>>)
   end
 
   defp reply(sock, :stall_after_handshake) do
