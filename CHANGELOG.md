@@ -5,11 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-20
 
 ### Breaking
 
-These change only the optional Bolt transport; HTTP and gRPC consumers are unaffected.
+These change only the optional Bolt transport. HTTP and gRPC consumers upgrade with no
+code change, on Elixir 1.16 or later (see Changed).
 
 - **Bolt is arcadic's own client; `boltx` is gone.** arcadic now owns the PackStream v1
   codec, chunk framing, the Bolt v4 client and the DBConnection implementation. Queries,

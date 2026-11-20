@@ -917,9 +917,11 @@ Add `arcadic` from [Hex](https://hex.pm/packages/arcadic):
 ```elixir
 def deps do
   [
-    {:arcadic, "~> 1.0"},
+    {:arcadic, "~> 2.0"},
     # optional, for the Bolt transport:
     {:db_connection, "~> 2.10"},
+    # optional, for change events (Arcadic.Changes):
+    {:mint_web_socket, "~> 1.0"},
     # optional, for the gRPC transport:
     {:grpc, "~> 1.1"},
     {:protobuf, "~> 0.17.1"}

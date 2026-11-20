@@ -42,7 +42,7 @@ you launch Livebook (`ARCADIC_HTTP_URL`, `ARCADIC_BOLT_HOST`, `ARCADIC_BOLT_PORT
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 1.0"},
+  {:arcadic, "~> 2.0"},
   {:db_connection, "~> 2.10"},
   {:kino, "~> 0.14"}
 ])

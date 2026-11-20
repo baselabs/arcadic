@@ -39,7 +39,7 @@ the `docker run` above.
 
 ```elixir
 Mix.install([
-  {:arcadic, "~> 1.0"},
+  {:arcadic, "~> 2.0"},
   {:kino, "~> 0.14"}
 ])
 ```
