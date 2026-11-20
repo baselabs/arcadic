@@ -29,7 +29,7 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 15 s, run 44703750604
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -70,7 +70,7 @@ jobs:
     needs: toolchain
     # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04, as in ci.yml.
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 102 s, run 44703750604
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +136,7 @@ jobs:
     name: "PLT (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: [toolchain, mix]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 133 s, run 44703750604
     env:
       MIX_ENV: test
     steps:

@@ -31,7 +31,7 @@ jobs:
     name: toolchain
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.2 min, run 44120279901
-    timeout-minutes: 5
+    timeout-minutes: 5 # 14 s, run 44504139800
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -49,7 +49,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-24.04
     # 2x 4.5 min, run 44120279901
-    timeout-minutes: 9
+    timeout-minutes: 9 # 270 s, run 44120279901
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,7 +100,7 @@ jobs:
     # OTP 26 (the documented floor) has no ubuntu-24.04 build; its lane runs on 22.04.
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
     # 2x 2.0 min, run 44152257276, raised to the 5 min floor
-    timeout-minutes: 5
+    timeout-minutes: 5 # 121 s, run 44152257276
     strategy:
       fail-fast: false
       matrix:
@@ -148,7 +148,7 @@ jobs:
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 56 s, run 44702660118
     env:
       MIX_ENV: dev
     steps:
@@ -183,7 +183,7 @@ jobs:
     needs: [toolchain, unit, compat, integration, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44160534612
-    timeout-minutes: 5
+    timeout-minutes: 5 # 7 s, run 44160534612
     steps:
       - name: Require every qualification job to succeed
         env:

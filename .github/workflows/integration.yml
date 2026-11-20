@@ -25,7 +25,7 @@ jobs:
     name: lanes
     runs-on: ubuntu-24.04
     # 2x 1.9 min, run 44158069926, raised to the 5 min floor
-    timeout-minutes: 5
+    timeout-minutes: 5 # 117 s, run 44158069926
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
@@ -234,7 +234,7 @@ jobs:
     name: notebooks
     runs-on: ubuntu-24.04
     # 2x 1.1 min, run 44122846610, raised to the 5 min floor
-    timeout-minutes: 5
+    timeout-minutes: 5 # 64 s, run 44122846610
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
