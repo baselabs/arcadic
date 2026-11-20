@@ -3,20 +3,37 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+# A served or built archive larger than this, read or unpacked, is refused.
+ARCHIVE_LIMIT = 256 * 1024 * 1024
+COMMIT = re.compile(r"[0-9a-f]{40}")
+NUMERIC = r"(?:0|[1-9][0-9]*)"
+IDENTIFIER = rf"(?:{NUMERIC}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER = re.compile(
+    rf"{NUMERIC}\.{NUMERIC}\.{NUMERIC}"
+    rf"(?:-{IDENTIFIER}(?:\.{IDENTIFIER})*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 
 
 class Refusal(Exception):
     """A named reason to stop publication without exposing a response body."""
+
+
+class Provenance(Refusal):
+    """Served docs that name no commit on the published history; read-back never retries it."""
 
 
 def download(url, missing_ok=False):
@@ -24,7 +41,10 @@ def download(url, missing_ok=False):
     for attempt in range(3):
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return response.read()
+                data = response.read(ARCHIVE_LIMIT + 1)
+                if len(data) > ARCHIVE_LIMIT:
+                    raise Refusal(f"Registry response exceeds {ARCHIVE_LIMIT} bytes at {url}")
+                return data
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()
@@ -94,6 +114,81 @@ def refuse(name, version):
     print(f"Publication preflight passed for {name} {version}")
 
 
+def regular_files(archive):
+    """Every entry a plain file at a safe relative path, unpacked within ARCHIVE_LIMIT."""
+    files, total = {}, 0
+    for entry in archive.getmembers():
+        path = PurePosixPath(entry.name)
+        if (not entry.name or path.is_absolute() or ".." in path.parts
+                or "\\" in entry.name or not entry.isfile()):
+            raise Refusal(f"Unsafe archive entry: {entry.name}")
+        name = str(path)
+        if name == "." or name in files:
+            raise Refusal(f"Duplicate or empty archive path: {entry.name}")
+        total += entry.size
+        if total > ARCHIVE_LIMIT:
+            raise Refusal(f"Archive unpacks to more than {ARCHIVE_LIMIT} bytes")
+        files[name] = archive.extractfile(entry).read()
+    return files
+
+
+def extract(files, destination):
+    for name, data in files.items():
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+def inspect_docs(data, name, version):
+    """Layout and provenance of a docs archive; returns the commit its release.json names."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            files = regular_files(archive)
+    except (tarfile.TarError, OSError, EOFError):
+        raise Refusal("Docs archive is not a readable gzip tar") from None
+    if "index.html" not in files:
+        raise Refusal("Docs archive has no index.html")
+    if any(SEMVER.fullmatch(path.split("/")[0]) for path in files):
+        raise Refusal("Top-level docs entries cannot match a semantic version")
+    try:
+        meta = json.loads(files.get("release.json", b"").decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise Provenance(f"Docs for {name} {version} carry no readable release.json") from None
+    if (not isinstance(meta, dict) or set(meta) != {"package", "version", "commit"}
+            or meta["package"] != name or meta["version"] != version
+            or not isinstance(meta["commit"], str) or not COMMIT.fullmatch(meta["commit"])):
+        raise Provenance(f"Docs release.json does not name {name} {version} and a full commit")
+    return meta["commit"]
+
+
+def inspect_build(name, version, commit, build, scratch):
+    """Inspect the built archives; unpack the package for inspect_package.exs."""
+    with tarfile.open(build / "package.tar", "r:") as archive:
+        outer = regular_files(archive)
+    if set(outer) != {"VERSION", "CHECKSUM", "metadata.config", "contents.tar.gz"}:
+        raise Refusal("Unexpected Hex package layout")
+    extract(outer, scratch / "outer")
+    with tarfile.open(fileobj=io.BytesIO(outer["contents.tar.gz"]), mode="r:gz") as archive:
+        extract(regular_files(archive), scratch / "contents")
+    if inspect_docs((build / "docs.tar.gz").read_bytes(), name, version) != commit:
+        raise Refusal(f"Docs release.json does not name the built commit {commit}")
+    print("Archive paths, file kinds, docs layout and release.json passed inspection")
+
+
+def on_published_history(commit):
+    """The commit is the dispatched commit or its ancestor; the checkout is that default-branch head."""
+    def git(*args):
+        try:
+            return subprocess.run(["git", *args], capture_output=True, text=True, timeout=60, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise Refusal("Commit history lookup failed; publication refused") from None
+    shallow = git("rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0 or shallow.stdout.strip() != "false":
+        raise Refusal("Read-back needs the full default-branch history; publication refused")
+    if git("merge-base", "--is-ancestor", commit, "HEAD").returncode != 0:
+        raise Provenance(f"Served docs name commit {commit}, which is not on the published history; publication refused")
+
+
 def compare(name, version, build):
     """The package is the release: served package bytes must equal the build.
 
@@ -123,14 +218,23 @@ def report(state):
             handle.write(output)
 
 
-def verify(name, version, build):
+def verify(name, version, build, docs_output):
+    """Read both archives back; inspect the served docs and write them for release-assets."""
+    slug = urllib.parse.quote(f"{name}-{version}", safe="")
     for attempt in range(10):
         try:
             state = compare(name, version, build)
-            if state != {"package": "present", "docs": "present"}:
+            served = download(f"https://repo.hex.pm/docs/{slug}.tar.gz", missing_ok=True)
+            if state != {"package": "present", "docs": "present"} or served is None:
                 raise Refusal(f"Hex does not yet serve both archives for {name} {version}")
-            print(f"Verified package bytes, checksum and docs presence for {name} {version}")
+            commit = inspect_docs(served, name, version)
+            on_published_history(commit)
+            docs_output.write_bytes(served)
+            print(f"Verified package bytes and checksum, and served docs from published commit {commit}")
+            report({"commit": commit})
             return
+        except Provenance:
+            raise
         except Refusal as error:
             if attempt == 9:
                 raise
@@ -147,6 +251,14 @@ def main():
         sub.add_argument("version")
         if command != "refuse":
             sub.add_argument("build", type=Path)
+        if command == "verify":
+            sub.add_argument("docs_output", type=Path)
+    built = commands.add_parser("inspect-build")
+    built.add_argument("name")
+    built.add_argument("version")
+    built.add_argument("commit")
+    built.add_argument("build", type=Path)
+    built.add_argument("scratch", type=Path)
     notes = commands.add_parser("notes")
     notes.add_argument("version")
     notes.add_argument("output", type=Path)
@@ -165,8 +277,12 @@ def main():
             refuse(name, version)
         elif args.command == "compare":
             report(compare(name, version, args.build))
+        elif args.command == "inspect-build":
+            if not COMMIT.fullmatch(args.commit):
+                raise Refusal("inspect-build needs the full commit being built")
+            inspect_build(name, version, args.commit, args.build, args.scratch)
         else:
-            verify(name, version, args.build)
+            verify(name, version, args.build, args.docs_output)
     except (Refusal, OSError) as error:
         message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::error::{message}", file=sys.stderr)

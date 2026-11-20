@@ -1006,8 +1006,8 @@ Each [GitHub release](https://github.com/baselabs/arcadic/releases) carries the
 package archive, docs archive, `SHA256SUMS` and release notes. Verify the downloaded
 archives with `sha256sum --check SHA256SUMS`. The package archive is the one Hex serves for
 that version, so its SHA-256 also matches the checksum Hex reports. The docs archive is the
-one the release run built from the same package; its bytes can differ from the docs Hex
-serves, so compare packages, not docs.
+one Hex serves; its `release.json` names the commit the docs were built from, which is the
+commit the release tag points to.
 
 ## License
 

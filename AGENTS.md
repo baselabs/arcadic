@@ -144,15 +144,17 @@ release script or a secret. This file points at it and does not copy it.
   Qualification and publication use `scripts/release/build_archives.sh` with the Hex version
   in `scripts/release/hex-version` to build and inspect both archives before any key is
   available: the package is built twice and must match byte for byte; docs are built once,
-  because a docs build is not byte-stable. Publication has no cache; its isolated
+  because a docs build is not byte-stable, and carry `release.json` naming the package,
+  version and the commit they were built from. Publication has no cache; its isolated
   `mix run --no-mix-exs` step uploads only what Hex does not yet serve for an existing
   package name, and holds the key only for that upload. It never replaces a package or
-  served docs. A second dispatch on the same commit finishes the first: the package Hex
-  serves must equal the build, and docs Hex serves are kept and never compared. It refuses
-  existing tags, retired versions and missing changelog sections, then reads back both
-  archives and exports `release-assets`: the package and the docs this job built and
-  inspected, checksums and release notes. Infra creates the GitHub release from them after
-  tagging.
+  served docs. A second dispatch finishes the first: the package Hex serves must equal the
+  build, and docs Hex serves are kept and never compared. It refuses existing tags, retired
+  versions and missing changelog sections. Read-back requires the served docs' `release.json`
+  to name this release and the dispatched commit or an ancestor on the default branch (the
+  published commit, which infra tags), and exports `release-assets`: the package, those
+  inspected served docs, checksums and release notes. Infra creates the GitHub release from
+  them.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key

@@ -12,6 +12,17 @@ if [ "${MIX_ENV:-}" != dev ]; then
 fi
 
 root=$(pwd -P)
+# release.json names the commit the docs were built from: the run's GITHUB_SHA, checked out here.
+commit=${GITHUB_SHA:-}
+if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+    echo "::error::Archive builds require GITHUB_SHA, the full commit being built" >&2
+    exit 1
+fi
+head=$(git rev-parse HEAD)
+if [ "$head" != "$commit" ]; then
+    printf '::error::Checkout %s is not GITHUB_SHA %s\n' "$head" "$commit" >&2
+    exit 1
+fi
 expected_hex=$(cat scripts/release/hex-version)
 hex_info=$(mix hex.info)
 actual_hex=$(printf '%s\n' "$hex_info" | awk '$1 == "Hex:" { print $2 }')
@@ -29,6 +40,8 @@ mkdir "$scratch/empty"
 
 VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
 export VERSION
+name=$(mix run --no-start --no-compile --no-deps-check \
+    -e 'c = Mix.Project.config(); IO.puts(c[:package][:name] || c[:app])')
 
 mix hex.build --output "$out/package.tar"
 mix hex.build --output "$scratch/package.tar"
@@ -38,66 +51,15 @@ cmp "$out/package.tar" "$scratch/package.tar"
 # a docs build is not byte-stable, so they are built once and inspected, never compared.
 rm -rf doc
 mix docs --warnings-as-errors
+python3 -I -c 'import json, sys; print(json.dumps(dict(zip(("package", "version", "commit"), sys.argv[1:]))))' \
+    "$name" "$VERSION" "$commit" > doc/release.json
 (
     cd "$scratch/empty"
     mix run --no-mix-exs "$root/scripts/release/docs_archive.exs" "$root/doc" "$out/docs.tar.gz"
 )
 
-# Validate paths and file kinds before extracting, including in the nested tarball.
-python3 -I - "$out/package.tar" "$scratch" "$out/docs.tar.gz" <<'PY'
-import io
-import re
-import sys
-import tarfile
-from pathlib import Path, PurePosixPath
-
-package, scratch, docs = map(Path, sys.argv[1:])
-
-
-def regular_files(archive):
-    files = {}
-    for entry in archive.getmembers():
-        path = PurePosixPath(entry.name)
-        if (not entry.name or path.is_absolute() or ".." in path.parts
-                or "\\" in entry.name or not entry.isfile()):
-            raise SystemExit(f"::error::Unsafe archive entry: {entry.name}")
-        name = str(path)
-        if name == "." or name in files:
-            raise SystemExit(f"::error::Duplicate or empty archive path: {entry.name}")
-        files[name] = archive.extractfile(entry).read()
-    return files
-
-
-def extract(files, destination):
-    for name, data in files.items():
-        target = destination / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-
-
-with tarfile.open(package, "r:") as archive:
-    outer = regular_files(archive)
-if set(outer) != {"VERSION", "CHECKSUM", "metadata.config", "contents.tar.gz"}:
-    raise SystemExit("::error::Unexpected Hex package layout")
-extract(outer, scratch / "outer")
-with tarfile.open(fileobj=io.BytesIO(outer["contents.tar.gz"]), mode="r:gz") as archive:
-    extract(regular_files(archive), scratch / "contents")
-
-with tarfile.open(docs, "r:gz") as archive:
-    files = regular_files(archive)
-if "index.html" not in files:
-    raise SystemExit("::error::Docs archive has no index.html")
-numeric = r"(?:0|[1-9][0-9]*)"
-identifier = rf"(?:{numeric}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-semver = re.compile(
-    rf"{numeric}\.{numeric}\.{numeric}"
-    rf"(?:-{identifier}(?:\.{identifier})*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-)
-if any(semver.fullmatch(name.split("/")[0]) for name in files):
-    raise SystemExit("::error::Top-level docs entries cannot match a semantic version")
-print("Archive paths, file kinds, and docs layout passed inspection")
-PY
+# Paths, file kinds, the Hex layout, docs layout and release.json, before any extraction.
+python3 -I scripts/release/registry.py inspect-build "$name" "$VERSION" "$commit" "$out" "$scratch"
 
 elixir scripts/inspect_package.exs "$scratch/contents" "$scratch/outer/metadata.config"
 (

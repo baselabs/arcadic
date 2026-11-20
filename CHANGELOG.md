@@ -10,13 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Qualification builds the package archive twice with Hex 2.7.0 and requires identical
-  bytes, builds the docs archive once, and inspects both. Publication builds without a
+  bytes, builds the docs archive once with a `release.json` naming the package, version and
+  commit, and inspects both. Publication builds without a
   cache or key, uploads only what Hex does not yet serve from a directory without a Mix
   project, and reads both back. A second dispatch on the same commit finishes the first:
   the served package must equal the build, and served docs are kept, never compared. It
-  refuses first publications, retired versions, missing changelog sections and package
-  byte mismatches. The package and the docs this job built and inspected, checksums and
-  release notes leave as `release-assets` for infra to attach to the GitHub release. New archive and unmeasured warmer jobs use
+  refuses first publications, retired versions, missing changelog sections, package byte
+  mismatches and served docs whose `release.json` names another release or a commit off the
+  default branch's history. The package, the inspected served docs, checksums and release
+  notes leave as `release-assets` for infra to attach to the GitHub release. New archive and unmeasured warmer jobs use
   a 90-minute timeout until their first green run.
 - CI verifies exact runtime versions from `.tool-versions`, checks package contents and
   metadata before publication, and uses measured job timeouts. Publication refuses a
