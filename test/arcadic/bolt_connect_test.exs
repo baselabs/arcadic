@@ -40,7 +40,6 @@ defmodule Arcadic.BoltConnectTest do
     assert own_tcp_ports() - before == 0
   end
 
-
   test "a stalled server surfaces :timeout within connect_timeout and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:stall)
     before = own_tcp_ports()
@@ -62,6 +61,7 @@ defmodule Arcadic.BoltConnectTest do
   test "a server that stalls AFTER the handshake bounds the HELLO leg by connect_timeout and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:stall_after_handshake)
     before = own_tcp_ports()
+
     assert {:error, :timeout} =
              Bolt.leak_safe_connect(opts_for(port))
 

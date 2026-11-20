@@ -102,18 +102,9 @@ if Code.ensure_loaded?(DBConnection) do
     defp put_transport_scheme(opts, "bolt"), do: Keyword.put(opts, :scheme, "bolt")
 
     defp put_transport_scheme(opts, "bolt+s") do
-      ssl_opts = Keyword.get(opts, :ssl_opts, [])
-
-      if Keyword.get(ssl_opts, :verify) == :verify_none do
-        Keyword.put(opts, :scheme, "bolt+s")
-      else
-        cacert_opts =
-          if Keyword.has_key?(ssl_opts, :cacerts) or Keyword.has_key?(ssl_opts, :cacertfile),
-            do: ssl_opts,
-            else: Keyword.put(ssl_opts, :cacerts, :public_key.cacerts_get())
-
-        opts |> Keyword.put(:scheme, "bolt+s") |> Keyword.put(:ssl_opts, Keyword.put(cacert_opts, :verify, :verify_peer))
-      end
+      opts
+      |> Keyword.put(:scheme, "bolt+s")
+      |> Keyword.put(:ssl_opts, Client.tls_options(Keyword.get(opts, :ssl_opts, [])))
     end
 
     defp reject_bolt_env! do
@@ -290,7 +281,8 @@ if Code.ensure_loaded?(DBConnection) do
     end
 
     @doc false
-    @spec leak_safe_connect(keyword()) :: {:ok, map()} | {:error, Error.t() | TransportError.t() | atom()}
+    @spec leak_safe_connect(keyword()) ::
+            {:ok, map()} | {:error, Error.t() | TransportError.t() | atom()}
     def leak_safe_connect(bolt_opts) do
       reject_bolt_env!()
       Client.connect(bolt_opts)
@@ -328,9 +320,11 @@ if Code.ensure_loaded?(DBConnection) do
     end
 
     @doc false
-    @spec stream_run(Client.t(), String.t(), map(), map(), timeout()) :: {:ok, map()} | {:error, term()}
+    @spec stream_run(Client.t(), String.t(), map(), map(), timeout()) ::
+            {:ok, map()} | {:error, term()}
     def stream_run(client, statement, params, extra, timeout),
-      do: Client.request(client, :run, [statement, params, Map.put_new(extra, :mode, "w")], timeout)
+      do:
+        Client.request(client, :run, [statement, params, Map.put_new(extra, :mode, "w")], timeout)
 
     @doc false
     @spec stream_pull(Client.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
@@ -392,6 +386,7 @@ if Code.ensure_loaded?(DBConnection) do
     @spec map_transaction_outcome(term()) ::
             {:ok, term()} | {:error, term()} | {:__rollback__, term()}
     def map_transaction_outcome({:ok, result}), do: {:ok, result}
+
     def map_transaction_outcome({:error, {:arcadic_rollback, reason}}),
       do: {:__rollback__, reason}
 
@@ -410,6 +405,7 @@ if Code.ensure_loaded?(DBConnection) do
     @impl true
     def ready?(%Conn{} = conn) do
       query = %Query{statement: "RETURN 1 AS n"}
+
       case DBConnection.prepare_execute(bolt(conn), query, %{}, []) do
         {:ok, _, %Response{}} -> {:ok, true}
         {:error, other} -> {:error, %TransportError{reason: transport_reason(other)}}

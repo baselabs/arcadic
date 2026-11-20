@@ -58,6 +58,22 @@ defmodule Arcadic.Integration.BoltTest do
     {:ok, conn: conn}
   end
 
+  test "native graph values, bytes and temporal/spatial parameters round trip", %{conn: conn} do
+    alias Arcadic.Transport.Bolt.Types
+
+    assert {:ok, [%{"node" => %Types.Node{labels: labels, properties: %{"k" => "native-a"}},
+                    "edge" => %Types.Relationship{type: "NativeBoltEdge"}}]} =
+             Arcadic.command(conn,
+               "CREATE (a:NativeBoltValue {k:$a})-[r:NativeBoltEdge]->(b:NativeBoltValue {k:$b}) RETURN a AS node, r AS edge",
+               %{a: "native-a", b: "native-b"})
+    assert "NativeBoltValue" in labels
+
+    bytes = %Types.Bytes{data: <<0, 127, 255>>}
+    point = %Types.Point{srid: 7203, x: 1.5, y: -2.0}
+    assert {:ok, [%{"b" => ^bytes, "p" => ^point, "d" => %Types.Temporal{signature: 0x44, fields: [1]}}]} =
+             Arcadic.query(conn, "RETURN $b AS b, $p AS p, $d AS d", %{b: bytes, p: point, d: ~D[1970-01-02]})
+  end
+
   test "execute read/write over Bolt with params", %{conn: conn} do
     assert {:ok, [%{"n" => 1}]} = Arcadic.query(conn, "RETURN 1 AS n")
 

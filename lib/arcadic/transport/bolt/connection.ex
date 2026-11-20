@@ -3,9 +3,9 @@ if Code.ensure_loaded?(DBConnection) do
     @moduledoc false
     use DBConnection
 
+    alias Arcadic.{Error, TransportError}
     alias Arcadic.Transport.Bolt
     alias Arcadic.Transport.Bolt.{Client, Response}
-    alias Arcadic.{Error, TransportError}
 
     @impl true
     def connect(opts) do
@@ -22,6 +22,7 @@ if Code.ensure_loaded?(DBConnection) do
       after
         Client.close(client)
       end
+
       :ok
     end
 
@@ -39,14 +40,19 @@ if Code.ensure_loaded?(DBConnection) do
     @impl true
     def handle_begin(opts, %{status: :idle} = state),
       do: control(:begin, [Keyword.get(opts, :extra_parameters, %{})], :transaction, opts, state)
+
     def handle_begin(_, state), do: {state.status, state}
 
     @impl true
-    def handle_commit(opts, %{status: :transaction} = state), do: control(:commit, [], :idle, opts, state)
+    def handle_commit(opts, %{status: :transaction} = state),
+      do: control(:commit, [], :idle, opts, state)
+
     def handle_commit(_, state), do: {state.status, state}
 
     @impl true
-    def handle_rollback(opts, %{status: :transaction} = state), do: control(:rollback, [], :idle, opts, state)
+    def handle_rollback(opts, %{status: :transaction} = state),
+      do: control(:rollback, [], :idle, opts, state)
+
     def handle_rollback(_, state), do: {state.status, state}
 
     defp control(name, fields, status, opts, state) do
@@ -68,8 +74,16 @@ if Code.ensure_loaded?(DBConnection) do
     @impl true
     def handle_execute(_, _, _, %{cursor_open?: true} = state),
       do: {:error, %TransportError{reason: :cursor_open}, state}
+
     def handle_execute(query, params, opts, state) do
-      with {:ok, run} <- Bolt.stream_run(state.client, Bolt.statement_of(query), params, query.extra, timeout(opts)),
+      with {:ok, run} <-
+             Bolt.stream_run(
+               state.client,
+               Bolt.statement_of(query),
+               params,
+               query.extra,
+               timeout(opts)
+             ),
            {:ok, pull} <- Bolt.stream_pull(state.client, %{n: -1}, timeout(opts)),
            {:ok, response} <- Response.new(run, pull) do
         {:ok, query, response, state}
@@ -87,13 +101,21 @@ if Code.ensure_loaded?(DBConnection) do
         {:error, _} -> disconnect_result(e, state)
       end
     end
+
     defp recover(e, _, state), do: disconnect_result(e, state)
 
     @impl true
     def handle_declare(_, _, _, %{cursor_open?: true} = state),
       do: {:error, %TransportError{reason: :cursor_already_open}, state}
+
     def handle_declare(query, params, opts, state) do
-      case Bolt.stream_run(state.client, Bolt.statement_of(query), params, Keyword.get(opts, :run_extra, %{}), timeout(opts)) do
+      case Bolt.stream_run(
+             state.client,
+             Bolt.statement_of(query),
+             params,
+             Keyword.get(opts, :run_extra, %{}),
+             timeout(opts)
+           ) do
         {:ok, run} -> {:ok, query, %{run: run}, %{state | first_chunk?: true, cursor_open?: true}}
         {:error, e} -> disconnect_result(e, state)
       end
@@ -101,7 +123,12 @@ if Code.ensure_loaded?(DBConnection) do
 
     @impl true
     def handle_fetch(_, %{run: run}, opts, state) do
-      with {:ok, pull} <- Bolt.stream_pull(state.client, %{n: Keyword.get(opts, :chunk_size, 1000)}, timeout(opts)),
+      with {:ok, pull} <-
+             Bolt.stream_pull(
+               state.client,
+               %{n: Keyword.get(opts, :chunk_size, 1000)},
+               timeout(opts)
+             ),
            :ok <- more_key(pull.success, state.first_chunk?),
            {:ok, response} <- Response.new(run, pull) do
         if Map.get(pull.success, "has_more", false),
@@ -115,8 +142,8 @@ if Code.ensure_loaded?(DBConnection) do
     defp more_key(meta, first) do
       if (not first or Map.has_key?(meta, "has_more")) and
            Map.get(meta, "has_more", false) in [true, false],
-        do: :ok,
-        else: {:error, %TransportError{reason: :bolt_protocol_error}}
+         do: :ok,
+         else: {:error, %TransportError{reason: :bolt_protocol_error}}
     end
 
     @impl true
@@ -126,10 +153,12 @@ if Code.ensure_loaded?(DBConnection) do
         {:error, e} -> disconnect_result(e, state)
       end
     end
+
     def handle_deallocate(_, _, _, state), do: {:ok, :ok, state}
 
     defp disconnect_result(e, state),
       do: {:disconnect, Bolt.stream_error(e), Map.put(state, :cursor_open?, false)}
+
     defp timeout(opts), do: Keyword.get(opts, :timeout, :infinity)
   end
 end

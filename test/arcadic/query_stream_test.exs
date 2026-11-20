@@ -1,6 +1,7 @@
 defmodule Arcadic.QueryStreamTest do
   use ExUnit.Case, async: true
   alias Arcadic.{Conn, Transport.Bolt}
+  alias Arcadic.Transport.Bolt.Client
   alias Arcadic.Transport.Bolt.Types.{Duration, Point}
 
   defmodule CaptureTransport do
@@ -116,10 +117,11 @@ defmodule Arcadic.QueryStreamTest do
 
       e = %Arcadic.Error{
         reason: :parse_error,
-        exception: "Neo.ClientError.Statement.SyntaxError", message: sentinel
+        exception: "Neo.ClientError.Statement.SyntaxError",
+        message: sentinel
       }
 
-      err = Arcadic.Transport.Bolt.Client.failure(%{"code" => e.exception, "message" => sentinel})
+      err = Client.failure(%{"code" => e.exception, "message" => sentinel})
       assert %Arcadic.Error{reason: :parse_error} = err
       # The value-bearing bolt.message must not survive into the raised exception.
       refute Exception.message(err) =~ sentinel
