@@ -72,12 +72,9 @@ if Code.ensure_loaded?(DBConnection) do
 
     @schemes ~w(bolt bolt+s)
 
-    @bolt_env_vars ~w(BOLT_USER BOLT_PWD BOLT_HOST BOLT_TCP_PORT)
-
     @doc false
     @spec resolve_opts(keyword()) :: keyword()
     def resolve_opts(opts) do
-      reject_bolt_env!()
       {username, opts} = Keyword.pop(opts, :username)
       {password, opts} = Keyword.pop(opts, :password)
       scheme = Keyword.get(opts, :scheme, "bolt")
@@ -104,18 +101,6 @@ if Code.ensure_loaded?(DBConnection) do
       opts
       |> Keyword.put(:scheme, "bolt+s")
       |> Keyword.put(:ssl_opts, Client.tls_options(Keyword.get(opts, :ssl_opts, [])))
-    end
-
-    defp reject_bolt_env! do
-      case Enum.find(@bolt_env_vars, fn var -> System.get_env(var) != nil end) do
-        nil ->
-          :ok
-
-        var ->
-          raise ArgumentError,
-                "the #{var} environment variable is set; unset it and use " <>
-                  ":scheme/:hostname/:port/:username/:password explicitly."
-      end
     end
 
     def execute(conn, _, _, _) when not is_struct(conn, Conn),
@@ -262,7 +247,7 @@ if Code.ensure_loaded?(DBConnection) do
     end
 
     defp stream_start(conn, bolt_opts, statement, params, timeout) do
-      case leak_safe_connect(bolt_opts) do
+      case Client.connect(bolt_opts) do
         {:ok, state} ->
           case stream_run(state.client, statement, params, run_extra(conn), timeout) do
             {:ok, run_success} ->
@@ -277,14 +262,6 @@ if Code.ensure_loaded?(DBConnection) do
         {:error, reason} ->
           raise stream_error(reason)
       end
-    end
-
-    @doc false
-    @spec leak_safe_connect(keyword()) ::
-            {:ok, map()} | {:error, Error.t() | TransportError.t() | atom()}
-    def leak_safe_connect(bolt_opts) do
-      reject_bolt_env!()
-      Client.connect(bolt_opts)
     end
 
     defp stream_next(%{done: true} = acc, _chunk, _timeout), do: {:halt, acc}

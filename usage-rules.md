@@ -727,11 +727,8 @@ raises on a Bolt conn). **Vector search is HTTP-only too** —
 Cypher-only (a `SELECT` over Bolt is a syntax error; the Bolt `RUN` carries no
 SQL-language selector), so keep vector queries on the HTTP transport.
 
-**`BOLT_*` env vars are rejected.** arcadic **raises** if `BOLT_USER`, `BOLT_PWD`,
-`BOLT_HOST`, or `BOLT_TCP_PORT` is set in the environment — at pool setup
-(`start_link/1`/`setup/1`) **and** on every connect/reconnect. This guard remains
-in the native client. Unset the var and pass
-`:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
+Host, port and credentials come only from `:scheme`/`:hostname`/`:port`/`:username`/
+`:password`; no environment variable is read.
 
 arcadic owns PackStream, framing, sockets, authentication and DBConnection callbacks.
 Use `Arcadic.Transport.Bolt.Types` graph/spatial/temporal/bytes structs instead of

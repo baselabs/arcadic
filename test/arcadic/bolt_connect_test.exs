@@ -1,8 +1,7 @@
 defmodule Arcadic.BoltConnectTest do
   use ExUnit.Case, async: false
   alias Arcadic.Test.BoltFakeServer
-  alias Arcadic.Transport.Bolt
-  alias Arcadic.Transport.Bolt.Connection
+  alias Arcadic.Transport.Bolt.{Client, Connection}
 
   defp own_tcp_ports do
     self = self()
@@ -26,14 +25,14 @@ defmodule Arcadic.BoltConnectTest do
   test "path A (version negotiation) returns a typed error and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:version_negotiation)
     before = own_tcp_ports()
-    assert {:error, :version_negotiation_error} = Bolt.leak_safe_connect(opts_for(port))
+    assert {:error, :version_negotiation_error} = Client.connect(opts_for(port))
     assert own_tcp_ports() - before == 0
   end
 
   test "path B (non-Bolt endpoint) returns a bare-atom error (no server payload) and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:non_bolt)
     before = own_tcp_ports()
-    result = Bolt.leak_safe_connect(opts_for(port))
+    result = Client.connect(opts_for(port))
     assert {:error, reason} = result
     assert reason in [:version_negotiation_error, :bolt_protocol_error]
     assert is_atom(reason)
@@ -43,14 +42,14 @@ defmodule Arcadic.BoltConnectTest do
   test "a stalled server surfaces :timeout within connect_timeout and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:stall)
     before = own_tcp_ports()
-    assert {:error, :timeout} = Bolt.leak_safe_connect(opts_for(port))
+    assert {:error, :timeout} = Client.connect(opts_for(port))
     assert own_tcp_ports() - before == 0
   end
 
   test "a garbled HELLO response returns a redacted bare-atom error (no server bytes) and leaks no fd" do
     {:ok, port} = BoltFakeServer.start(:garbled_hello)
     before = own_tcp_ports()
-    result = Bolt.leak_safe_connect(opts_for(port))
+    result = Client.connect(opts_for(port))
     assert {:error, reason} = result
     assert is_atom(reason)
     assert reason == :bolt_protocol_error
@@ -63,7 +62,7 @@ defmodule Arcadic.BoltConnectTest do
     before = own_tcp_ports()
 
     assert {:error, :timeout} =
-             Bolt.leak_safe_connect(opts_for(port))
+             Client.connect(opts_for(port))
 
     assert own_tcp_ports() - before == 0
   end

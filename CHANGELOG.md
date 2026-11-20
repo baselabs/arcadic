@@ -7,23 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Breaking
 
-- Bolt now uses arcadic's native PackStream v1 codec, chunk framing, Bolt v4 client,
-  and DBConnection implementation. Queries, lazy streams, transactions, TLS,
-  timeouts and value-free errors retain their public contracts. `boltx` is removed;
-  its optional `poison` dependency is no longer in the dependency graph (it was not
-  present in this checkout's lock). Consumers should drop `{:boltx, ...}` and add
-  `{:db_connection, "~> 2.10"}` to enable Bolt. The lock now uses DBConnection 2.10.2
-  instead of 2.6.0, allowing hosts to share current Ecto/Postgrex dependencies.
-- Driver value/response/query types now belong to `Arcadic.Transport.Bolt`.
-  Graph values use `Types.Node`, `Relationship`, `UnboundRelationship` and `Path`;
-  native `Duration`, `Point`, `Temporal`, `Bytes` and extension `Structure` values
-  replace third-party structs. Temporal results retain exact wire fields, including
-  nanoseconds and the legacy datetime epoch. Elixir date/time parameters are native.
-  Replies exceeding 64 MiB or 128 nesting levels fail with `:bolt_protocol_error`.
-  Known server status classes remain available; arbitrary status strings and all
-  FAILURE free text are discarded. The existing BOLT_* rejection remains.
+These change only the optional Bolt transport; HTTP and gRPC consumers are unaffected.
+
+- **Bolt is arcadic's own client; `boltx` is gone.** arcadic now owns the PackStream v1
+  codec, chunk framing, the Bolt v4 client and the DBConnection implementation. Queries,
+  lazy streams, transactions, TLS, timeouts and value-free errors keep their contracts.
+  To upgrade, replace `{:boltx, "~> 0.0.6"}` with `{:db_connection, "~> 2.10"}` in your
+  deps: Bolt now compiles when DBConnection is present, and boltx's own
+  `db_connection ~> 2.6.0` pin cannot resolve beside arcadic 2. The lock moves from
+  DBConnection 2.6.0 to 2.10.2, so a host can share current Ecto/Postgrex releases.
+- **Bolt result values are arcadic's types.** Graph values are
+  `Arcadic.Transport.Bolt.Types.Node`, `Relationship`, `UnboundRelationship` and `Path`;
+  `Duration`, `Point`, `Temporal`, `Bytes` and extension `Structure` values replace
+  boltx's structs. `Temporal` keeps the exact wire fields (nanoseconds, and the legacy
+  datetime epoch and offset) instead of converting to Elixir date/time values; Elixir
+  `Date`, `Time`, `NaiveDateTime` and `DateTime` are still accepted as parameters. Code
+  that matched on `Boltx.Types.*` or on Elixir date/time results must match the new
+  structs.
+- **Limits and error text.** A Bolt reply over 64 MiB or nested deeper than 128 levels
+  fails with `:bolt_protocol_error`. Known server status classes still map to typed
+  reasons; arbitrary status strings and all FAILURE free text are discarded.
+- **`BOLT_*` environment variables are no longer rejected.** arcadic raised when
+  `BOLT_USER`, `BOLT_PWD`, `BOLT_HOST` or `BOLT_TCP_PORT` was set because boltx read them
+  ahead of arcadic's explicit options. The native client reads no environment variable,
+  so there is nothing to guard and the check is gone.
+
+### Changed
 
 - The lock moves to req 0.7.5, finch 0.25.0, mint_web_socket 1.0.6, nimble_options 1.2.0
   and nimble_pool 1.2.0, and the test-only bandit 1.15.0 and websock_adapter 0.7.2, so CI

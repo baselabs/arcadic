@@ -9,7 +9,7 @@ if Code.ensure_loaded?(DBConnection) do
 
     @impl true
     def connect(opts) do
-      case Bolt.leak_safe_connect(opts) do
+      case Client.connect(opts) do
         {:ok, state} -> {:ok, state}
         {:error, e} -> {:error, Bolt.stream_error(e)}
       end

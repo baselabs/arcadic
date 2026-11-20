@@ -845,11 +845,8 @@ conn =
 For paging large result sets, `Arcadic.query_stream/4` returns a lazy `Stream.t()`
 of rows over Bolt, chunked via `PULL`.
 
-Bolt **raises** if a `BOLT_USER`, `BOLT_PWD`, `BOLT_HOST`, or `BOLT_TCP_PORT`
-environment variable is set — at pool setup (`start_link/1`/`setup/1`) and on every
-connect/reconnect. This explicit-config guard remains in the native client; no
-ambient variable can redirect the host or credentials. Unset the variable and pass
-`:scheme`/`:hostname`/`:port`/`:username`/`:password` explicitly.
+Bolt reads its host, port and credentials only from the options you pass; no
+environment variable is consulted.
 
 Native graph results use `Arcadic.Transport.Bolt.Types.Node`, `Relationship`,
 `UnboundRelationship`, and `Path`. `Types.Temporal` retains the wire signature,
