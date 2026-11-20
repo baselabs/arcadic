@@ -1,9 +1,12 @@
 name: Publish to Hex.pm
 
-# Infra dispatches on the default branch after qualification. A keyless build proves
-# and inspects reproducible package and docs archives; the isolated keyed step uploads
-# only missing bytes. Read-back verifies both before release-assets leaves the job.
-# Infra then tags the commit and creates the GitHub release from those verified assets.
+# Infra dispatches on the default branch after qualification. A keyless build proves a
+# reproducible package archive and inspects it and the docs archive; the isolated keyed
+# step uploads only what Hex does not yet serve. A second dispatch on the same commit
+# finishes the first: served package bytes must equal the build, served docs are kept and
+# never compared. Read-back verifies both before release-assets, which carries the package
+# and the docs Hex serves, leaves the job. Infra then tags the commit and creates the
+# GitHub release from those verified assets.
 on:
   workflow_dispatch:
 
@@ -66,10 +69,10 @@ jobs:
       - name: Refuse tags, retired releases, and first publications
         run: python3 -I scripts/release/registry.py refuse arcadic "$VERSION"
 
-      - name: Build and inspect reproducible archives
+      - name: Build and inspect the release archives
         run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
 
-      - name: Compare public registry bytes
+      - name: Compare with what Hex serves
         id: state
         run: python3 -I scripts/release/registry.py compare arcadic "$VERSION" "$RUNNER_TEMP/release"
 
@@ -83,15 +86,17 @@ jobs:
           mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/release/upload_hex.exs"
           arcadic "$VERSION" release/package.tar release/docs.tar.gz
 
-      - name: Verify public registry bytes
-        run: python3 -I scripts/release/registry.py verify arcadic "$VERSION" "$RUNNER_TEMP/release"
+      - name: Verify what Hex serves
+        run: >-
+          python3 -I scripts/release/registry.py verify arcadic "$VERSION" "$RUNNER_TEMP/release"
+          "$RUNNER_TEMP/served-docs.tar.gz"
 
       - name: Assemble verified release assets
         run: |
           assets="$RUNNER_TEMP/release-assets"
           mkdir -p "$assets"
           cp "$RUNNER_TEMP/release/package.tar" "$assets/arcadic-$VERSION.tar"
-          cp "$RUNNER_TEMP/release/docs.tar.gz" "$assets/arcadic-$VERSION-docs.tar.gz"
+          cp "$RUNNER_TEMP/served-docs.tar.gz" "$assets/arcadic-$VERSION-docs.tar.gz"
           python3 -I scripts/release/registry.py notes "$VERSION" "$assets/RELEASE_NOTES.md"
           (cd "$assets" && sha256sum "arcadic-$VERSION.tar" "arcadic-$VERSION-docs.tar.gz" > SHA256SUMS)
 

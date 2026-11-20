@@ -142,13 +142,16 @@ release script or a secret. This file points at it and does not copy it.
   is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
   dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
   Qualification and publication use `scripts/release/build_archives.sh` with the Hex version
-  in `scripts/release/hex-version` to build, compare and inspect both archives before any key
-  is available. Publication has no cache; its isolated `mix run --no-mix-exs` step uploads
-  only missing archives for an existing package name, never replaces a version, and holds
-  the key only for that upload. A redispatch on the same commit resumes only when existing
-  registry bytes match. It refuses existing tags, retired versions and missing changelog
-  sections, then reads back both archives and exports `release-assets`. Infra creates the
-  GitHub release from those verified archives, checksums and release notes after tagging.
+  in `scripts/release/hex-version` to build and inspect both archives before any key is
+  available: the package is built twice and must match byte for byte; docs are built once,
+  because a docs build is not byte-stable. Publication has no cache; its isolated
+  `mix run --no-mix-exs` step uploads only what Hex does not yet serve for an existing
+  package name, and holds the key only for that upload. It never replaces a package or
+  served docs. A second dispatch on the same commit finishes the first: the package Hex
+  serves must equal the build, and docs Hex serves are kept and never compared. It refuses
+  existing tags, retired versions and missing changelog sections, then reads back both
+  archives and exports `release-assets`: the package, the docs Hex serves, checksums and
+  release notes. Infra creates the GitHub release from them after tagging.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key

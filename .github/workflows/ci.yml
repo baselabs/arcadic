@@ -143,7 +143,8 @@ jobs:
       image: arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 
   # The release builds these docs; a warning here would ship on hexdocs.
-  # Qualification proves the same inspected, reproducible archives as publication.
+  # Qualification builds and inspects the same archives as publication: a reproducible
+  # package and one docs build.
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
@@ -174,7 +175,7 @@ jobs:
 
       - run: mix deps.get --check-locked
 
-      - name: Build and inspect reproducible archives
+      - name: Build and inspect the release archives
         run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
 
   qualified:

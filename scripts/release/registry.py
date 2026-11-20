@@ -95,8 +95,13 @@ def refuse(name, version):
 
 
 def compare(name, version, build):
+    """The package is the release: served package bytes must equal the build.
+
+    Docs are a rendering of that package and a docs build is not byte-stable, so docs bytes
+    are never compared. Hex accepts docs only for a release it serves, so served docs belong
+    to the package just compared; they are reported present and kept.
+    """
     package_bytes = (build / "package.tar").read_bytes()
-    docs_bytes = (build / "docs.tar.gz").read_bytes()
     metadata = release(name, version)
     if metadata is None:
         return {"package": "missing", "docs": "missing"}
@@ -107,13 +112,7 @@ def compare(name, version, build):
         raise Refusal(f"Package archive differs from Hex for {name} {version}; publication refused")
     if metadata["checksum"] != digest:
         raise Refusal(f"Hex checksum differs from package.tar for {name} {version}; publication refused")
-    docs = "missing"
-    if metadata["has_docs"]:
-        served = download(f"https://repo.hex.pm/docs/{slug}.tar.gz")
-        if served != docs_bytes:
-            raise Refusal(f"Docs archive differs from Hex for {name} {version}; publication refused")
-        docs = "present"
-    return {"package": "present", "docs": docs}
+    return {"package": "present", "docs": "present" if metadata["has_docs"] else "missing"}
 
 
 def report(state):
@@ -124,13 +123,17 @@ def report(state):
             handle.write(output)
 
 
-def verify(name, version, build):
+def verify(name, version, build, docs_output):
+    """Read both archives back; write the docs Hex serves, which the GitHub release carries."""
+    slug = urllib.parse.quote(f"{name}-{version}", safe="")
     for attempt in range(10):
         try:
             state = compare(name, version, build)
-            if state != {"package": "present", "docs": "present"}:
+            served = download(f"https://repo.hex.pm/docs/{slug}.tar.gz", missing_ok=True)
+            if state != {"package": "present", "docs": "present"} or served is None:
                 raise Refusal(f"Hex does not yet serve both archives for {name} {version}")
-            print(f"Verified package, docs, and checksum for {name} {version}")
+            docs_output.write_bytes(served)
+            print(f"Verified package bytes, checksum and served docs for {name} {version}")
             return
         except Refusal as error:
             if attempt == 9:
@@ -148,6 +151,8 @@ def main():
         sub.add_argument("version")
         if command != "refuse":
             sub.add_argument("build", type=Path)
+        if command == "verify":
+            sub.add_argument("docs_output", type=Path)
     notes = commands.add_parser("notes")
     notes.add_argument("version")
     notes.add_argument("output", type=Path)
@@ -155,7 +160,7 @@ def main():
     try:
         if args.command == "notes":
             args.output.write_text(changelog_section(args.version), encoding="utf-8")
-            return
+            return 0
         if not re.fullmatch(r"[a-z][a-z0-9_]*", args.name):
             raise Refusal("Invalid Hex package name")
         if not re.fullmatch(r"[0-9A-Za-z.+-]+", args.version):
@@ -167,7 +172,7 @@ def main():
         elif args.command == "compare":
             report(compare(name, version, args.build))
         else:
-            verify(name, version, args.build)
+            verify(name, version, args.build, args.docs_output)
     except (Refusal, OSError) as error:
         message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::error::{message}", file=sys.stderr)

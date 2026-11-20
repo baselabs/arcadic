@@ -34,17 +34,14 @@ mix hex.build --output "$out/package.tar"
 mix hex.build --output "$scratch/package.tar"
 cmp "$out/package.tar" "$scratch/package.tar"
 
-build_docs() {
-    rm -rf doc
-    mix docs --warnings-as-errors
-    (
-        cd "$scratch/empty"
-        mix run --no-mix-exs "$root/scripts/release/docs_archive.exs" "$root/doc" "$1"
-    )
-}
-build_docs "$out/docs.tar.gz"
-build_docs "$scratch/docs.tar.gz"
-cmp "$out/docs.tar.gz" "$scratch/docs.tar.gz"
+# The package is the release and must rebuild byte for byte. Docs render that package and
+# a docs build is not byte-stable, so they are built once and inspected, never compared.
+rm -rf doc
+mix docs --warnings-as-errors
+(
+    cd "$scratch/empty"
+    mix run --no-mix-exs "$root/scripts/release/docs_archive.exs" "$root/doc" "$out/docs.tar.gz"
+)
 
 # Validate paths and file kinds before extracting, including in the nested tarball.
 python3 -I - "$out/package.tar" "$scratch" "$out/docs.tar.gz" <<'PY'
