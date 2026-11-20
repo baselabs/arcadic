@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Arcadic!
 
 ## Prerequisites
 
-- **Elixir** 1.15+ and **Erlang/OTP** 26+
+- **Elixir** 1.16+ and **Erlang/OTP** 26+
 - **ArcadeDB** (for integration tests) — e.g. `docker run -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" arcadedata/arcadedb:26.11.1`
   (the version CI pins)

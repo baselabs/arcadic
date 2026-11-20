@@ -8,7 +8,7 @@ defmodule Arcadic.MixProject do
     [
       app: :arcadic,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,
@@ -66,7 +66,7 @@ defmodule Arcadic.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.1", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: [:dev, :test], runtime: false}
     ]
   end

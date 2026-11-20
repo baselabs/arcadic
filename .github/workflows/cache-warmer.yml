@@ -63,8 +63,8 @@ jobs:
             '[{elixir: $e, otp: $o}] + $lanes')
           echo "builds=$builds" >> "$GITHUB_OUTPUT"
 
-  # deps and _build on every build ci.yml and integration.yml run, compiled for dev and test,
-  # which every build's jobs use.
+  # deps and _build on every build ci.yml and integration.yml run: compiled for dev on the
+  # default build and for test on every build, which is what each build's jobs use.
   mix:
     name: "deps and _build (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     needs: toolchain
@@ -111,7 +111,7 @@ jobs:
         run: mix deps.get --check-locked
 
       - name: Compile for dev
-        if: steps.lookup.outputs.cache-hit != 'true'
+        if: steps.lookup.outputs.cache-hit != 'true' && matrix.elixir == needs.toolchain.outputs.elixir
         env:
           MIX_ENV: dev
         run: mix compile

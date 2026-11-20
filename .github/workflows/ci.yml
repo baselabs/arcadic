@@ -101,6 +101,10 @@ jobs:
     runs-on: ${{ startsWith(matrix.otp, '26.') && 'ubuntu-22.04' || 'ubuntu-24.04' }}
     # 2x 2.0 min, run 44152257276, raised to the 5 min floor
     timeout-minutes: 5 # 121 s, run 44152257276
+    # A compatibility lane builds what a consumer's test suite builds on that Elixir. Dev-only
+    # tools and the dependency audit, which reads only mix.lock, run on the default toolchain.
+    env:
+      MIX_ENV: test
     strategy:
       fail-fast: false
       matrix:
@@ -131,8 +135,6 @@ jobs:
       - run: mix compile --warnings-as-errors
 
       - run: mix credo --strict
-
-      - run: mix audit
 
       - run: mix test --warnings-as-errors
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Elixir floor is now `~> 1.16`** (was `~> 1.15`). Elixir 1.15 no longer receives
+  security patches (Elixir patches the last five minor branches, 1.16 to 1.20), and the
+  optional gRPC transport's `protobuf ~> 0.17.1` requires Elixir 1.16. The compatibility
+  lane runs 1.16.3 on OTP 26 and builds what a consumer's test suite builds (`MIX_ENV=test`).
+  The dependency audit and other dev-only tools run on the default toolchain, and
+  `mix_audit` is a dev-only dependency.
+
 - The lock moves to req 0.7.5, finch 0.25.0, mint_web_socket 1.0.6, nimble_options 1.2.0
   and nimble_pool 1.2.0, and the test-only bandit 1.15.0 and websock_adapter 0.7.2, so CI
   tests what a fresh consumer resolves. No constraint changes.
