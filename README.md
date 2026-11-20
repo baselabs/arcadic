@@ -860,7 +860,8 @@ runs SQL, and Bolt is Cypher-only (a `SELECT` over Bolt is a syntax error; the B
 
 ## gRPC transport (optional)
 
-Behind the optional `{:grpc, "~> 1.1"}` + `{:protobuf, "~> 0.17.1"}` deps,
+Behind the optional `{:grpc, "~> 1.1"}` + `{:protobuf, "~> 0.17.1"}` deps, which need
+Elixir 1.18+ (grpc 1.1 pins `googleapis ~> 0.1.0`, which requires 1.18),
 `Arcadic.Transport.Grpc` speaks ArcadeDB's gRPC plugin: a real server-cursor
 `query_stream/4` (the server runs the query once and streams batches as you pull —
 O(n), server-paced, where HTTP can only offset-page), transactions, graph +

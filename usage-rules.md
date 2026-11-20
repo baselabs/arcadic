@@ -741,7 +741,8 @@ the connect-time reject closes that window. Unset the var and pass
 `Arcadic.Transport.Grpc` runs over ArcadeDB's gRPC plugin (`GrpcServerPlugin`), behind the optional
 `{:grpc, "~> 1.1"}` + `{:protobuf, "~> 0.17.1"}` deps (the transport and its vendored protobuf stubs are
 compile-guarded — HTTP/Bolt-only consumers who don't add them are unaffected; the gRPC channel uses the
-mint adapter, already a runtime dependency via req). Select it with a
+mint adapter, already a runtime dependency via req). It needs **Elixir 1.18+**: grpc 1.1's `grpc_core`
+pins `googleapis ~> 0.1.0`, which requires Elixir 1.18, above arcadic's own 1.16 floor. Select it with a
 `grpc://host:port` URL (or `grpcs://` for TLS) and `transport: Arcadic.Transport.Grpc`; credentials come
 from `Conn.auth` (`{user, pass}` — a bearer conn is rejected, as with Bolt).
 
