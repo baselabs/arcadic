@@ -173,11 +173,10 @@ release script or a secret. This file points at it and does not copy it.
   require a live server. Gate them on an env var (`ARCADIC_TEST_URL`); skip when
   unset so the pure-unit suite runs anywhere. Contributors without a server can start one with
   `docker run -p 2480:2480 -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" \
-  arcadedata/arcadedb:26.11.1`. Maintainer machines use the shared server; its values sit
-  in the gitignored `.env` under the names the suites read (`ARCADIC_TEST_*`,
-  `ARCADIC_TS_TEST_*`, `ARCADIC_BOLT_*`, `ARCADIC_GRPC_TEST_*`); load them with
-  `set -a; . ./.env; set +a` before a lane. The TLS and admin-shutdown suites
-  still need their own throwaway server.
+  arcadedata/arcadedb:26.11.1`. CI starts a disposable, digest-pinned server for each run.
+  Set the variables each suite reads for your server (`ARCADIC_TEST_*`,
+  `ARCADIC_TS_TEST_*`, `ARCADIC_BOLT_*`, `ARCADIC_GRPC_TEST_*`). The TLS and
+  admin-shutdown suites need their own throwaway server.
 - **gRPC TLS live suite** (`test/integration/grpc_tls_test.exs`, tag
   `@moduletag :integration_grpc_tls`): needs a TLS-enabled gRPC ArcadeDB — the
   cert script and docker flags are in the test's moduledoc (on ARM64 images add
