@@ -116,7 +116,7 @@ defmodule Arcadic.Integration.BoltTest do
 
     before = count.()
 
-    assert {:error, %Boltx.Error{code: :unauthorized} = err} =
+    assert {:error, %Arcadic.Error{reason: :unauthorized} = err} =
              Connection.connect(opts)
 
     assert count.() - before == 0
@@ -126,8 +126,8 @@ defmodule Arcadic.Integration.BoltTest do
     # log. The error CLASS (bolt.code) is preserved (Rule-3-permitted); the free-text
     # message is stripped. Goes RED against the pre-fix raw passthrough (bolt.message ==
     # "Authentication failed").
-    assert err.bolt.code == "Neo.ClientError.Security.Unauthorized"
-    assert err.bolt.message == nil
+    assert err.exception == "Neo.ClientError.Security.Unauthorized"
+    assert err.message == nil
     refute String.contains?(inspect(err), pass)
   end
 end

@@ -179,7 +179,6 @@ defmodule Arcadic.Integration.StreamingTLSTest do
           transport_options: topts
         )
 
-      # arcadic bolt+s → boltx bolt+ssc (verify_peer); CA trusted → the SECURE path succeeds.
       assert {:ok, true} = Bolt.ready?(conn)
     end
 

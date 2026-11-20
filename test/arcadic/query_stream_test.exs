@@ -1,7 +1,7 @@
 defmodule Arcadic.QueryStreamTest do
   use ExUnit.Case, async: true
   alias Arcadic.{Conn, Transport.Bolt}
-  alias Boltx.Types.{Duration, Point}
+  alias Arcadic.Transport.Bolt.Types.{Duration, Point}
 
   defmodule CaptureTransport do
     # Not a full @behaviour impl — the facade guards on function_exported?/3, which
@@ -40,21 +40,10 @@ defmodule Arcadic.QueryStreamTest do
       assert Bolt.format_params(%{}) == %{}
     end
 
-    test "format_params/1 formats Duration/Point params via boltx (not passthrough)" do
-      dur = %Duration{days: 1, hours: 2, minutes: 3, seconds: 4}
-      point = Point.create(:cartesian, 10, 20.0)
-
-      {:ok, expected_dur} = Duration.format_param(dur)
-      {:ok, expected_point} = Point.format_param(point)
-
-      # The formatted value must differ from the raw struct, else this asserts nothing. A
-      # Duration formats to a string, which the compiler's type checker already proves.
-      refute expected_point == point
-
-      assert Bolt.format_params(%{"d" => dur, "p" => point}) == %{
-               "d" => expected_dur,
-               "p" => expected_point
-             }
+    test "format_params/1 preserves native Duration/Point values for PackStream" do
+      dur = %Duration{days: 1, seconds: 7384}
+      point = %Point{srid: 7203, x: 10.0, y: 20.0}
+      assert Bolt.format_params(%{"d" => dur, "p" => point}) == %{"d" => dur, "p" => point}
     end
   end
 
@@ -85,10 +74,10 @@ defmodule Arcadic.QueryStreamTest do
                Bolt.map_transaction_outcome({:error, :rollback})
     end
 
-    test "maps a Boltx.Error via the reason taxonomy" do
-      e = %Boltx.Error{
-        code: :syntax_error,
-        bolt: %{code: "Neo.ClientError.Statement.SyntaxError"}
+    test "maps a Arcadic.Error via the reason taxonomy" do
+      e = %Arcadic.Error{
+        reason: :parse_error,
+        exception: "Neo.ClientError.Statement.SyntaxError"
       }
 
       assert {:error, %Arcadic.Error{reason: :parse_error}} =
@@ -113,8 +102,8 @@ defmodule Arcadic.QueryStreamTest do
   end
 
   describe "Bolt.stream_error/1 (mid-stream error mapping + redaction)" do
-    test "maps a Boltx timeout to a typed transport :timeout error" do
-      assert Bolt.stream_error(%Boltx.Error{code: :timeout}) ==
+    test "maps a wire timeout to a typed transport :timeout error" do
+      assert Bolt.stream_error(%Arcadic.TransportError{reason: :timeout}) ==
                %Arcadic.TransportError{reason: :timeout}
     end
 
@@ -125,12 +114,12 @@ defmodule Arcadic.QueryStreamTest do
     test "a value-bearing server error redacts: sentinel in neither message/1 nor inspect" do
       sentinel = "row-value-and-email@example.com-SEKRET"
 
-      e = %Boltx.Error{
-        code: :syntax_error,
-        bolt: %{code: "Neo.ClientError.Statement.SyntaxError", message: sentinel}
+      e = %Arcadic.Error{
+        reason: :parse_error,
+        exception: "Neo.ClientError.Statement.SyntaxError", message: sentinel
       }
 
-      err = Bolt.stream_error(e)
+      err = Arcadic.Transport.Bolt.Client.failure(%{"code" => e.exception, "message" => sentinel})
       assert %Arcadic.Error{reason: :parse_error} = err
       # The value-bearing bolt.message must not survive into the raised exception.
       refute Exception.message(err) =~ sentinel
@@ -168,7 +157,7 @@ defmodule Arcadic.QueryStreamTest do
       assert Bolt.transport_reason(%Arcadic.Error{reason: :parse_error}) == :parse_error
     end
 
-    test "falls back to the struct MODULE for a raw boltx/db_connection exception (unchanged)" do
+    test "falls back to the struct MODULE for a raw db_connection exception (unchanged)" do
       assert Bolt.transport_reason(%RuntimeError{message: "x"}) == RuntimeError
     end
   end

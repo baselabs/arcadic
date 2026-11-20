@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bolt now uses arcadic's native PackStream v1 codec, chunk framing, Bolt v4 client,
+  and DBConnection implementation. Queries, lazy streams, transactions, TLS,
+  timeouts and value-free errors retain their public contracts. `boltx` is removed;
+  its optional `poison` dependency is no longer in the dependency graph (it was not
+  present in this checkout's lock). Consumers should drop `{:boltx, ...}` and add
+  `{:db_connection, "~> 2.10"}` to enable Bolt. The lock now uses DBConnection 2.10.2
+  instead of 2.6.0, allowing hosts to share current Ecto/Postgrex dependencies.
+- Driver value/response/query types now belong to `Arcadic.Transport.Bolt`.
+  Graph values use `Types.Node`, `Relationship`, `UnboundRelationship` and `Path`;
+  native `Duration`, `Point`, `Temporal`, `Bytes` and extension `Structure` values
+  replace third-party structs. Temporal results retain exact wire fields, including
+  nanoseconds and the legacy datetime epoch. Elixir date/time parameters are native.
+  Replies exceeding 64 MiB or 128 nesting levels fail with `:bolt_protocol_error`.
+  Known server status classes remain available; arbitrary status strings and all
+  FAILURE free text are discarded. The existing BOLT_* rejection remains.
+
 - The lock moves to req 0.7.5, finch 0.25.0, mint_web_socket 1.0.6, nimble_options 1.2.0
   and nimble_pool 1.2.0, and the test-only bandit 1.15.0 and websock_adapter 0.7.2, so CI
   tests what a fresh consumer resolves. No constraint changes.
