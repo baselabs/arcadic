@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses first publications, retired versions, missing changelog sections, package byte
   mismatches and served docs whose `release.json` names another release or a commit off the
   default branch's history. The package, the inspected served docs, checksums and release
-  notes leave as `release-assets` for infra to attach to the GitHub release. Every job's
+  notes read from the published commit's CHANGELOG leave as `release-assets` for infra to
+  attach to the GitHub release. Every job's
   timeout is about twice its slowest green run without a cache, and its comment names that
   run; publication keeps a 90-minute timeout until its first green run.
 - CI verifies exact runtime versions from `.tool-versions`, checks package contents and

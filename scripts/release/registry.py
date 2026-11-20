@@ -84,15 +84,30 @@ def release(name, version):
     return result
 
 
-def changelog_section(version):
-    text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+def changelog_section(version, commit=None):
+    """The version's CHANGELOG section: the working tree's, or the given commit's."""
+    if commit is None:
+        text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    else:
+        try:
+            shown = subprocess.run(["git", "show", f"{commit}:CHANGELOG.md"],
+                                   capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise Refusal(f"Reading CHANGELOG.md at {commit} failed; publication refused") from None
+        if shown.returncode != 0:
+            raise Refusal(f"Commit {commit} has no readable CHANGELOG.md; publication refused")
+        try:
+            text = shown.stdout.decode("utf-8")
+        except UnicodeError:
+            raise Refusal(f"CHANGELOG.md at {commit} is not UTF-8; publication refused") from None
     headings = list(re.finditer(r"^##[ \t]+(.+)$", text, re.MULTILINE))
     for index, heading in enumerate(headings):
         title = heading.group(1)
         if title.split()[0] in (f"[{version}]", version):
             end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
             return text[heading.start():end].rstrip() + "\n"
-    raise Refusal(f"CHANGELOG.md has no section for {version}; publication refused")
+    where = "CHANGELOG.md" if commit is None else f"CHANGELOG.md at {commit}"
+    raise Refusal(f"{where} has no section for {version}; publication refused")
 
 
 def refuse(name, version):
@@ -259,18 +274,23 @@ def main():
     built.add_argument("commit")
     built.add_argument("build", type=Path)
     built.add_argument("scratch", type=Path)
+    # Release notes come from the published commit (the one the served docs name), never the
+    # checkout: after main moves, the dispatched head's section can differ from the tagged one.
     notes = commands.add_parser("notes")
     notes.add_argument("version")
+    notes.add_argument("commit")
     notes.add_argument("output", type=Path)
     args = parser.parse_args()
     try:
+        if not re.fullmatch(r"[0-9A-Za-z.+-]+", args.version):
+            raise Refusal("Invalid release version")
         if args.command == "notes":
-            args.output.write_text(changelog_section(args.version), encoding="utf-8")
+            if not COMMIT.fullmatch(args.commit):
+                raise Refusal("notes needs the full published commit")
+            args.output.write_text(changelog_section(args.version, args.commit), encoding="utf-8")
             return 0
         if not re.fullmatch(r"[a-z][a-z0-9_]*", args.name):
             raise Refusal("Invalid Hex package name")
-        if not re.fullmatch(r"[0-9A-Za-z.+-]+", args.version):
-            raise Refusal("Invalid release version")
         name = args.name
         version = args.version
         if args.command == "refuse":

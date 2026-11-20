@@ -153,8 +153,9 @@ release script or a secret. This file points at it and does not copy it.
   versions and missing changelog sections. Read-back requires the served docs' `release.json`
   to name this release and the dispatched commit or an ancestor on the default branch (the
   published commit, which infra tags), and exports `release-assets`: the package, those
-  inspected served docs, checksums and release notes. Infra creates the GitHub release from
-  them.
+  inspected served docs, checksums, and release notes read from the published commit's
+  CHANGELOG (not the checkout, which is newer when a dispatch resumes). Infra creates the
+  GitHub release from them.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
