@@ -119,12 +119,12 @@ defmodule Arcadic.Transport.Bolt.PackStream do
   defp unpack(_, _), do: :error
 
   defp sized(:string, n, data, _) when byte_size(data) >= n do
-    <<s::binary-size(n), rest::binary>> = data
+    {s, rest} = :erlang.split_binary(data, n)
     if String.valid?(s), do: {:ok, s, rest}, else: :error
   end
 
   defp sized(:bytes, n, data, _) when byte_size(data) >= n do
-    <<b::binary-size(n), rest::binary>> = data
+    {b, rest} = :erlang.split_binary(data, n)
     {:ok, %Bytes{data: b}, rest}
   end
 

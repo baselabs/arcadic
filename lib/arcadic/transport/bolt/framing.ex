@@ -10,7 +10,7 @@ defmodule Arcadic.Transport.Bolt.Framing do
 
   defp chunks(data, acc) do
     n = min(byte_size(data), 65_535)
-    <<chunk::binary-size(n), rest::binary>> = data
+    {chunk, rest} = :erlang.split_binary(data, n)
     chunks(rest, [[<<n::16>>, chunk] | acc])
   end
 

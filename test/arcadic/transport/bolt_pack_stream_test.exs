@@ -71,7 +71,9 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
 
     assert {:ok, <<0xD0, 16, _::binary>>} = PackStream.encode(String.duplicate("x", 16))
     assert {:ok, <<0xD1, 256::16, _::binary>>} = PackStream.encode(String.duplicate("x", 256))
-    assert {:ok, <<0xD2, 65_536::32, _::binary>>} = PackStream.encode(String.duplicate("x", 65_536))
+
+    assert {:ok, <<0xD2, 65_536::32, _::binary>>} =
+             PackStream.encode(String.duplicate("x", 65_536))
   end
 
   test "non-finite IEEE values retain their bits without a BEAM float exception" do
@@ -219,8 +221,8 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
 
     for {v, s, f} <- [
           {~D[1970-01-02], 0x44, [1]},
-          {~T[00:00:01.123_456], 0x74, [1_123_456_000]},
-          {~N[1970-01-01 00:00:01.123_456], 0x64, [1, 123_456_000]},
+          {~T[00:00:01.123456], 0x74, [1_123_456_000]},
+          {~N[1970-01-01 00:00:01.123456], 0x64, [1, 123_456_000]},
           {~U[1970-01-01 00:00:01.123456Z], 0x46, [1, 123_456_000, 0]}
         ] do
       assert {:ok, bytes} = PackStream.encode(v)
