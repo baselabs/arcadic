@@ -80,7 +80,8 @@ defmodule Release.UploadHex do
     end
   end
 
-  defp accepted!({:ok, {code, _headers, %{"status" => "staged"}}}, _label) when code in 200..299 do
+  defp accepted!({:ok, {code, _headers, %{"status" => "staged"}}}, _label)
+       when code in 200..299 do
     raise "held for approval on hex.pm; approve it, then dispatch again on the same commit"
   end
 
