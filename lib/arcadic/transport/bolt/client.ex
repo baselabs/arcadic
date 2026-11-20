@@ -97,6 +97,7 @@ defmodule Arcadic.Transport.Bolt.Client do
       opts
     else
       opts = Keyword.put(opts, :verify, :verify_peer)
+
       if Keyword.has_key?(opts, :cacerts) or Keyword.has_key?(opts, :cacertfile),
         do: opts,
         else: Keyword.put(opts, :cacerts, :public_key.cacerts_get())
@@ -138,8 +139,8 @@ defmodule Arcadic.Transport.Bolt.Client do
 
   defp negotiated(_, _), do: {:error, :version_negotiation_error}
 
-  defp recv_version(%{sock: {mod, sock}}, deadline) do
-    case mod.recv(sock, 4, Framing.remaining(deadline)) do
+  defp recv_version(%{sock: socket}, deadline) do
+    case Framing.read(socket, 4, deadline) do
       {:ok, _} = ok -> ok
       {:error, e} -> {:error, reason(e)}
     end
@@ -238,7 +239,8 @@ defmodule Arcadic.Transport.Bolt.Client do
               :nxdomain,
               :enetdown,
               :econnreset
-            ], do: e
+            ],
+       do: e
 
   defp reason(_), do: :bolt_protocol_error
 end

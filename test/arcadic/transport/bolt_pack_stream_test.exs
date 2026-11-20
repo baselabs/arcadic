@@ -12,16 +12,16 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
       {-17, <<0xC8, 0xEF>>},
       {-128, <<0xC8, 0x80>>},
       {-129, <<0xC9, 0xFF, 0x7F>>},
-      {-32768, <<0xC9, 0x80, 0>>},
-      {-32769, <<0xCA, 0xFF, 0xFF, 0x7F, 0xFF>>},
+      {-32_768, <<0xC9, 0x80, 0>>},
+      {-32_769, <<0xCA, 0xFF, 0xFF, 0x7F, 0xFF>>},
       {-2_147_483_648, <<0xCA, 0x80, 0, 0, 0>>},
       {-2_147_483_649, <<0xCB, -2_147_483_649::signed-64>>},
       {-9_223_372_036_854_775_808, <<0xCB, 0x80, 0, 0, 0, 0, 0, 0, 0>>},
       {0, <<0>>},
       {127, <<127>>},
       {128, <<0xC9, 0, 128>>},
-      {32767, <<0xC9, 0x7F, 0xFF>>},
-      {32768, <<0xCA, 0, 0, 128, 0>>},
+      {32_767, <<0xC9, 0x7F, 0xFF>>},
+      {32_768, <<0xCA, 0, 0, 128, 0>>},
       {2_147_483_647, <<0xCA, 0x7F, 0xFF, 0xFF, 0xFF>>},
       {2_147_483_648, <<0xCB, 2_147_483_648::64>>},
       {9_223_372_036_854_775_807, <<0xCB, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>},
@@ -48,7 +48,7 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
   end
 
   test "all container length encodings and nested values round trip" do
-    for n <- [0, 15, 16, 255, 256, 65535, 65536] do
+    for n <- [0, 15, 16, 255, 256, 65_535, 65_536] do
       for value <- [
             String.duplicate("x", n),
             %Bytes{data: :binary.copy(<<255>>, n)},
@@ -59,7 +59,7 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
       end
     end
 
-    for n <- [0, 15, 16, 255, 256, 65536] do
+    for n <- [0, 15, 16, 255, 256, 65_536] do
       value =
         Map.new(List.duplicate(nil, n) |> Enum.with_index(), fn {_, i} ->
           {Integer.to_string(i), i}
@@ -71,7 +71,7 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
 
     assert {:ok, <<0xD0, 16, _::binary>>} = PackStream.encode(String.duplicate("x", 16))
     assert {:ok, <<0xD1, 256::16, _::binary>>} = PackStream.encode(String.duplicate("x", 256))
-    assert {:ok, <<0xD2, 65536::32, _::binary>>} = PackStream.encode(String.duplicate("x", 65536))
+    assert {:ok, <<0xD2, 65_536::32, _::binary>>} = PackStream.encode(String.duplicate("x", 65_536))
   end
 
   test "non-finite IEEE values retain their bits without a BEAM float exception" do
@@ -125,6 +125,15 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
     end
   end
 
+  test "all one-byte and two-byte inputs decode or return a typed value-free error" do
+    for a <- 0..255, b <- 0..255 do
+      case PackStream.decode(<<a, b>>) do
+        {:ok, _, rest} -> assert is_binary(rest)
+        {:error, e} -> assert e == %Arcadic.TransportError{reason: :bolt_protocol_error}
+      end
+    end
+  end
+
   test "invalid parameters fail without embedding their value in an error" do
     for value <- [
           self(),
@@ -142,22 +151,31 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
 
   test "graph and temporal signatures match independent byte fixtures" do
     fixtures = [
-      {<<0xB3, 0x4E, 1, 0x91, 0x81, ?V, 0xA0>>, %Types.Node{id: 1, labels: ["V"], properties: %{}}},
-      {<<0xB5, 0x52, 1, 2, 3, 0x81, ?E, 0xA0>>, %Types.Relationship{id: 1, start: 2, end: 3, type: "E", properties: %{}}},
-      {<<0xB3, 0x72, 1, 0x81, ?E, 0xA0>>, %Types.UnboundRelationship{id: 1, type: "E", properties: %{}}},
+      {<<0xB3, 0x4E, 1, 0x91, 0x81, ?V, 0xA0>>,
+       %Types.Node{id: 1, labels: ["V"], properties: %{}}},
+      {<<0xB5, 0x52, 1, 2, 3, 0x81, ?E, 0xA0>>,
+       %Types.Relationship{id: 1, start: 2, end: 3, type: "E", properties: %{}}},
+      {<<0xB3, 0x72, 1, 0x81, ?E, 0xA0>>,
+       %Types.UnboundRelationship{id: 1, type: "E", properties: %{}}},
       {<<0xB3, 0x50, 0x90, 0x90, 0x90>>, %Types.Path{nodes: [], relationships: [], indices: []}},
-      {<<0xB4, 0x45, 1, 2, 3, 4>>, %Types.Duration{months: 1, days: 2, seconds: 3, nanoseconds: 4}},
+      {<<0xB4, 0x45, 1, 2, 3, 4>>,
+       %Types.Duration{months: 1, days: 2, seconds: 3, nanoseconds: 4}},
       {<<0xB1, 0x44, 1>>, %Types.Temporal{signature: 0x44, fields: [1]}},
       {<<0xB1, 0x74, 1>>, %Types.Temporal{signature: 0x74, fields: [1]}},
       {<<0xB2, 0x54, 1, 2>>, %Types.Temporal{signature: 0x54, fields: [1, 2]}},
       {<<0xB2, 0x64, 1, 2>>, %Types.Temporal{signature: 0x64, fields: [1, 2]}},
       {<<0xB3, 0x46, 1, 2, 3>>, %Types.Temporal{signature: 0x46, fields: [1, 2, 3]}},
-      {<<0xB3, 0x66, 1, 2, 0x83, "UTC">>, %Types.Temporal{signature: 0x66, fields: [1, 2, "UTC"]}},
+      {<<0xB3, 0x66, 1, 2, 0x83, "UTC">>,
+       %Types.Temporal{signature: 0x66, fields: [1, 2, "UTC"]}},
       {<<0xB3, 0x49, 1, 2, 3>>, %Types.Temporal{signature: 0x49, fields: [1, 2, 3]}},
-      {<<0xB3, 0x69, 1, 2, 0x83, "UTC">>, %Types.Temporal{signature: 0x69, fields: [1, 2, "UTC"]}},
-      {<<0xB3, 0x58, 0xC9, 7203::16, 0xC1, 1.0::float-64, 0xC1, 2.0::float-64>>, %Types.Point{srid: 7203, x: 1.0, y: 2.0}},
-      {<<0xB4, 0x59, 0xC9, 4979::16, 0xC1, 1.0::float-64, 0xC1, 2.0::float-64, 0xC1, 3.0::float-64>>, %Types.Point{srid: 4979, x: 1.0, y: 2.0, z: 3.0}}
+      {<<0xB3, 0x69, 1, 2, 0x83, "UTC">>,
+       %Types.Temporal{signature: 0x69, fields: [1, 2, "UTC"]}},
+      {<<0xB3, 0x58, 0xC9, 7203::16, 0xC1, 1.0::float-64, 0xC1, 2.0::float-64>>,
+       %Types.Point{srid: 7203, x: 1.0, y: 2.0}},
+      {<<0xB4, 0x59, 0xC9, 4979::16, 0xC1, 1.0::float-64, 0xC1, 2.0::float-64, 0xC1,
+         3.0::float-64>>, %Types.Point{srid: 4979, x: 1.0, y: 2.0, z: 3.0}}
     ]
+
     for {bytes, value} <- fixtures do
       assert {:ok, ^bytes} = PackStream.encode(value)
       assert {:ok, structure, ""} = PackStream.decode(bytes)
@@ -182,9 +200,9 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
     temporal = [
       {0x44, [1]},
       {0x74, [123_456_789]},
-      {0x54, [123_456_789, -14400]},
+      {0x54, [123_456_789, -14_400]},
       {0x64, [123, 987_654_321]},
-      {0x46, [123, 987_654_321, -14400]},
+      {0x46, [123, 987_654_321, -14_400]},
       {0x66, [123, 987_654_321, "America/New_York"]},
       {0x49, [123, 987_654_321, 3600]},
       {0x69, [123, 987_654_321, "UTC"]}
@@ -201,8 +219,8 @@ defmodule Arcadic.Transport.Bolt.PackStreamTest do
 
     for {v, s, f} <- [
           {~D[1970-01-02], 0x44, [1]},
-          {~T[00:00:01.123456], 0x74, [1_123_456_000]},
-          {~N[1970-01-01 00:00:01.123456], 0x64, [1, 123_456_000]},
+          {~T[00:00:01.123_456], 0x74, [1_123_456_000]},
+          {~N[1970-01-01 00:00:01.123_456], 0x64, [1, 123_456_000]},
           {~U[1970-01-01 00:00:01.123456Z], 0x46, [1, 123_456_000, 0]}
         ] do
       assert {:ok, bytes} = PackStream.encode(v)

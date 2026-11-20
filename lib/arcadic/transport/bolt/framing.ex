@@ -21,8 +21,15 @@ defmodule Arcadic.Transport.Bolt.Framing do
 
   def recv(socket, deadline), do: recv_chunks(socket, deadline, [], 0)
 
-  defp recv_chunks({mod, sock} = socket, deadline, acc, size) do
-    with {:ok, <<n::16>>} <- mod.recv(sock, 2, remaining(deadline)) do
+  def read({mod, sock}, n, deadline) do
+    case remaining(deadline) do
+      0 -> {:error, :timeout}
+      timeout -> mod.recv(sock, n, timeout)
+    end
+  end
+
+  defp recv_chunks(socket, deadline, acc, size) do
+    with {:ok, <<n::16>>} <- read(socket, 2, deadline) do
       receive_chunk(n, socket, deadline, acc, size)
     end
   end
@@ -31,9 +38,9 @@ defmodule Arcadic.Transport.Bolt.Framing do
   defp receive_chunk(0, socket, deadline, [], 0), do: recv_chunks(socket, deadline, [], 0)
   defp receive_chunk(0, _, _, acc, _), do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
 
-  defp receive_chunk(n, {mod, sock} = socket, deadline, acc, size)
+  defp receive_chunk(n, socket, deadline, acc, size)
        when size + n <= @max_message do
-    with {:ok, chunk} <- mod.recv(sock, n, remaining(deadline)),
+    with {:ok, chunk} <- read(socket, n, deadline),
          do: recv_chunks(socket, deadline, [chunk | acc], size + n)
   end
 

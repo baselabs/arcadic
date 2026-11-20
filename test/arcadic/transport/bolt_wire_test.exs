@@ -80,10 +80,10 @@ defmodule Arcadic.Transport.Bolt.WireTest do
     assert {:ok, %Response{results: [%{"n" => 1}]}} = Response.new(run, pull)
   end
 
-  test "framing splits at 65535 bytes and reassembles multi-chunk messages" do
-    value = :binary.copy(<<42>>, 65536)
+  test "framing splits at 65_535 bytes and reassembles multi-chunk messages" do
+    value = :binary.copy(<<42>>, 65_536)
     bytes = value |> Framing.encode() |> IO.iodata_to_binary()
-    assert <<65535::16, _::binary-size(65535), 1::16, 42, 0::16>> = bytes
+    assert <<65_535::16, _::binary-size(65_535), 1::16, 42, 0::16>> = bytes
 
     c =
       client(fn sock ->
@@ -183,6 +183,20 @@ defmodule Arcadic.Transport.Bolt.WireTest do
 
     refute inspect(query) =~ "secret"
     assert to_string(query) == "[BOLT]"
+  end
+
+  test "an expired deadline rejects even buffered data and NOOP floods" do
+    parent = self()
+
+    c =
+      client(fn sock ->
+        :gen_tcp.send(sock, :binary.copy(<<0, 0>>, 1000) <> @success)
+        send(parent, :buffered)
+        _ = :gen_tcp.recv(sock, 1, 1000)
+      end)
+
+    assert_receive :buffered
+    assert {:error, :timeout} = Framing.recv(c.sock, Framing.deadline(0))
   end
 
   test "handshake advertises four versions and authenticates with HELLO on the bounded socket" do

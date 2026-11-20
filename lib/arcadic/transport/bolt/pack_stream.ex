@@ -33,7 +33,7 @@ defmodule Arcadic.Transport.Bolt.PackStream do
   defp pack(true, _), do: <<0xC3>>
   defp pack(n, _) when is_integer(n) and n >= -16 and n < 128, do: <<n::signed-8>>
   defp pack(n, _) when is_integer(n) and n >= -128 and n < 128, do: <<0xC8, n::signed-8>>
-  defp pack(n, _) when is_integer(n) and n >= -32768 and n < 32768, do: <<0xC9, n::signed-16>>
+  defp pack(n, _) when is_integer(n) and n >= -32_768 and n < 32_768, do: <<0xC9, n::signed-16>>
 
   defp pack(n, _) when is_integer(n) and n >= -2_147_483_648 and n < 2_147_483_648,
     do: <<0xCA, n::signed-32>>
@@ -80,7 +80,7 @@ defmodule Arcadic.Transport.Bolt.PackStream do
   defp key(_), do: throw(:invalid)
   defp header(n, tiny, _) when is_integer(tiny) and n < 16, do: <<tiny + n>>
   defp header(n, _, base) when n < 256, do: <<base, n>>
-  defp header(n, _, base) when n < 65536, do: <<base + 1, n::16>>
+  defp header(n, _, base) when n < 65_536, do: <<base + 1, n::16>>
   defp header(n, _, base) when n < 4_294_967_296, do: <<base + 2, n::32>>
 
   defp unpack(_, d) when d > @max_depth, do: :error
