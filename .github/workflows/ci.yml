@@ -132,6 +132,11 @@ jobs:
 
       - run: mix deps.get --check-locked
 
+      # Optional dependencies whose own Elixir floor is above this lane's (gRPC needs 1.18)
+      # leave this checkout, so the lane tests the tree a host on this Elixir actually gets.
+      - name: Select the dependency tree this Elixir can run
+        run: elixir scripts/ci_host_mode.exs
+
       - run: mix compile --warnings-as-errors
 
       - run: mix credo --strict

@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   security patches (Elixir patches the last five minor branches, 1.16 to 1.20). The optional
   gRPC transport needs Elixir 1.18+: grpc 1.1's `grpc_core` pins `googleapis ~> 0.1.0`,
   which requires 1.18; the README and usage rules now say so. The compatibility
-  lane runs 1.16.3 on OTP 26 and builds what a consumer's test suite builds (`MIX_ENV=test`).
+  lane runs 1.16.3 on OTP 26 and builds what a consumer's test suite builds (`MIX_ENV=test`)
+  on that Elixir: `scripts/ci_host_mode.exs` reads every locked dependency's own Elixir
+  requirement, leaves out an optional dependency whose chain needs a newer Elixir (gRPC on
+  1.16), and fails the lane if a required one does.
   The dependency audit and other dev-only tools run on the default toolchain, and
   `mix_audit` is a dev-only dependency.
 
