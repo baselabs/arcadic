@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
   unit:
     name: "unit + static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"

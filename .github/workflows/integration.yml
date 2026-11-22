@@ -36,7 +36,7 @@ jobs:
 
       - name: Read the default toolchain
         id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/beam
         with:
@@ -245,7 +245,7 @@ jobs:
 
       - name: Read the default toolchain
         id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/beam
         with:

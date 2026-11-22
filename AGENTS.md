@@ -108,8 +108,6 @@ path or key changes in the warmer and in every restore step together.
 
 Every workflow runs its steps as `bash -eo pipefail` (`defaults: run: shell: bash`), and every
 script a job calls is bash with `set -euo pipefail`, so a failure behind a pipe fails its step.
-The one exception is the shared `scripts/toolchain.sh`, which is POSIX `sh`, uses no pipe and
-checks each status itself.
 A command whose failure must fail the job is never followed by `|| true` and never feeds a check
 through `$(...)` inside `echo` or a `for` list: assign it to a variable first.
 
