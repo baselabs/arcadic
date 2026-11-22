@@ -141,10 +141,9 @@ Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does 
 ## CI/CD and releases
 
 CI/CD, the runners, the build machine and releases belong to the infrastructure owner (infra),
-for every BaseLabs product. Its requirements bind this repository: the section "What infra
-requires of every product" in `baselabs/docs/ci.md` of the BaseLabs infra repository, read from
-that repository's default branch. Re-read it whenever you touch a workflow, a Dockerfile, a
-release script or a secret. This file points at it and does not copy it.
+for every BaseLabs product. The organization's CI requirements for every product bind this
+repository. Re-read them whenever you touch a workflow, a Dockerfile, a release script or a
+secret. This file points at them and does not copy them.
 
 - **Your part ends at `main`.** A change lands only through the landing run on `kci/<full sha>`
   (see Workflow). Never release, deploy, publish, tag a version, dispatch a workflow, push an
