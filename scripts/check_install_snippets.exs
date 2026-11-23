@@ -59,7 +59,12 @@ defmodule InstallSnippets do
   defp files do
     ["README.md", "usage-rules.md"] ++
       Enum.flat_map(
-        ["documentation/**/*.md", "livebooks/**/*.livemd", "notebooks/**/*.livemd", "lib/**/*.ex"],
+        [
+          "documentation/**/*.md",
+          "livebooks/**/*.livemd",
+          "notebooks/**/*.livemd",
+          "lib/**/*.ex"
+        ],
         &Path.wildcard/1
       )
   end
