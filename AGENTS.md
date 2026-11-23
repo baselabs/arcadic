@@ -214,6 +214,9 @@ secret. This file points at them and does not copy them.
 
 ## Docs & lifecycle-artifact policy
 
+Install snippets describe the `@version` release in `mix.exs`; CI checks them against Hex
+metadata (or current requirements before publication).
+
 - **Tracked / published:** `AGENTS.md`, `README.md`, `CHANGELOG.md`,
   `CONTRIBUTING.md`, `usage-rules.md`, `LICENSE`, and `notebooks/`.
 - **Never tracked:** the project charter (`docs/CHARTER.md`) plus all brainstorm

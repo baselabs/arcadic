@@ -60,6 +60,11 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
+      - name: Check consumer install snippets
+        run: |
+          elixir scripts/check_install_snippets_test.exs
+          elixir scripts/check_install_snippets.exs
+
       # Restore only: cache-warmer.yml on the default branch is the one writer.
       - name: Restore deps and _build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

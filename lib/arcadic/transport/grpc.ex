@@ -23,7 +23,7 @@ if Code.ensure_loaded?(Protobuf) and Code.ensure_loaded?(GRPC.Service) do
             auth: {"root", System.fetch_env!("PW")}
           )
 
-    Requires the optional deps `{:grpc, "~> 0.11"}` and `{:protobuf, "~> 0.17"}`. The endpoint host
+    Requires the optional deps `{:grpc, "~> 1.1"}` and `{:protobuf, "~> 0.17.1"}`. The endpoint host
     and port come from `Conn.base_url`; credentials from `Conn.auth` (`{user, pass}` only — a bearer
     conn is rejected at construction, as with Bolt). Admin RPCs (Ping) authenticate by the request
     `credentials` field; data RPCs by `x-arcade-user`/`-password`/`-database` metadata.

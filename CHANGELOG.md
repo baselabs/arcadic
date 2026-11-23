@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Install snippets describe the advertised release and CI checks their requirements against
+  Hex (or `mix.exs` before publication). Notebook checks use the checkout's dependency
+  requirements while the published notebooks keep the released set; no library behavior changes.
 - The publish job's timeout is measured: 5 minutes, from its first green run (63 s with no
   cache, run 44745782824, the 2.0.0 publication). It was 90 minutes while unmeasured.
 - Docs build with ex_doc 0.40.5 (a dev-only tool; nothing a consumer resolves changes).
