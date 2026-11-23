@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The publish job's timeout is measured: 5 minutes, from its first green run (63 s with no
   cache, run 44745782824, the 2.0.0 publication). It was 90 minutes while unmeasured.
 - Docs build with ex_doc 0.40.5 (a dev-only tool; nothing a consumer resolves changes).
+- CI installs Java from the shared toolchain reader's output (distribution and exact
+  version and build), not from `.tool-versions` directly, and checks the installed JDK
+  with the reader's own probe. The reader moves to the version that probes Java.
 
 ## [2.0.0] - 2026-11-20
 

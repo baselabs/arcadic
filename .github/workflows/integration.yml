@@ -43,29 +43,23 @@ jobs:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
 
-      # The vendor and the exact version and build both come from .tool-versions.
+      # The reader names the JDK as asdf does: distribution, then exact version and build
+      # (temurin-21.0.9+10). setup-java takes the two halves.
+      - name: Split the Java toolchain
+        id: java
+        env:
+          JAVA_TOOL: ${{ steps.versions.outputs.java }}
+        run: printf 'distribution=%s\nversion=%s\n' "${JAVA_TOOL%%-*}" "${JAVA_TOOL#*-}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          java-version-file: .tool-versions
+          distribution: ${{ steps.java.outputs.distribution }}
+          java-version: ${{ steps.java.outputs.version }}
 
       - name: Verify installed Java
         env:
           EXPECTED_JAVA: ${{ steps.versions.outputs.java }}
-        run: |
-          case "$EXPECTED_JAVA" in
-            temurin-*) expected_vendor="Eclipse Adoptium" ;;
-            *) echo "::error::Java: no vendor check for $EXPECTED_JAVA" >&2; exit 1 ;;
-          esac
-          expected=${EXPECTED_JAVA#temurin-}
-          vendor=$(sed -n 's/^IMPLEMENTOR="\(.*\)"$/\1/p' "$JAVA_HOME/release")
-          actual=$(sed -n 's/^JAVA_RUNTIME_VERSION="\(.*\)"$/\1/p' "$JAVA_HOME/release")
-          # Temurin appends its LTS designation after the exact version and build.
-          actual=${actual%-LTS}
-          if [ "$vendor" != "$expected_vendor" ] || [ "$actual" != "$expected" ]; then
-            echo "::error::Java: expected $expected_vendor $expected, installed $vendor $actual" >&2
-            exit 1
-          fi
-          echo "Java $vendor $actual"
+        run: scripts/toolchain.sh --installed "java=$EXPECTED_JAVA"
 
       # Restore only: cache-warmer.yml on the default branch is the one writer.
       - name: Restore deps and _build
