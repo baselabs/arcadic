@@ -45,7 +45,7 @@ defmodule InstallSnippets do
         app = slice(text, app_span),
         MapSet.member?(declared, app),
         found = slice(text, requirement_span),
-        wanted = Map.get(expected, app),
+        wanted <- [Map.get(expected, app)],
         found != wanted do
       line = text |> binary_part(0, offset) |> String.split("\n") |> length()
       requirement = if wanted, do: inspect(wanted), else: "absent (not a published dependency)"
