@@ -82,7 +82,8 @@ defmodule InstallSnippets do
 
     case :httpc.request(
            :get,
-           {String.to_charlist(url), [{~c"accept", ~c"application/json"}]},
+           {String.to_charlist(url),
+            [{~c"accept", ~c"application/json"}, {~c"user-agent", ~c"check_install_snippets"}]},
            options,
            body_format: :binary
          ) do
