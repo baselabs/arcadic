@@ -818,7 +818,7 @@ network path, e.g. local dev).
 ## Bolt transport (optional)
 
 The query hot path runs over arcadic's native Bolt client. Add the optional
-`{:db_connection, "~> 2.10"}` dependency, then build the connection with `Arcadic.Transport.Bolt.setup/1` (it pins Bolt v4 —
+`{:db_connection, ">= 2.10.3 and < 3.0.0-0"}` dependency, then build the connection with `Arcadic.Transport.Bolt.setup/1` (it pins Bolt v4 —
 `versions: [4.4, 4.3, 4.2, 4.1]` — and the non-TLS `bolt` scheme, which ArcadeDB uses,
 and takes `username`/`password`). `setup/1` starts the pool AND returns the
 `transport_options` for `Arcadic.connect/3` in one call, carrying both `:bolt` (the pool,
@@ -919,7 +919,7 @@ def deps do
   [
     {:arcadic, "~> 2.0"},
     # optional, for the Bolt transport:
-    {:db_connection, "~> 2.10"},
+    {:db_connection, ">= 2.10.3 and < 3.0.0-0"},
     # optional, for change events (Arcadic.Changes):
     {:mint_web_socket, "~> 1.0"},
     # optional, for the gRPC transport:

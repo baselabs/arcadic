@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-24
+
 ### Changed
 
 - **The optional `db_connection` floor rises to 2.10.3** (was `~> 2.10`), which closes
