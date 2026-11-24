@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The optional `db_connection` floor rises to 2.10.3** (was `~> 2.10`), which closes
+  EEF-CVE-2026-133555 / GHSA-gmmq-fw75-wq46 (code execution via the `:log` option of forged
+  `DBConnection.Stream` structs, db_connection 1.1.0 to before 2.10.3). Only hosts that use the
+  Bolt transport depend on it. The lock moves to db_connection 2.10.3.
+- The notebook runner reads dependency requirements from `mix.exs` source instead of loading
+  the project, so `Mix.install` defines the project module once.
 - Install snippets describe the advertised release and CI checks their requirements against
   Hex (or `mix.exs` before publication). Notebook checks use the checkout's dependency
   requirements while the published notebooks keep the released set; no library behavior changes.

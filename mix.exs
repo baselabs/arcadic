@@ -50,11 +50,12 @@ defmodule Arcadic.MixProject do
       # consumers' resolution): mint >= 1.11 closes CVE-2026-82728/94194 (via req/finch),
       # protobuf >= 0.17.1 closes CVE-2026-104635 (the gRPC transport's codec), grpc >= 1.1
       # pulls grpc_core >= 1.1.0, which closes EEF-CVE-2026-121808 (Erlpack codec memory
-      # exhaustion).
+      # exhaustion), db_connection >= 2.10.3 closes EEF-CVE-2026-133555 (code execution via
+      # the :log option of forged DBConnection.Stream structs).
       {:mint, "~> 1.11"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
-      {:db_connection, "~> 2.10", optional: true},
+      {:db_connection, ">= 2.10.3 and < 3.0.0-0", optional: true},
       {:mint_web_socket, "~> 1.0", optional: true},
       {:grpc, "~> 1.1", optional: true},
       {:protobuf, "~> 0.17.1", optional: true},
