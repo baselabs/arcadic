@@ -115,3 +115,5 @@ jobs:
           name: release-assets
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
+          # Read after the run by infra's release tagging.
+          retention-days: 7
