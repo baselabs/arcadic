@@ -118,12 +118,7 @@ defmodule Arcadic.NotebookRunner do
   end
 
   def rewrite_setup(path, line, code) do
-    Mix.start()
-
-    requirements =
-      Mix.Project.in_project(:notebook_project, @checkout, fn _ ->
-        Map.new(Mix.Project.config()[:deps], fn dep -> {elem(dep, 0), elem(dep, 1)} end)
-      end)
+    requirements = checkout_requirements()
 
     {quoted, counts} =
       code
@@ -140,6 +135,34 @@ defmodule Arcadic.NotebookRunner do
       true ->
         quoted
     end
+  end
+
+  # Reads the literal `defp deps` list from this checkout's mix.exs as source, so the project
+  # module is defined only once, by Mix.install/2 loading the path dependency.
+  defp checkout_requirements do
+    mix_exs = Path.join(@checkout, "mix.exs")
+
+    {_ast, deps} =
+      mix_exs
+      |> File.read!()
+      |> Code.string_to_quoted!(file: mix_exs)
+      |> Macro.prewalk(nil, fn
+        {:defp, _, [{:deps, _, _}, [do: deps]]} = node, nil when is_list(deps) -> {node, deps}
+        node, acc -> {node, acc}
+      end)
+
+    if deps == nil, do: fail(mix_exs, "has no literal `defp deps` list")
+
+    Map.new(deps, fn
+      {app, requirement} when is_atom(app) and is_binary(requirement) ->
+        {app, requirement}
+
+      {:{}, _, [app, requirement, _opts]} when is_atom(app) and is_binary(requirement) ->
+        {app, requirement}
+
+      dep ->
+        fail(mix_exs, "declares #{Macro.to_string(dep)} without a literal version requirement")
+    end)
   end
 
   defp rewrite_install({{:., _, [{:__aliases__, _, [:Mix]}, :install]}, _, _} = node, counts) do
