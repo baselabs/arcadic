@@ -88,6 +88,19 @@ Make the change, run the tests that cover it, and commit with named paths. Nobod
 `qualified` job is the verdict, and `main` moves to the commit only after `qualified` succeeds.
 If it goes red, fix forward in a new commit.
 
+The tests that cover a change run in the quick workflow (`.github/workflows/quick.yml`), not
+on a workstation. Push the work branch (any name except `main` and `kci/*`) and read that
+branch's quick run once it has finished, about four minutes after the push; do not watch
+or poll it. It checks formatting, compiles with warnings as errors, runs credo, and then
+runs the tests `scripts/quick_tests.exs` selects: every changed test file, and every test
+file that names a module from a changed library file or from a library file that depends
+on one directly. They run against a live ArcadeDB serving HTTP, Bolt and gRPC in plaintext;
+the TLS and shutdown suites run only in the landing run. A change to `mix.exs`, `mix.lock`,
+`.tool-versions`, `config/`, the test helper or test support runs the whole suite. A
+newer push to the branch cancels the older run. Ask for the landing only when the
+branch's latest quick run is green. The quick run is not the verdict, and landing does
+not wait for it.
+
 A landing is finished only when its residue is gone, removed in the same step and checked
 before it is reported: every branch it used other than `main` (`kci/*`, which
 the landing tool deletes itself, plus any `review/*` or topic branch, local and on origin),

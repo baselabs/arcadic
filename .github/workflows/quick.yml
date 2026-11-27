@@ -1,0 +1,140 @@
+name: Quick
+
+# Fast feedback on a work branch before it asks to land: format, compile, credo, then the tests
+# that cover the branch's changes (scripts/quick_tests.exs) against a live ArcadeDB serving
+# HTTP, Bolt and gRPC in plaintext. The TLS and shutdown suites need their own servers and run
+# in ci.yml only. This is not the landing verdict and nothing waits on it: ci.yml's `qualified`
+# job on `kci/<sha>` is the one verdict, so `kci/**` and the default branch are left out here.
+on:
+  push:
+    branches-ignore: [main, 'kci/**']
+
+# A new push to the same branch cancels the run it supersedes.
+concurrency:
+  group: quick-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90 # no green run yet
+    env:
+      MIX_ENV: test
+      PW: probe-test-pw
+    steps:
+      # Full history, so the selector can find where the branch left the default branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Read the default toolchain
+        id: versions
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+
+      # The image ci.yml pins, so the pin has one home.
+      - name: Read the pinned ArcadeDB image from ci.yml
+        run: |
+          images=$(grep -oE 'arcadedata/arcadedb:[^[:space:]]+@sha256:[0-9a-f]{64}' .github/workflows/ci.yml | sort -u)
+          count=$(grep -c . <<< "$images")
+          [ "$count" = 1 ] || { echo "expected one pinned ArcadeDB image in ci.yml, found $count" >&2; exit 1; }
+          echo "ARCADEDB_IMAGE=$images" >> "$GITHUB_ENV"
+
+      # Started before the toolchain so the server boots while the build runs. Fixed host ports
+      # stay below 32768; gRPC publishes on a port Docker picks (see integration.yml).
+      - name: Start ArcadeDB (HTTP + Bolt + gRPC, plaintext)
+        run: |
+          docker run -d --name arcadic-quick \
+            -p 2480:2480 -p 7687:7687 -p 50051 \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW \
+              -Darcadedb.server.defaultDatabases=probe[root] \
+              -Darcadedb.server.plugins=GRPC:com.arcadedb.server.grpc.GrpcServerPlugin,Bolt:com.arcadedb.bolt.BoltProtocolPlugin \
+              -Darcadedb.grpc.enabled=true -Darcadedb.grpc.port=50051" \
+            "$ARCADEDB_IMAGE"
+          ports=$(docker port arcadic-quick 50051/tcp)
+          GRPC_PORT=$(sed -n '1s/.*://p' <<< "$ports")
+          if [ -z "$GRPC_PORT" ]; then echo "::error::no host port for gRPC" >&2; exit 1; fi
+          echo "GRPC_PORT=$GRPC_PORT" >> "$GITHUB_ENV"
+
+      - name: Set up Elixir/OTP
+        uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
+
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get --check-locked
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Select the tests that cover this branch
+        id: select
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          selected=$(elixir scripts/quick_tests.exs "origin/$DEFAULT_BRANCH")
+          echo "selected: $selected"
+          echo "tests=$selected" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ArcadeDB to be ready
+        if: steps.select.outputs.tests != 'none'
+        run: |
+          for _ in {1..60}; do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
+            sleep 2
+          done
+          docker logs arcadic-quick
+          exit 1
+
+      - name: Test the selected files (unit + plaintext integration suites)
+        if: steps.select.outputs.tests != 'none'
+        env:
+          TESTS: ${{ steps.select.outputs.tests }}
+          ARCADIC_TEST_URL: http://localhost:2480
+          ARCADIC_TEST_PASSWORD: ${{ env.PW }}
+          ARCADIC_TS_TEST_URL: http://localhost:2480
+          ARCADIC_TS_TEST_PASSWORD: ${{ env.PW }}
+          ARCADIC_BOLT_HOST: localhost
+          ARCADIC_BOLT_PORT: "7687"
+          ARCADIC_BOLT_HTTP_PORT: "2480"
+          ARCADIC_BOLT_PASSWORD: ${{ env.PW }}
+          ARCADIC_TEST_BOLT_HOST: localhost
+          ARCADIC_TEST_BOLT_PORT: "7687"
+          ARCADIC_GRPC_TEST_HTTP_URL: http://localhost:2480
+          ARCADIC_GRPC_TEST_PASSWORD: ${{ env.PW }}
+        run: |
+          export ARCADIC_GRPC_TEST_URL="grpc://localhost:$GRPC_PORT"
+          include=(--include integration --include integration_ws --include integration_ts
+            --include integration_bolt --include integration_grpc)
+          if [ "$TESTS" = all ]; then
+            mix test --warnings-as-errors "${include[@]}"
+          else
+            read -ra files <<< "$TESTS"
+            mix test --warnings-as-errors "${include[@]}" "${files[@]}"
+          fi
