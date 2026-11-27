@@ -242,11 +242,3 @@ metadata (or current requirements before publication).
   arguments but got 3". The two-argument form returns the same rows, relevance order,
   `$score` and fuse RRF scores on 26.7.2, 26.8.1 and 26.12.1-SNAPSHOT, so
   `FullText.search` and the fuse full-text arm emit only the two-argument form.
-
-## graphify (code knowledge graph)
-
-`graphify-out/graph.json` maps this repo (tree-sitter AST; rebuilt by the git post-commit hook;
-gitignored). Prefer `graphify query`, `graphify explain` and `graphify path` for orientation.
-Graph output is navigation, never evidence: Elixir edges are file-local only, so verify
-load-bearing claims against live code. `graphify update .` refreshes it after large uncommitted
-changes.
