@@ -1,158 +1,154 @@
 name: Publish to Hex.pm
 
-# Infra dispatches on the default branch after qualification. A keyless build proves a
-# reproducible package archive and inspects it and the docs archive, whose release.json
-# names the commit it was built from, and refuses a package whose CHANGELOG lists entries
-# above its version (infra ci.md, verbatim step); the isolated keyed step uploads only what
-# Hex does not yet serve. A second dispatch finishes the first: served package bytes must equal the
-# build, served docs are kept and never compared. Read-back requires the served docs'
-# release.json to name this release and this commit or an ancestor (the published commit),
-# and release-assets carries the package and those inspected served docs. Infra then tags
-# the published commit and creates the GitHub release from those assets.
 on:
   workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Full lowercase SHA of the landed release commit
+        required: true
+        type: string
+      qualification_run:
+        description: Original qualification run ID when retrying a release
+        required: false
+        type: string
 
-env:
-  MIX_ENV: dev
+permissions: {}
 
 concurrency:
   group: publish
   cancel-in-progress: false
 
-# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+env:
+  HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish/hex-version
+
 defaults:
   run:
     shell: bash
 
 jobs:
-  publish:
-    name: Publish
-    # The key is confined to the protected environment and the isolated upload step.
+  upload:
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
-    # floor 5 min for runner start-up; slowest green 1.1 min, no cache, run 44745782824
-    timeout-minutes: 5 # 63 s, run 44745782824
+    timeout-minutes: 15 # no green run yet
     permissions:
       contents: read
+      actions: read
+      id-token: write
+    outputs:
+      version: ${{ steps.hex.outputs.version }}
+      qualification-run: ${{ steps.hex.outputs.qualification-run }}
+      qualification-sha256: ${{ steps.hex.outputs.qualification-sha256 }}
     steps:
-      - name: Require the default branch
+      - name: Require the default branch and a full release commit
         env:
-          DISPATCH_REF: ${{ github.ref }}
-          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
-          if [ "$DISPATCH_REF" != "$DEFAULT_REF" ]; then
-            echo "::error::Publish requires $DEFAULT_REF; received $DISPATCH_REF" >&2
-            exit 1
-          fi
+          [[ "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] ||
+            { echo 'Dispatch publish.yml from the default branch'; exit 1; }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo 'release_commit must be a full lowercase commit SHA'; exit 1; }
 
-      # Full history: read-back checks the served docs' commit against this branch's history.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        name: Check out the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          ref: ${{ inputs.release_commit }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Read the default toolchain
+      - &read_toolchain
+        name: Read the release commit's toolchain
         id: versions
-        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          git show "$WORKFLOW_SHA:scripts/toolchain.sh" > "$RUNNER_TEMP/toolchain.sh"
+          chmod 755 "$RUNNER_TEMP/toolchain.sh"
+          "$RUNNER_TEMP/toolchain.sh" .tool-versions >> "$GITHUB_OUTPUT"
 
-      - uses: ./.github/actions/beam
+      - &setup_beam
+        name: Install the exact BEAM runtime
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
+          version-type: strict
+          install-hex: false
+          install-rebar: false
 
-      - name: Install the archive-building Hex client
-        run: mix local.hex "$(cat scripts/release/hex-version)" --force
-
-      - run: mix deps.get --check-locked
-
-      - name: Read version
-        run: |
-          VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
-          printf 'VERSION=%s\n' "$VERSION" >> "$GITHUB_ENV"
-
-      - name: Refuse tags, retired releases, and first publications
-        run: python3 -I scripts/release/registry.py refuse arcadic "$VERSION"
-
-      - name: Build and inspect the release archives
-        run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
-
-      - name: Refuse a package whose changelog is not stamped for its version
-        shell: bash
-        run: |
-          python3 -I - "$RUNNER_TEMP/release/package.tar" "$VERSION" <<'PY'
-          import io, re, sys, tarfile
-          archive, version = sys.argv[1], sys.argv[2]
-          def refuse(message):
-              raise SystemExit(f'{archive}: {message}; publication refused')
-          with tarfile.open(archive, 'r:*') as outer:
-              if 'contents.tar.gz' in outer.getnames():
-                  package = tarfile.open(fileobj=io.BytesIO(outer.extractfile('contents.tar.gz').read()), mode='r:gz')
-                  root = ''
-              else:
-                  package, root = outer, 'package/'
-              found = [member for member in package.getmembers() if member.isfile()
-                       and re.fullmatch(re.escape(root) + r'(?i:changelog(?:\.md|\.markdown|\.txt)?)', member.name)]
-              if len(found) != 1:
-                  refuse('the package must ship exactly one root CHANGELOG')
-              try:
-                  lines = package.extractfile(found[0]).read().decode('utf-8').splitlines()
-              except UnicodeDecodeError:
-                  refuse('the packaged CHANGELOG is not UTF-8')
-          headings, fence = {}, False
-          for index, line in enumerate(lines):
-              if re.match(r' {0,3}(```|~~~)', line):
-                  fence = not fence
-              elif not fence and (match := re.match(r' {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$', line)):
-                  headings[index] = (len(match.group(1)), match.group(2) or '')
-          token = re.compile(r'(?<![0-9A-Za-z.+-])v?' + re.escape(version) + r'(?![0-9A-Za-z.+-])')
-          stamped = [index for index, (_, title) in headings.items() if token.search(title)]
-          if not stamped:
-              refuse(f'the packaged CHANGELOG has no section for {version}')
-          at, level = stamped[0], headings[stamped[0]][0]
-          def written(start):
-              end = next((index for index, (depth, _) in headings.items() if index > start and depth <= level), len(lines))
-              return any(line.strip() for index, line in enumerate(lines[start + 1:end], start + 1) if index not in headings)
-          if not written(at):
-              refuse(f'the packaged CHANGELOG section for {version} is empty')
-          for start, (depth, title) in headings.items():
-              if start < at and depth == level and written(start):
-                  refuse(f'the packaged CHANGELOG has entries above {version}, under "{title}"')
-          print(f'{archive}: the packaged CHANGELOG is stamped for {version}')
-          PY
-
-      - name: Compare with what Hex serves
-        id: state
-        run: python3 -I scripts/release/registry.py compare arcadic "$VERSION" "$RUNNER_TEMP/release"
-
-      # This directory contains no mix.exs, so Mix cannot load project code under the key.
-      - name: Upload missing archives
-        if: steps.state.outputs.package == 'missing' || steps.state.outputs.docs == 'missing'
+      - &install_hex
+        name: Verify BEAM and install the shared action's Hex client
         working-directory: ${{ runner.temp }}
         env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: >-
-          mix run --no-mix-exs "$GITHUB_WORKSPACE/scripts/release/upload_hex.exs"
-          arcadic "$VERSION" release/package.tar release/docs.tar.gz
-
-      - name: Verify what Hex serves
-        id: verify
-        run: >-
-          python3 -I scripts/release/registry.py verify arcadic "$VERSION" "$RUNNER_TEMP/release"
-          "$RUNNER_TEMP/served-docs.tar.gz"
-
-      # Notes come from the published commit's CHANGELOG, the one the served docs name and
-      # infra tags, not from this checkout, which is newer when a dispatch resumes.
-      - name: Assemble verified release assets
-        env:
-          PUBLISHED_COMMIT: ${{ steps.verify.outputs.commit }}
+          EXPECTED_ELIXIR: ${{ steps.versions.outputs.elixir }}
+          EXPECTED_OTP: ${{ steps.versions.outputs.otp }}
         run: |
-          assets="$RUNNER_TEMP/release-assets"
-          mkdir -p "$assets"
-          cp "$RUNNER_TEMP/release/package.tar" "$assets/arcadic-$VERSION.tar"
-          cp "$RUNNER_TEMP/served-docs.tar.gz" "$assets/arcadic-$VERSION-docs.tar.gz"
-          python3 -I scripts/release/registry.py notes "$VERSION" "$PUBLISHED_COMMIT" "$assets/RELEASE_NOTES.md"
-          (cd "$assets" && sha256sum "arcadic-$VERSION.tar" "arcadic-$VERSION-docs.tar.gz" > SHA256SUMS)
+          ./toolchain.sh --installed "elixir=$EXPECTED_ELIXIR" "erlang=$EXPECTED_OTP"
+          test ! -e mix.exs
+          hex_version="$(curl --max-time 60 -fsSL --retry 3 --retry-all-errors "$HEX_PIN_URL")"
+          [[ "$hex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mix local.hex "$hex_version" --force
+
+      - name: Upload the qualified archives
+        id: hex
+        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
+        with:
+          operation: upload
+          package: arcadic
+          package-directory: .
+          release-commit: ${{ inputs.release_commit }}
+          qualification-run: ${{ inputs.qualification_run }}
+          organization-read-key: ${{ secrets.HEX_ORG_KEY_PUBLISH_API_READ }}
+
+  read-back:
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    needs: upload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15 # no green run yet
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - *checkout
+      - *read_toolchain
+      - *setup_beam
+      - *install_hex
+
+      - name: Verify the archives served by Hex
+        id: hex
+        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
+        with:
+          operation: read-back
+          package: arcadic
+          package-directory: .
+          release-commit: ${{ inputs.release_commit }}
+          qualification-run: ${{ needs.upload.outputs.qualification-run }}
+          qualification-sha256: ${{ needs.upload.outputs.qualification-sha256 }}
+          release-assets-directory: ${{ runner.temp }}/release-assets
+
+      - name: Write release notes from the published commit
+        env:
+          PUBLISHED_COMMIT: ${{ steps.hex.outputs.commit }}
+          VERSION: ${{ needs.upload.outputs.version }}
+        run: |
+          [[ "$PUBLISHED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git show "$PUBLISHED_COMMIT:CHANGELOG.md" | python3 -I -c '
+          import re, sys
+
+          version = sys.argv[1]
+          text = sys.stdin.read()
+          headings = list(re.finditer(r"^##[ \t]+(.+)$", text, re.MULTILINE))
+          for index, heading in enumerate(headings):
+              title = heading.group(1).split(maxsplit=1)
+              if title and title[0] in (f"[{version}]", version):
+                  end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+                  print(text[heading.start():end].rstrip())
+                  break
+          else:
+              raise SystemExit(f"CHANGELOG.md has no section for {version}")
+          ' "$VERSION" > "$RUNNER_TEMP/release-assets/RELEASE_NOTES.md"
 
       - name: Upload verified release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -160,5 +156,4 @@ jobs:
           name: release-assets
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
-          # Read after the run by infra's release tagging.
           retention-days: 7

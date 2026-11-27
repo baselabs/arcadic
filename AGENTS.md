@@ -151,22 +151,13 @@ secret. This file points at them and does not copy them.
   infra one message: repository, full commit, what goes out, and anything it needs. A release
   is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
   dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
-  Qualification and publication use `scripts/release/build_archives.sh` with the Hex version
-  in `scripts/release/hex-version` to build and inspect both archives before any key is
-  available: the package is built twice and must match byte for byte; docs are built once,
-  because a docs build is not byte-stable, and carry `release.json` naming the package,
-  version and the commit they were built from. Publication has no cache; its isolated
-  `mix run --no-mix-exs` step uploads only what Hex does not yet serve for an existing
-  package name, and holds the key only for that upload. It never replaces a package or
-  served docs. A second dispatch finishes the first: the package Hex serves must equal the
-  build, and docs Hex serves are kept and never compared. It refuses existing tags, retired
-  versions, missing changelog sections, and a built package whose CHANGELOG is not stamped for
-  its version (entries above it, before any upload; an empty `[Unreleased]` stays). Read-back
-  requires the served docs' `release.json` to name this release and the dispatched commit or
-  an ancestor on the default branch (the published commit, which infra tags), and exports
-  `release-assets`: the package, those inspected served docs, checksums, and release notes
-  read from the published commit's CHANGELOG (not the checkout, which is newer when a
-  dispatch resumes). Infra creates the GitHub release from them.
+  The shared Hex action qualifies the package and docs against `.github/hex-packages.json`
+  and retains them for seven days. Dispatch with the full release commit SHA. The upload job
+  verifies the qualification and changelog stamp before exchanging workload identity for a
+  package-scoped token. When retrying a release, pass the original `qualification_run`.
+  Read-back verifies the served archives against that qualification and exports
+  `release-assets` with checksums and notes from the published commit's CHANGELOG. Infra
+  creates the GitHub release from those assets.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
