@@ -150,14 +150,15 @@ secret. This file points at them and does not copy them.
   image by hand, or handle a release, publish or CI key. When something should go out, send
   infra one message: repository, full commit, what goes out, and anything it needs. A release
   is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
-  dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
+  dispatches `.github/workflows/publish.yml` and tags `baselabs_arcadic-v<version>` on the
+  published commit.
   The shared Hex action qualifies the package and docs against `.github/hex-packages.json`
   and retains them for seven days. Dispatch with the full release commit SHA. The upload job
   verifies the qualification and changelog stamp before exchanging workload identity for a
   package-scoped token. When retrying a release, pass the original `qualification_run`.
   Read-back verifies the served archives against that qualification and exports
-  `release-assets` (the served package and docs with checksums). Infra tags
-  `baselabs_arcadic-v<version>` and creates the GitHub release.
+  `release-assets` (the served package and docs with checksums). Infra
+  creates the GitHub release from them.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
