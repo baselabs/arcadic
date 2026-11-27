@@ -246,6 +246,50 @@ jobs:
           package: arcadic
           package-directory: .
 
+  # The qualify step removes its scratch directory when it ends, so the rebuild
+  # comparison runs in its own job against the uploaded artifact.
+  package-rebuild:
+    needs: [toolchain, release-archives]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15 # no green run yet
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+          version-type: strict
+          install-hex: false
+
+      - name: Verify BEAM and install the shared action's Hex client
+        working-directory: ${{ runner.temp }}
+        env:
+          EXPECTED_ELIXIR: ${{ needs.toolchain.outputs.elixir }}
+          EXPECTED_OTP: ${{ needs.toolchain.outputs.otp }}
+          HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2/.github/actions/hex-publish/hex-version
+        run: |
+          "$GITHUB_WORKSPACE/scripts/toolchain.sh" --installed "elixir=$EXPECTED_ELIXIR" "erlang=$EXPECTED_OTP"
+          test ! -e mix.exs
+          hex_version="$(curl --max-time 60 -fsSL --retry 3 --retry-all-errors "$HEX_PIN_URL")"
+          [[ "$hex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mix local.hex "$hex_version" --force
+
+      # The warmer writes deps and both test and dev _build for the default toolchain.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get --check-locked
+
       - name: Retrieve the qualified package for the reproducibility check
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -261,7 +305,7 @@ jobs:
 
   qualified:
     if: always()
-    needs: [toolchain, unit, compat, without-optional, integration, release-archives]
+    needs: [toolchain, unit, compat, without-optional, integration, release-archives, package-rebuild]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44160534612
     timeout-minutes: 5 # 7 s, run 44160534612
