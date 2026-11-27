@@ -665,25 +665,44 @@ across a dense embedding arm and a full-text arm in one fused, ranked result set
 
 ```elixir
 # 0. Declare the schema first — the batch endpoint needs the vertex/edge TYPEs to exist,
-#    and a FULL_TEXT index needs a declared property (a bulk-inserted value is schemaless).
+#    and FULL_TEXT indexes need declared string properties.
 Arcadic.command!(conn, "CREATE VERTEX TYPE Doc IF NOT EXISTS", %{}, language: "sql")
 Arcadic.command!(conn, "CREATE EDGE TYPE RELATED IF NOT EXISTS", %{}, language: "sql")
 Arcadic.command!(conn, "CREATE PROPERTY Doc.title IF NOT EXISTS STRING", %{}, language: "sql")
+Arcadic.command!(conn, "CREATE PROPERTY Doc.body IF NOT EXISTS STRING", %{}, language: "sql")
 
 # 1. Bulk-create vertices + edges in one atomic POST — vertices carry a temporary "@id"
 #    that edges reference via "@from"/"@to"; the response maps each "@id" to its real RID.
 {:ok, counts} =
   Arcadic.Bulk.ingest(conn, [
-    %{"@type" => "vertex", "@class" => "Doc", "@id" => "d1", "title" => "Graph databases 101"},
-    %{"@type" => "vertex", "@class" => "Doc", "@id" => "d2", "title" => "Vector search primer"},
+    %{
+      "@type" => "vertex",
+      "@class" => "Doc",
+      "@id" => "d1",
+      "title" => "Graph databases 101",
+      "body" => "A guide to nodes and edges"
+    },
+    %{
+      "@type" => "vertex",
+      "@class" => "Doc",
+      "@id" => "d2",
+      "title" => "Vector search primer",
+      "body" => "Ranking results in a graph"
+    },
     %{"@type" => "edge", "@class" => "RELATED", "@from" => "d1", "@to" => "d2"}
   ])
 
 counts.id_mapping #=> %{"d1" => "#12:0", "d2" => "#12:1"}
 
 # 2. Full-text index (retro-indexes the rows just created) + BM25-ranked search
-:ok = Arcadic.FullText.create_index(conn, "Doc", "title")
-{:ok, hits} = Arcadic.FullText.search(conn, "Doc", "title", "graph", with_score: true)
+properties = ["title", "body"]
+:ok = Arcadic.FullText.create_index(conn, "Doc", properties)
+
+{:ok, hits} =
+  Arcadic.FullText.search(conn, "Doc", properties, "graph",
+    with_score: true,
+    filter: [counts.id_mapping["d1"]]
+  )
 
 # 3. Hybrid fusion — a dense vector arm plus a full-text arm, fused by reciprocal-rank fusion.
 #    Prerequisites (see the vector docs above): a dense index on `Doc.embedding` via
@@ -692,9 +711,13 @@ counts.id_mapping #=> %{"d1" => "#12:0", "d2" => "#12:1"}
 {:ok, fused} =
   Arcadic.Vector.fuse(conn, [
     {"Doc", "embedding", query_vector, 10},
-    {:fulltext, "Doc", "title", "graph", 10}
+    {:fulltext, "Doc", properties, "graph", 10}
   ])
 ```
+
+`search/5` and `search_fields/5` accept a list of record IDs in `:filter`. Omit it
+to search every record or pass `[]` for no results. For a single-property index,
+`search/5` and the full-text fuse arm also accept a property name as a string.
 
 The [`notebooks/graphrag.livemd`](notebooks/graphrag.livemd) notebook walks the full
 surface end to end — bulk graph ingest, idempotent `UNWIND` upsert, dense + sparse vector
@@ -917,7 +940,7 @@ Add `arcadic` from [Hex](https://hex.pm/packages/arcadic):
 ```elixir
 def deps do
   [
-    {:arcadic, "~> 2.0"},
+    {:arcadic, "~> 2.1"},
     # optional, for the Bolt transport:
     {:db_connection, ">= 2.10.3 and < 3.0.0-0"},
     # optional, for change events (Arcadic.Changes):

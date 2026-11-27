@@ -180,7 +180,8 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.FullText`** — `FULL_TEXT` (Lucene) index DDL (`create_index/4` +
   `drop_index/3`) and `SEARCH_INDEX`/`SEARCH_FIELDS` query builders
   (`search/5`, `search_fields/5`), parallel to `Arcadic.Vector`. HTTP-only SQL;
-  a `FULL_TEXT` index retro-indexes rows that already exist. `:with_score` (BM25 `$score`)
+  a `FULL_TEXT` index retro-indexes rows that already exist. Both searches accept a
+  candidate RID list in `:filter`. An empty list returns no results. `:with_score` (BM25 `$score`)
   applies to `search/5` (`SEARCH_INDEX`) only — `SEARCH_FIELDS` has no relevance score, so
   `search_fields/5` with `:with_score` projects a constant `0.0`.
 - **`Arcadic.Bulk`** — `ingest/3` (+ `!`): bulk-creates vertices and edges over
@@ -190,8 +191,9 @@ _A framework-agnostic Elixir client for ArcadeDB over the HTTP Cypher command AP
 - **`Arcadic.Vector.fuse/3`** now accepts heterogeneous neighbor specs — a bare
   `{type, property, query_vector, k}` dense arm, a `{:sparse, type,
   tokens_property, weights_property, tokens, weights, k}` arm, and/or a
-  `{:fulltext, type, property, query, k}` arm — fused in one hybrid-ranked
-  result set (see `Arcadic.Vector` above and Bulk loading below).
+  `{:fulltext, type, property_or_properties, query, k}` arm. All arms contribute to one
+  hybrid-ranked result set. The full-text arm takes a property name or a non-empty list
+  of distinct properties in the index's order.
 - **`Arcadic.Geo`** — `GEOSPATIAL` index DDL: `create_index/4` (`type`, `property`,
   idempotent `IF NOT EXISTS` unless `if_not_exists: false`) and `drop_index/3`
   (`IF EXISTS`), both + `!`. The index sits on a **string property holding WKT**

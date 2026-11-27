@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Arcadic.FullText.search/5` and `search_fields/5` accept a candidate RID
+  filter. An empty list returns no rows without querying ArcadeDB.
+- Full-text arms in `Arcadic.Vector.fuse/3` can search a composite index by
+  passing its property list in index order.
+
 ### Changed
 
 - Publish CI-qualified Hex archives through the shared workload identity action.

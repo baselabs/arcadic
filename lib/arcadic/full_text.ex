@@ -3,9 +3,9 @@ defmodule Arcadic.FullText do
   ArcadeDB full-text search — tenant-blind `FULL_TEXT` (Lucene) index DDL and
   `SEARCH_INDEX`/`SEARCH_FIELDS` query builders, parallel to `Arcadic.Vector`.
 
-  The query text binds as the `:q` param (SQL); the index reference `"Type[property]"` and any
-  analyzer class name are interpolated behind `Arcadic.Identifier` / a dotted-class-name allowlist
-  (the only injection surfaces, closed by construction). A `FULL_TEXT` index **retro-indexes rows
+  The query text and candidate RID list bind as the SQL parameters `:q` and `:rids`.
+  The index reference `"Type[property]"` and analyzer class name are interpolated only
+  after identifier and dotted-class-name validation. A `FULL_TEXT` index **retro-indexes rows
   that already exist** when it is created (unlike `LSM_SPARSE_VECTOR`, which does not) — so there is
   no create-before-load ordering requirement. Full-text is HTTP-only SQL (Bolt is Cypher-only).
 
@@ -13,11 +13,13 @@ defmodule Arcadic.FullText do
   single-property index is `Type[prop]`, a composite `create_index(conn, T, [a, b])` is `Type[a,b]`
   (search it with the same list). `SEARCH_INDEX` on a ref with no matching index is a server
   `SchemaException`. `search_fields/5` names the fields directly and needs no exact index-name match.
+  Both searches accept a `:filter` list of candidate RIDs. An empty candidate set returns
+  `{:ok, []}` without a request.
   """
-  alias Arcadic.{Conn, Identifier, Opts}
+  alias Arcadic.{Conn, Identifier, Opts, RidFilter}
 
   @create_opts [:if_not_exists, :analyzer]
-  @search_opts [:limit, :with_score]
+  @search_opts [:limit, :with_score, :filter]
 
   # Friendly atom → Lucene analyzer FQCN. The validated-FQCN-string path (below) covers any analyzer,
   # so this map is convenience, not a ceiling.
@@ -46,7 +48,6 @@ defmodule Arcadic.FullText do
 
   def create_index(%Conn{} = conn, type, property_or_properties, opts) do
     Opts.validate_keys!(opts, @create_opts)
-    require_props!(property_or_properties)
 
     with {:ok, ident_list} <- validate_type_and_props(type, property_or_properties) do
       guard = if Keyword.get(opts, :if_not_exists, true), do: " IF NOT EXISTS", else: ""
@@ -73,8 +74,6 @@ defmodule Arcadic.FullText do
     do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   def drop_index(%Conn{} = conn, type, property_or_properties) do
-    require_props!(property_or_properties)
-
     with {:ok, ref} <- index_ref(type, property_or_properties) do
       command_ok(conn, "DROP INDEX `#{ref}` IF EXISTS")
     end
@@ -89,9 +88,11 @@ defmodule Arcadic.FullText do
     do: bang(drop_index(conn, type, property_or_properties))
 
   @doc """
-  Full-text search via `SEARCH_INDEX('Type[property]', :q)`. `query` binds as `:q`. `opts`:
-  `:limit` (pos_integer → `LIMIT :k`), `:with_score` (project the BM25 `$score`). Rows come
-  back relevance-ranked either way. Returns whole records (`+ "score"` when `:with_score`).
+  Searches a full-text index via `SEARCH_INDEX('Type[property]', :q)` and returns
+  whole records ranked by relevance. `query` binds as `:q`. Set `:limit` to a
+  positive integer to cap the result, or set `:with_score` to include the BM25
+  score in a `"score"` field. Use `:filter` to restrict matches to a list of
+  `#<bucket>:<pos>` RID strings, bound as `:rids`. An empty list returns no rows.
   """
   @spec search(Conn.t(), String.t(), String.t() | [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -103,13 +104,9 @@ defmodule Arcadic.FullText do
   def search(%Conn{} = conn, type, property_or_properties, query, opts) do
     unless is_binary(query), do: raise(ArgumentError, "query must be a string")
     Opts.validate_keys!(opts, @search_opts)
-    require_props!(property_or_properties)
 
     with {:ok, ref} <- index_ref(type, property_or_properties) do
-      proj = score_projection(opts)
-      {limit, params} = limit_fragment(opts, %{"q" => query})
-      sql = "SELECT #{proj}FROM #{type} WHERE SEARCH_INDEX('#{ref}', :q) = true#{limit}"
-      Arcadic.query(conn, sql, params, language: "sql")
+      run_search(conn, type, "SEARCH_INDEX('#{ref}', :q) = true", query, opts)
     end
   end
 
@@ -124,10 +121,10 @@ defmodule Arcadic.FullText do
     do: bang(search(conn, type, property_or_properties, query, opts))
 
   @doc """
-  Full-text search via `SEARCH_FIELDS(['p1','p2'…], :q)` over a property list (all must be
-  FULL_TEXT-indexed). Same `opts`/return shape as `search/5` — but note **`SEARCH_FIELDS`
-  computes no relevance score**: with `:with_score` it projects a constant `score: 0.0` on every
-  row (a shape-only column, not a ranking). Use `search/5` (`SEARCH_INDEX`) for the BM25 `$score`.
+  Searches FULL_TEXT-indexed fields via `SEARCH_FIELDS(['p1','p2'…], :q)` and returns
+  whole records. Accepts the same options, including the candidate RID `:filter`, as
+  `search/5`. Setting `:with_score` projects a constant `score: 0.0` on every row.
+  Use `search/5` for the BM25 score.
   """
   @spec search_fields(Conn.t(), String.t(), [String.t()], String.t(), keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -138,15 +135,10 @@ defmodule Arcadic.FullText do
 
   def search_fields(%Conn{} = conn, type, properties, query, opts) when is_list(properties) do
     Opts.validate_keys!(opts, @search_opts)
-    require_props!(properties)
 
-    with :ok <- Identifier.validate(type),
-         {:ok, props} <- validate_each(properties) do
+    with {:ok, props} <- validate_type_and_props(type, properties) do
       field_list = Enum.map_join(props, ", ", &"'#{&1}'")
-      proj = score_projection(opts)
-      {limit, params} = limit_fragment(opts, %{"q" => query})
-      sql = "SELECT #{proj}FROM #{type} WHERE SEARCH_FIELDS([#{field_list}], :q) = true#{limit}"
-      Arcadic.query(conn, sql, params, language: "sql")
+      run_search(conn, type, "SEARCH_FIELDS([#{field_list}], :q) = true", query, opts)
     end
   end
 
@@ -166,21 +158,21 @@ defmodule Arcadic.FullText do
   def search_fields!(%Conn{} = conn, type, properties, query, opts),
     do: bang(search_fields(conn, type, properties, query, opts))
 
-  @doc "Builds the FULL_TEXT index reference `\"Type[p1,p2]\"`, validating every identifier."
+  @doc """
+  Builds the FULL_TEXT index reference `"Type[p1,p2]"`. Accepts one property or a
+  non-empty list in index order and validates every identifier.
+  """
   @spec index_ref(String.t(), String.t() | [String.t()]) ::
           {:ok, String.t()} | {:error, :invalid_identifier}
   def index_ref(type, property_or_properties) do
-    with {:ok, [type_ok | props]} <- validate_each([type | List.wrap(property_or_properties)]) do
-      {:ok, "#{type_ok}[#{Enum.join(props, ",")}]"}
+    with {:ok, props} <- validate_type_and_props(type, property_or_properties) do
+      {:ok, "#{type}[#{Enum.join(props, ",")}]"}
     end
   end
 
   # --- private ---
 
-  # A FULL_TEXT index needs at least one property: an empty list emits `ON T ()` (create), `T[]`
-  # (index ref for drop/search), or `SEARCH_FIELDS([])` — all server-rejected statements. Reject it
-  # client-side, value-free (an empty list carries no caller value to leak), BEFORE building any
-  # statement. Mirrors `Arcadic.Vector.validate_rids!`'s empty-list rejection.
+  # Empty property lists would produce server-rejected DDL, index refs, or SEARCH_FIELDS calls.
   defp require_props!(property_or_properties) do
     case List.wrap(property_or_properties) do
       [] -> raise ArgumentError, "at least one property is required"
@@ -188,25 +180,44 @@ defmodule Arcadic.FullText do
     end
   end
 
-  # Returns {:ok, [validated property identifiers]} (type validated separately, reused for the `ON type` clause).
   defp validate_type_and_props(type, property_or_properties) do
-    with :ok <- Identifier.validate(type) do
-      validate_each(List.wrap(property_or_properties))
+    props = require_props!(property_or_properties)
+
+    with :ok <- Identifier.validate(type),
+         :ok <- validate_each(props) do
+      {:ok, props}
     end
   end
 
-  defp validate_each(list) do
-    Enum.reduce_while(list, {:ok, []}, fn ident, {:ok, acc} ->
-      case Identifier.validate(ident) do
-        :ok -> {:cont, {:ok, [ident | acc]}}
-        {:error, :invalid_identifier} = err -> {:halt, err}
-      end
-    end)
-    |> case do
-      {:ok, acc} -> {:ok, Enum.reverse(acc)}
-      {:error, _} = err -> err
+  defp validate_each([]), do: :ok
+
+  defp validate_each([ident | rest]) do
+    with :ok <- Identifier.validate(ident) do
+      validate_each(rest)
     end
   end
+
+  defp validate_each(_), do: {:error, :invalid_identifier}
+
+  defp run_search(conn, type, predicate, query, opts) do
+    {limit, params} = limit_fragment(opts, %{"q" => query})
+
+    case Keyword.fetch(opts, :filter) do
+      {:ok, []} ->
+        {:ok, []}
+
+      filter ->
+        {rid_predicate, params} = filter_fragment(filter, params)
+        proj = score_projection(opts)
+        sql = "SELECT #{proj}FROM #{type} WHERE #{predicate}#{rid_predicate}#{limit}"
+        Arcadic.query(conn, sql, params, language: "sql")
+    end
+  end
+
+  defp filter_fragment(:error, params), do: {"", params}
+
+  defp filter_fragment({:ok, rids}, params),
+    do: {" AND @rid IN :rids", Map.put(params, "rids", RidFilter.validate!(rids))}
 
   # The $score projection when :with_score, "" otherwise. SEARCH_INDEX stays two-argument: the
   # server ranks by relevance without ORDER BY (so no synthetic-alias column), and 26.12 rejects

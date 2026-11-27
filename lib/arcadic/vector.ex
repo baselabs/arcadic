@@ -3,16 +3,13 @@ defmodule Arcadic.Vector do
   ArcadeDB dense vector search — tenant-blind index DDL and nearest-neighbour /
   hybrid-fusion query builders over ArcadeDB's `LSM_VECTOR` surface.
 
-  Every caller value (query vector, `k`, `ef_search`, `max_distance`) binds as a
-  `$param`. The only text interpolated into a statement is the index reference
-  `"Type[property]"`, whose two identifiers are `Arcadic.Identifier`-validated before
-  composition — the sole injection surface, closed by construction (callers pass
-  `type`/`property`, never a raw ref). Index metadata values (`dimensions`, the
-  similarity/encoding/quantization enums) are developer-supplied schema config,
-  validated against integer/allowlist checks before interpolation. Failures carry the
-  invalid SHAPE only, never the offending value (AGENTS.md Critical Rule 3).
+  Nearest-neighbour searches bind query vectors and options as SQL parameters.
+  Index references are built from validated identifiers. Index metadata and fusion
+  options that enter the statement are validated by shape or allowlist. Fused
+  full-text searches use allowlist-validated RID literals for their candidate filter.
+  Validation errors omit caller values.
   """
-  alias Arcadic.{Conn, Identifier, Opts}
+  alias Arcadic.{Conn, FullText, Identifier, Opts, RidFilter}
 
   @doc "Builds the ArcadeDB index reference `\"Type[property]\"`, validating both identifiers."
   @spec index_ref(String.t(), String.t()) :: {:ok, String.t()} | {:error, :invalid_identifier}
@@ -315,19 +312,19 @@ defmodule Arcadic.Vector do
     * `{type, property, query_vector, k}` — a dense `vector.neighbors` subquery;
     * `{:sparse, type, tokens_property, weights_property, query_tokens, query_weights, k}` —
       a `vector.sparseNeighbors` subquery;
-    * `{:fulltext, type, property, query, k}` — a full-text `SEARCH_INDEX(...) = true`
-      subquery bounded by `LIMIT :k`.
+    * `{:fulltext, type, property_or_properties, query, k}` — a full-text
+      `SEARCH_INDEX(...) = true` subquery bounded by `LIMIT :k`. Pass a single property
+      or a non-empty list of distinct properties in the FULL_TEXT index's order, as in
+      `Arcadic.FullText.search/5`.
 
-  Each caller vector/tokens/weights/query binds as a distinct `$param`; only the validated
-  index identifiers are interpolated. An unknown tag or wrong-arity tuple is rejected
-  value-free (never a `FunctionClauseError` echoing the spec).
+  Each query vector, token list, weight list, and search string binds as a distinct SQL
+  parameter. An unknown tag or wrong-arity tuple produces a value-free error.
 
   `opts`: `fusion` (`:rrf` default | `:dbsf` | `:linear`), `weights` (list of numbers),
   `k` (pos_integer), `filter` (non-empty list of `#<bucket>:<pos>` candidate RID strings —
   a SHARED candidate set: the dense/sparse arms thread it as a `{filter: :rids}` function
-  option, while the full-text arm interpolates the RIDs as `@rid IN [...]` literals because a
-  param-bound `@rid` is inert in ArcadeDB SQL — the RIDs are allowlist-validated before
-  interpolation), `group_by` (property name to group by; validated for identifier shape),
+  option, while the full-text arm uses allowlist-validated `@rid IN [...]` literals),
+  `group_by` (property name to group by; validated for identifier shape),
   `group_size` (pos_integer — max results per group). `group_by`/`group_size` apply to the
   FUSED output (the outer fuse object); all bind as params.
 
@@ -341,7 +338,7 @@ defmodule Arcadic.Vector do
   @type fuse_spec ::
           {String.t(), String.t(), [number()], pos_integer()}
           | {:sparse, String.t(), String.t(), String.t(), [integer()], [number()], pos_integer()}
-          | {:fulltext, String.t(), String.t(), String.t(), pos_integer()}
+          | {:fulltext, String.t(), String.t() | [String.t()], String.t(), pos_integer()}
 
   @spec fuse(Conn.t(), [fuse_spec()], keyword()) ::
           {:ok, [map()]} | {:error, atom() | Exception.t()}
@@ -373,7 +370,7 @@ defmodule Arcadic.Vector do
   defp fuse_filter!(opts) do
     case Keyword.fetch(opts, :filter) do
       :error -> nil
-      {:ok, rids} -> validate_rids!(rids)
+      {:ok, rids} -> RidFilter.validate!(rids)
     end
   end
 
@@ -409,9 +406,8 @@ defmodule Arcadic.Vector do
   # --- private ---
 
   # `filter` is the validated RID list (or nil). Dense/sparse arms bind {filter: :rids} once (via
-  # maybe_put_filter in fuse/3); the FT arm interpolates the RIDs as LITERALS (@rid IN [...]) — the
-  # proven keyset-cursor path, NOT param-bound @rid (dead per S5). The RIDs were allowlist-validated
-  # by fuse_filter! -> validate_rids! before reaching here.
+  # maybe_put_filter in fuse/3). The full-text arm uses `@rid IN [...]` literals from the RIDs
+  # allowlist-validated by fuse_filter!.
   # ArcadeDB's `vector.fuse` requires at least 2 sources — a single-source fuse raises server-side
   # ("requires at least 2 sources, got 1"). Reject a one-element spec list client-side, value-free
   # (the count carries no caller value), before emitting a statement the server would reject. Empty
@@ -442,7 +438,7 @@ defmodule Arcadic.Vector do
     raise ArgumentError,
           "neighbor_specs must be a non-empty list of dense {type, property, query_vector, k}, " <>
             "{:sparse, type, tokens_prop, weights_prop, tokens, weights, k}, or " <>
-            "{:fulltext, type, property, query, k} tuples"
+            "{:fulltext, type, property_or_properties, query, k} tuples"
   end
 
   # Dense (bare 4-tuple) — filter via {filter: :rids} function-arg.
@@ -472,8 +468,12 @@ defmodule Arcadic.Vector do
   end
 
   # Full-text — query binds as :q<i>, k bounds the arm (LIMIT :k<i>), filter via literal @rid IN [...].
-  defp build_subquery({:fulltext, type, property, query, k}, i, _with_filter, rid_literals) do
-    with {:ok, ref} <- index_ref(type, property) do
+  defp build_subquery({:fulltext, type, properties, query, k}, i, _with_filter, rid_literals) do
+    with {:ok, ref} <- FullText.index_ref(type, properties) do
+      if is_list(properties) and Enum.uniq(properties) != properties do
+        raise ArgumentError, "properties must be distinct"
+      end
+
       k = require_pos_int!(k, "k")
 
       sub =
@@ -488,7 +488,7 @@ defmodule Arcadic.Vector do
   defp build_subquery(_spec, _i, _with_filter, _rid_literals) do
     raise ArgumentError,
           "each neighbor_spec must be a dense {type, property, query_vector, k}, a " <>
-            "{:sparse, …7…}, or a {:fulltext, type, property, query, k} tuple"
+            "{:sparse, …7…}, or a {:fulltext, type, property_or_properties, query, k} tuple"
   end
 
   # fusion + optional weights (validated numbers) + k (validated int), interpolated as
@@ -548,7 +548,7 @@ defmodule Arcadic.Vector do
        Map.put(params, "md", require_number!(value, "max_distance"))}
 
   defp add_query_opt(:filter, value, pairs, params),
-    do: {["filter: :rids" | pairs], Map.put(params, "rids", validate_rids!(value))}
+    do: {["filter: :rids" | pairs], Map.put(params, "rids", RidFilter.validate!(value))}
 
   defp add_query_opt(:group_by, value, pairs, params),
     do: {["groupBy: :gb" | pairs], Map.put(params, "gb", validate_group_by!(value))}
@@ -569,31 +569,6 @@ defmodule Arcadic.Vector do
 
   defp require_number!(v, _label) when is_number(v), do: v
   defp require_number!(_v, label), do: raise(ArgumentError, "#{label} must be a number")
-
-  @rid_pattern ~r/\A#\d+:\d+\z/
-
-  # A candidate-set filter must be a NON-EMPTY list of #<bucket>:<pos> RID strings. An empty
-  # list is silently ignored by the server (returns everything) — fail loud. Value-free: the
-  # offending RID is never echoed (Rule 3). Binds as a param; NOT an injection defense.
-  defp validate_rids!([_ | _] = rids) do
-    Enum.each(rids, fn
-      rid when is_binary(rid) ->
-        unless Regex.match?(@rid_pattern, rid) do
-          raise ArgumentError, "filter must be a list of #<bucket>:<pos> RID strings"
-        end
-
-      _ ->
-        raise ArgumentError, "filter must be a list of #<bucket>:<pos> RID strings"
-    end)
-
-    rids
-  end
-
-  defp validate_rids!([]),
-    do: raise(ArgumentError, "filter must be a non-empty list of RIDs")
-
-  defp validate_rids!(_),
-    do: raise(ArgumentError, "filter must be a non-empty list of RIDs")
 
   # group_by is a property name bound as a PARAM value (injection closed by the param — probed:
   # a quote-breaking payload bound here is inert). Identifier.validate is a value-free client-side

@@ -602,6 +602,40 @@ defmodule Arcadic.VectorTest do
       refute cmd =~ ":rids1"
     end
 
+    test "builds the full-text index reference from every property in order" do
+      Req.Test.stub(__MODULE__, fn c ->
+        send(self(), {:body, Jason.decode!(Req.Test.raw_body(c))})
+        Req.Test.json(c, %{"result" => []})
+      end)
+
+      assert {:ok, []} =
+               Vector.fuse(conn(), [
+                 {"Doc", "embedding", [1.0], 3},
+                 {:fulltext, "Doc", ["title", "body"], "graph", 5}
+               ])
+
+      assert_received {:body, %{"command" => cmd, "params" => params}}
+      assert cmd =~ "SEARCH_INDEX('Doc[title,body]', :q1) = true LIMIT :k1"
+      assert params["q1"] == "graph"
+      assert params["k1"] == 5
+    end
+
+    test "rejects malformed, empty, and duplicate full-text properties value-free" do
+      c = conn()
+      dense = {"Doc", "embedding", [1.0], 3}
+
+      assert {:error, :invalid_identifier} =
+               Vector.fuse(c, [dense, {:fulltext, "Doc", ["title", "private ' value"], "q", 5}])
+
+      assert_raise ArgumentError, "at least one property is required", fn ->
+        Vector.fuse(c, [dense, {:fulltext, "Doc", [], "q", 5}])
+      end
+
+      assert_raise ArgumentError, "properties must be distinct", fn ->
+        Vector.fuse(c, [dense, {:fulltext, "Doc", ["private", "private"], "q", 5}])
+      end
+    end
+
     test "an unknown-tag / wrong-arity spec is rejected value-free (no FunctionClauseError, no arg echo)" do
       # 2 specs so the spec-count guard passes and the per-spec unknown-tag/wrong-arity guard runs.
       err =
@@ -623,6 +657,7 @@ defmodule Arcadic.VectorTest do
         end
 
       refute err2.message =~ "SEKRIT"
+      assert err2.message =~ "{:fulltext, type, property_or_properties, query, k}"
     end
 
     test "a malformed RID in a shared filter is rejected value-free (FT literal path)" do

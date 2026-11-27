@@ -121,6 +121,24 @@ defmodule Arcadic.FullTextTest do
       assert params["k"] == 5
     end
 
+    test "binds a composite index search's candidate RIDs before the limit" do
+      capture()
+
+      assert {:ok, []} =
+               FullText.search(conn(), "Article", ["title", "body"], "graph",
+                 filter: ["#1:0", "#1:1"],
+                 limit: 5
+               )
+
+      assert_received {:body, %{"command" => cmd, "params" => params}}
+
+      assert cmd ==
+               "SELECT FROM Article WHERE SEARCH_INDEX('Article[title,body]', :q) = true" <>
+                 " AND @rid IN :rids LIMIT :k"
+
+      assert params == %{"q" => "graph", "rids" => ["#1:0", "#1:1"], "k" => 5}
+    end
+
     test "Rule 1: the query value stays in params and never enters the statement" do
       capture()
       FullText.search(conn(), "Article", "body", @secret)
@@ -150,6 +168,23 @@ defmodule Arcadic.FullTextTest do
       assert params["q"] == "graph"
     end
 
+    test "binds candidate RIDs in SEARCH_FIELDS" do
+      capture()
+
+      assert {:ok, []} =
+               FullText.search_fields(conn(), "Article", ["title", "body"], "graph",
+                 filter: ["#1:0"]
+               )
+
+      assert_received {:body, %{"command" => cmd, "params" => params}}
+
+      assert cmd ==
+               "SELECT FROM Article WHERE SEARCH_FIELDS(['title', 'body'], :q) = true" <>
+                 " AND @rid IN :rids"
+
+      assert params == %{"q" => "graph", "rids" => ["#1:0"]}
+    end
+
     test "non-list properties raises value-free (query never echoed)" do
       err =
         assert_raise ArgumentError, fn ->
@@ -157,6 +192,39 @@ defmodule Arcadic.FullTextTest do
         end
 
       refute err.message =~ "SEKRIT-ft-query-xyz"
+    end
+  end
+
+  describe "candidate RID filter" do
+    test "empty filters return no rows without a request" do
+      capture()
+
+      assert {:ok, []} = FullText.search(conn(), "Article", "body", "graph", filter: [])
+
+      assert {:ok, []} =
+               FullText.search_fields(conn(), "Article", ["body"], "graph", filter: [])
+
+      refute_received {:body, _}
+    end
+
+    test "rejects invalid filter shapes and RIDs value-free before a request" do
+      capture()
+      bad_rid = "#1:0] OR true"
+      message = "filter must be a list of #<bucket>:<pos> RID strings"
+
+      assert_raise ArgumentError, "filter must be a non-empty list of RIDs", fn ->
+        FullText.search(conn(), "Article", "body", "graph", filter: bad_rid)
+      end
+
+      assert_raise ArgumentError, message, fn ->
+        FullText.search(conn(), "Article", "body", "graph", filter: ["#1:0", bad_rid])
+      end
+
+      assert_raise ArgumentError, message, fn ->
+        FullText.search_fields(conn(), "Article", ["body"], "graph", filter: ["#1:0" | bad_rid])
+      end
+
+      refute_received {:body, _}
     end
   end
 

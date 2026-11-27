@@ -75,40 +75,74 @@ defmodule Arcadic.Integration.GraphRAGTest do
     assert scores == Enum.sort(scores, :desc)
   end
 
-  test "hybrid fuse combines a dense arm and a full-text arm into one ranked list", %{conn: conn} do
+  test "composite full-text searches restrict matching records to the candidate RIDs", %{
+    conn: conn
+  } do
+    Arcadic.command!(conn, "CREATE DOCUMENT TYPE FilteredArticle", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY FilteredArticle.title STRING", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY FilteredArticle.body STRING", %{}, language: "sql")
+
+    for {title, body} <- [{"graph index", "unrelated"}, {"query engine", "graph traversal"}] do
+      Arcadic.command!(
+        conn,
+        "INSERT INTO FilteredArticle SET title = :title, body = :body",
+        %{"title" => title, "body" => body},
+        language: "sql"
+      )
+    end
+
+    props = ["title", "body"]
+    :ok = FullText.create_index(conn, "FilteredArticle", props)
+
+    for search <- [&FullText.search/5, &FullText.search_fields/5] do
+      assert {:ok, unfiltered} = search.(conn, "FilteredArticle", props, "graph", [])
+      assert Enum.sort(Enum.map(unfiltered, & &1["title"])) == ["graph index", "query engine"]
+
+      selected = Enum.find(unfiltered, &(&1["title"] == "query engine"))
+      assert %{"@rid" => rid} = selected
+
+      assert {:ok, [%{"@rid" => ^rid}]} =
+               search.(conn, "FilteredArticle", props, "graph", filter: [rid])
+
+      assert {:ok, []} = search.(conn, "FilteredArticle", props, "graph", filter: [])
+    end
+  end
+
+  test "hybrid fuse combines a dense arm and a composite full-text arm", %{conn: conn} do
     # Self-contained: provisions its own type / properties / rows / indexes so the suite is
     # order-independent (no dependency on any other test's schema).
     Arcadic.command!(conn, "CREATE DOCUMENT TYPE Hybrid", %{}, language: "sql")
+    Arcadic.command!(conn, "CREATE PROPERTY Hybrid.title STRING", %{}, language: "sql")
     Arcadic.command!(conn, "CREATE PROPERTY Hybrid.body STRING", %{}, language: "sql")
 
     Arcadic.command!(conn, "CREATE PROPERTY Hybrid.embedding ARRAY_OF_FLOATS", %{},
       language: "sql"
     )
 
-    for {b, e} <- [
-          {"graph database engine", "[1.0,0.0,0.0]"},
-          {"vector graph search", "[0.0,0.0,1.0]"},
-          {"fraud ring graph traversal", "[0.9,0.1,0.0]"}
+    for {title, body, embedding} <- [
+          {"database engine", "documents and records", [1.0, 0.0, 0.0]},
+          {"graph search", "neighbor traversal", [0.0, 0.0, 1.0]},
+          {"fraud ring", "investigation", [0.9, 0.1, 0.0]}
         ] do
-      Arcadic.command!(conn, "INSERT INTO Hybrid SET body = :b, embedding = #{e}", %{"b" => b},
+      Arcadic.command!(
+        conn,
+        "INSERT INTO Hybrid SET title = :title, body = :body, embedding = :embedding",
+        %{"title" => title, "body" => body, "embedding" => embedding},
         language: "sql"
       )
     end
 
-    :ok = FullText.create_index(conn, "Hybrid", "body")
+    :ok = FullText.create_index(conn, "Hybrid", ["title", "body"])
     :ok = Vector.create_dense_index!(conn, "Hybrid", "embedding", 3, similarity: :cosine)
 
     assert {:ok, rows} =
              Vector.fuse(conn, [
-               {"Hybrid", "embedding", [1.0, 0.0, 0.0], 3},
-               {:fulltext, "Hybrid", "body", "graph", 5}
+               {"Hybrid", "embedding", [1.0, 0.0, 0.0], 1},
+               {:fulltext, "Hybrid", ["title", "body"], "title:graph", 5}
              ])
 
-    assert rows != []
-
-    # Membership (not rank) — order-independent: the exact-vector-match doc (its embedding IS the
-    # dense query [1,0,0], and it is also a "graph" full-text hit) must surface in the fused list.
-    assert Enum.any?(rows, &(&1["body"] == "graph database engine"))
+    # Each arm contributes a different hit. The dense top-1 cannot satisfy both assertions.
+    assert Enum.sort(Enum.map(rows, & &1["title"])) == ["database engine", "graph search"]
   end
 
   test "$int8 / $bytes typed params round-trip into a BINARY vector property", %{conn: conn} do
