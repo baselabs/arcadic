@@ -906,7 +906,8 @@ defmodule Arcadic.Transport.HTTP do
       {:ok, %Req.Response{status: status}} ->
         {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
 
-      {:error, %Error{}} = err -> err
+      {:error, %Error{}} = err ->
+        err
 
       {:error, %{reason: reason}} ->
         {:error, %TransportError{reason: reason}}
