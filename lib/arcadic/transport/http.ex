@@ -7,6 +7,7 @@ defmodule Arcadic.Transport.HTTP do
   request whenever `conn.session_id` is set, so reads and writes inside a
   transaction are session-scoped. Req's own client retry is disabled — retry
   semantics are the caller's (`retries:` body param) and the error taxonomy's.
+  HTTP redirects return a value-free `:http_redirect` error without replaying the request.
   """
 
   @behaviour Arcadic.Transport
@@ -543,20 +544,7 @@ defmodule Arcadic.Transport.HTTP do
     do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
 
   def post(%Conn{} = conn, path, body, opts) do
-    req_opts =
-      [
-        url: conn.base_url <> path,
-        headers: headers(conn),
-        retry: false,
-        finch: conn.transport_options[:finch],
-        plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout,
-        request_timeout: opts[:request_timeout] || conn.request_timeout
-      ]
-      |> maybe_put_json(body)
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-
-    Req.post(req_opts)
+    request(conn, :post, path, opts, json: body)
   rescue
     # The LAST redaction seam for unencodable caller data: Jason (an invalid-UTF-8 binary) and
     # the Encoder protocol (a tuple/pid/unknown struct) both raise with the offending VALUE in
@@ -567,9 +555,39 @@ defmodule Arcadic.Transport.HTTP do
        %Error{reason: :invalid_params, message: "params or statement failed value encoding"}}
   end
 
-  # req_opts is a keyword list — use Keyword.put, NOT put_if (which does Map.put → BadMapError).
-  defp maybe_put_json(opts, nil), do: opts
-  defp maybe_put_json(opts, body), do: Keyword.put(opts, :json, body)
+  defp request(conn, method, path, opts, extra_opts) do
+    {extra_headers, extra_opts} = Keyword.pop(extra_opts, :headers, [])
+
+    req_opts = [
+      method: method,
+      url: conn.base_url <> path,
+      headers: extra_headers ++ headers(conn),
+      retry: false,
+      redirect: false,
+      finch: conn.transport_options[:finch],
+      plug: conn.transport_options[:plug],
+      receive_timeout: opts[:timeout] || conn.timeout,
+      request_timeout: opts[:request_timeout] || conn.request_timeout
+    ]
+
+    (extra_opts ++ req_opts)
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Req.new()
+    |> Req.Request.prepend_response_steps(reject_redirect: &reject_redirect/1)
+    |> Req.request()
+  end
+
+  # With redirects disabled, reject the status before Req can decode an untrusted body.
+  defp reject_redirect({%Req.Request{options: %{redirect: false}} = request, response})
+       when response.status in 300..399 do
+    Req.Request.halt(request, %Error{
+      reason: :http_redirect,
+      http_status: response.status,
+      message: "HTTP redirect refused"
+    })
+  end
+
+  defp reject_redirect(request_response), do: request_response
 
   def headers(conn) when not is_struct(conn, Conn),
     do: raise(ArgumentError, "expected an Arcadic.Conn as the first argument")
@@ -683,23 +701,14 @@ defmodule Arcadic.Transport.HTTP do
 
   @impl true
   def batch_ingest(%Conn{} = conn, ndjson, opts) do
-    query = batch_query(opts)
-    url = conn.base_url <> "/api/v1/batch/#{conn.database}" <> query
+    path = "/api/v1/batch/#{conn.database}" <> batch_query(opts)
 
-    req_opts =
-      [
-        url: url,
-        headers: [{"content-type", "application/x-ndjson"} | headers(conn)],
-        body: ndjson,
-        retry: false,
-        finch: conn.transport_options[:finch],
-        plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout,
-        request_timeout: opts[:request_timeout] || conn.request_timeout
-      ]
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-
-    req_opts |> Req.post() |> unwrap_body()
+    conn
+    |> request(:post, path, opts,
+      headers: [{"content-type", "application/x-ndjson"}],
+      body: ndjson
+    )
+    |> unwrap_body()
   end
 
   # Only the provided knobs ride the query string, as ArcadeDB's camelCase param names. Edge
@@ -725,24 +734,11 @@ defmodule Arcadic.Transport.HTTP do
 
   @impl true
   def ts_write(%Conn{} = conn, lines, opts) do
-    query = precision_query(opts[:precision])
-
-    req_opts =
-      [
-        url: conn.base_url <> "/api/v1/ts/#{conn.database}/write" <> query,
-        headers: [{"content-type", "text/plain"} | headers(conn)],
-        body: lines,
-        retry: false,
-        finch: conn.transport_options[:finch],
-        plug: conn.transport_options[:plug],
-        receive_timeout: opts[:timeout] || conn.timeout,
-        request_timeout: opts[:request_timeout] || conn.request_timeout
-      ]
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    path = "/api/v1/ts/#{conn.database}/write" <> precision_query(opts[:precision])
 
     # The /ts write contract is 204 exactly. Any OTHER 2xx is off-contract (fail closed, F8) —
     # handle_status_only's blanket 2xx→:ok must not admit it; its non-2xx/fault arms still apply.
-    case Req.post(req_opts) do
+    case request(conn, :post, path, opts, headers: [{"content-type", "text/plain"}], body: lines) do
       {:ok, %Req.Response{status: 204}} ->
         :ok
 
@@ -910,6 +906,8 @@ defmodule Arcadic.Transport.HTTP do
       {:ok, %Req.Response{status: status}} ->
         {:error, Error.from_response(status, %{"error" => "HTTP #{status}"})}
 
+      {:error, %Error{}} = err -> err
+
       {:error, %{reason: reason}} ->
         {:error, %TransportError{reason: reason}}
 
@@ -926,6 +924,7 @@ defmodule Arcadic.Transport.HTTP do
     case raw_get(conn, "/api/v1/health") do
       {:ok, %Req.Response{status: 204}} -> {:ok, true}
       {:ok, %Req.Response{}} -> {:ok, false}
+      {:error, %Error{}} = err -> err
       {:error, %{reason: reason}} -> {:error, %TransportError{reason: reason}}
       {:error, _} -> {:error, %TransportError{reason: :unknown}}
     end
@@ -1051,6 +1050,7 @@ defmodule Arcadic.Transport.HTTP do
     case raw_get(conn, "/api/v1/ready") do
       {:ok, %Req.Response{status: 204}} -> {:ok, true}
       {:ok, %Req.Response{}} -> {:ok, false}
+      {:error, %Error{}} = err -> err
       {:error, %{reason: reason}} -> {:error, %TransportError{reason: reason}}
       {:error, _} -> {:error, %TransportError{reason: :unknown}}
     end
@@ -1061,17 +1061,7 @@ defmodule Arcadic.Transport.HTTP do
 
   # opts carries an optional per-call :timeout (the ts_* read paths); default callers keep conn.timeout.
   defp raw_get(%Conn{} = conn, path, opts \\ []) do
-    [
-      url: conn.base_url <> path,
-      headers: headers(conn),
-      retry: false,
-      finch: conn.transport_options[:finch],
-      plug: conn.transport_options[:plug],
-      receive_timeout: opts[:timeout] || conn.timeout,
-      request_timeout: opts[:request_timeout] || conn.request_timeout
-    ]
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-    |> Req.get()
+    request(conn, :get, path, opts, [])
   end
 
   defp unwrap_body({:error, %Error{} = err}), do: {:error, err}

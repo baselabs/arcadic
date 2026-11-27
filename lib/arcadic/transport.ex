@@ -39,7 +39,7 @@ defmodule Arcadic.Transport do
               {:ok, map()} | {:error, Error.t() | TransportError.t()}
 
   @doc "Liveness probe (`GET /api/v1/health` → 204)."
-  @callback health?(Conn.t()) :: {:ok, boolean()} | {:error, TransportError.t()}
+  @callback health?(Conn.t()) :: {:ok, boolean()} | {:error, Error.t() | TransportError.t()}
 
   @doc "Mint a session token from the conn's credentials (`POST /api/v1/login`)."
   @callback login(Conn.t()) :: {:ok, String.t()} | {:error, Error.t() | TransportError.t()}
@@ -65,7 +65,7 @@ defmodule Arcadic.Transport do
   @optional_callbacks database_info: 1
 
   @doc "Server readiness."
-  @callback ready?(Conn.t()) :: {:ok, boolean()} | {:error, TransportError.t()}
+  @callback ready?(Conn.t()) :: {:ok, boolean()} | {:error, Error.t() | TransportError.t()}
 
   @optional_callbacks begin: 2,
                       commit: 1,

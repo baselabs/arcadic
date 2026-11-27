@@ -1,6 +1,6 @@
 defmodule Arcadic.Transport.HTTPTest do
   use ExUnit.Case, async: true
-  alias Arcadic.{Conn, Error, TransportError}
+  alias Arcadic.{Conn, Error, Transaction, TransportError}
   alias Arcadic.Transport.HTTP
 
   defp conn(overrides \\ %{}) do
@@ -79,6 +79,66 @@ defmodule Arcadic.Transport.HTTPTest do
     req(conn(%{session_id: "AS-9"}), :read, cypher("MATCH (n) RETURN n"))
     assert_received {:headers, h2}
     assert {"arcadedb-session-id", "AS-9"} = List.keyfind(h2, "arcadedb-session-id", 0)
+  end
+
+  describe "redirect responses" do
+    setup do
+      Req.Test.stub(__MODULE__, fn plug ->
+        send(self(), {:request, plug.method, plug.host, plug.request_path})
+
+        case plug.request_path do
+          "/redirected" ->
+            Plug.Conn.send_resp(plug, 204, "")
+
+          _ ->
+            plug
+            |> Plug.Conn.put_resp_header("location", "http://other.invalid/redirected")
+            |> Plug.Conn.put_resp_header("arcadedb-session-id", "session-fixture")
+            |> Plug.Conn.put_resp_content_type("application/json")
+            |> Plug.Conn.send_resp(307, "session-fixture root:sekret")
+        end
+      end)
+
+      %{session_conn: conn(%{session_id: "session-fixture"})}
+    end
+
+    test "a session begin refuses a redirect" do
+      assert_redirect(Transaction.begin(conn()), "POST", "/api/v1/begin/mydb")
+    end
+
+    test "session commands and queries refuse redirects", %{session_conn: tx} do
+      assert_redirect(Arcadic.command(tx, "CREATE (n)"), "POST", "/api/v1/command/mydb")
+      assert_redirect(Arcadic.query(tx, "RETURN 1"), "POST", "/api/v1/query/mydb")
+    end
+
+    test "session commit and rollback refuse redirects", %{session_conn: tx} do
+      assert_redirect(Transaction.commit(tx), "POST", "/api/v1/commit/mydb")
+      assert_redirect(Transaction.rollback(tx), "POST", "/api/v1/rollback/mydb")
+    end
+
+    test "a non-session query refuses a redirect without failing over" do
+      c = conn(%{hosts: ["http://backup.invalid"]})
+      assert_redirect(Arcadic.query(c, "RETURN 1"), "POST", "/api/v1/query/mydb")
+    end
+
+    test "batch ingest and time-series writes refuse redirects", %{session_conn: tx} do
+      assert_redirect(HTTP.batch_ingest(tx, "{}\n", []), "POST", "/api/v1/batch/mydb")
+      assert_redirect(HTTP.ts_write(tx, "metric value=1", []), "POST", "/api/v1/ts/mydb/write")
+    end
+
+    test "GET requests and probes refuse redirects", %{session_conn: tx} do
+      assert_redirect(HTTP.server_get(tx, "/api/v1/server"), "GET", "/api/v1/server")
+      assert_redirect(HTTP.ready?(tx), "GET", "/api/v1/ready")
+      assert_redirect(HTTP.health?(tx), "GET", "/api/v1/health")
+    end
+  end
+
+  defp assert_redirect(result, method, path) do
+    assert_received {:request, ^method, "arcade.invalid", ^path}
+    refute_received {:request, _, _, _}
+
+    error = %Error{reason: :http_redirect, http_status: 307, message: "HTTP redirect refused"}
+    assert result == {:error, error}
   end
 
   test "normalizes a success body (strips @props)" do

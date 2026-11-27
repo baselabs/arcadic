@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Publish CI-qualified Hex archives through the shared workload identity action.
 
+### Fixed
+
+- The HTTP transport refuses redirects on every request, including transaction
+  operations, and returns a value-free `:http_redirect` error for 3xx responses.
+
 ## [2.0.1] - 2026-11-24
 
 ### Changed

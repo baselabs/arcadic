@@ -30,6 +30,8 @@ defmodule Arcadic.Error do
     the write (`ServerIsNotTheLeaderException`, HTTP 400). A managed-retry
     `transaction/3` and multi-host failover treat it as retriable (the write was
     rejected, nothing applied).
+  - `:http_redirect` — an HTTP 3xx response. The client declines to follow it
+    and reports only the status.
   - `:invalid_begin_body` — a malformed `isolationLevel` in a transaction-begin body.
   - `:server_error` — the generic fallback: an unrecognized HTTP 400 body, or an
     `exception` FQN that matches none of the above.
