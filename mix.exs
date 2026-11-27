@@ -88,7 +88,7 @@ defmodule Arcadic.MixProject do
   defp docs do
     [
       main: "readme",
-      source_ref: "v#{@version}",
+      source_ref: "baselabs_arcadic-v#{@version}",
       source_url: @source_url,
       extras: extras(),
       groups_for_modules: [

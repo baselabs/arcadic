@@ -36,7 +36,6 @@ jobs:
       actions: read
       id-token: write
     outputs:
-      version: ${{ steps.hex.outputs.version }}
       qualification-run: ${{ steps.hex.outputs.qualification-run }}
       qualification-sha256: ${{ steps.hex.outputs.qualification-sha256 }}
     steps:
@@ -127,28 +126,6 @@ jobs:
           qualification-run: ${{ needs.upload.outputs.qualification-run }}
           qualification-sha256: ${{ needs.upload.outputs.qualification-sha256 }}
           release-assets-directory: ${{ runner.temp }}/release-assets
-
-      - name: Write release notes from the published commit
-        env:
-          PUBLISHED_COMMIT: ${{ steps.hex.outputs.commit }}
-          VERSION: ${{ needs.upload.outputs.version }}
-        run: |
-          [[ "$PUBLISHED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          git show "$PUBLISHED_COMMIT:CHANGELOG.md" | python3 -I -c '
-          import re, sys
-
-          version = sys.argv[1]
-          text = sys.stdin.read()
-          headings = list(re.finditer(r"^##[ \t]+(.+)$", text, re.MULTILINE))
-          for index, heading in enumerate(headings):
-              title = heading.group(1).split(maxsplit=1)
-              if title and title[0] in (f"[{version}]", version):
-                  end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-                  print(text[heading.start():end].rstrip())
-                  break
-          else:
-              raise SystemExit(f"CHANGELOG.md has no section for {version}")
-          ' "$VERSION" > "$RUNNER_TEMP/release-assets/RELEASE_NOTES.md"
 
       - name: Upload verified release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

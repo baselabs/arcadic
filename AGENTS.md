@@ -156,8 +156,8 @@ secret. This file points at them and does not copy them.
   verifies the qualification and changelog stamp before exchanging workload identity for a
   package-scoped token. When retrying a release, pass the original `qualification_run`.
   Read-back verifies the served archives against that qualification and exports
-  `release-assets` with checksums and notes from the published commit's CHANGELOG. Infra
-  creates the GitHub release from those assets.
+  `release-assets` (the served package and docs with checksums). Infra tags
+  `baselabs_arcadic-v<version>` and creates the GitHub release.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
