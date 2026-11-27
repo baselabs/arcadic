@@ -25,7 +25,9 @@ defaults:
 jobs:
   quick:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    # 2x (60 s whole suite on a restored cache, run 46079162700, + 102 s cold dependency build,
+    # warmer run 44703750604); measure again on its first cold green run
+    timeout-minutes: 6 # 162 s, runs 46079162700 + 44703750604
     env:
       MIX_ENV: test
       PW: probe-test-pw
