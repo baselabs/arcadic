@@ -15,10 +15,13 @@ defmodule QuickTests do
   def main([base]) do
     changed = changed_files(base)
 
-    cond do
-      Enum.any?(changed, &Regex.match?(@whole_suite, &1)) -> IO.puts("all")
-      (selected = select(changed)) == [] -> IO.puts("none")
-      true -> IO.puts(Enum.join(selected, " "))
+    if Enum.any?(changed, &Regex.match?(@whole_suite, &1)) do
+      IO.puts("all")
+    else
+      case select(changed) do
+        [] -> IO.puts("none")
+        selected -> IO.puts(Enum.join(selected, " "))
+      end
     end
   end
 
