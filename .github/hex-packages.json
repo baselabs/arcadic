@@ -31,6 +31,7 @@
       "lib/arcadic/param.ex",
       "lib/arcadic/record.ex",
       "lib/arcadic/result.ex",
+      "lib/arcadic/rid_filter.ex",
       "lib/arcadic/schema.ex",
       "lib/arcadic/security.ex",
       "lib/arcadic/server.ex",
