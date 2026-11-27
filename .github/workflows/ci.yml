@@ -222,7 +222,7 @@ jobs:
         env:
           EXPECTED_ELIXIR: ${{ needs.toolchain.outputs.elixir }}
           EXPECTED_OTP: ${{ needs.toolchain.outputs.otp }}
-          HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish/hex-version
+          HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2/.github/actions/hex-publish/hex-version
         run: |
           "$GITHUB_WORKSPACE/scripts/toolchain.sh" --installed "elixir=$EXPECTED_ELIXIR" "erlang=$EXPECTED_OTP"
           test ! -e mix.exs
@@ -240,7 +240,7 @@ jobs:
           key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
 
       - name: Qualify the Hex package and docs
-        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
+        uses: baselabs/.github/.github/actions/hex-publish@654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2
         with:
           operation: qualify
           package: arcadic

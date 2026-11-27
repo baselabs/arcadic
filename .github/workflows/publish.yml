@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish/hex-version
+  HEX_PIN_URL: https://raw.githubusercontent.com/baselabs/.github/654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2/.github/actions/hex-publish/hex-version
 
 defaults:
   run:
@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload the qualified archives
         id: hex
-        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
+        uses: baselabs/.github/.github/actions/hex-publish@654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2
         with:
           operation: upload
           package: arcadic
@@ -117,7 +117,7 @@ jobs:
 
       - name: Verify the archives served by Hex
         id: hex
-        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
+        uses: baselabs/.github/.github/actions/hex-publish@654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2
         with:
           operation: read-back
           package: arcadic
