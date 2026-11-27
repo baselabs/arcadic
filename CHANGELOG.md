@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-27
+
 ### Added
 
 - `Arcadic.FullText.search/5` and `search_fields/5` accept a candidate RID
