@@ -1,8 +1,9 @@
 # Selects the tests the quick workflow runs for a branch: every changed test file, plus every
 # test file that names a module defined in a changed library file or in a library file that
-# depends on one directly. A change to the build itself (mix.exs, mix.lock, .tool-versions,
-# config, the test helper or test support) selects the whole suite, because every test
-# depends on it.
+# depends on one directly. A deleted or renamed library file counts with the modules it
+# defined at the merge base, so tests that still name them are selected. A change to the
+# build itself (mix.exs, mix.lock, .tool-versions, config, the test helper or test support)
+# selects the whole suite, because every test depends on it.
 #
 #   elixir scripts/quick_tests.exs BASE_REF
 #
@@ -13,12 +14,13 @@ defmodule QuickTests do
   @whole_suite ~r{\A(mix\.exs|mix\.lock|\.tool-versions|config/.*|test/test_helper\.exs|test/support/.*)\z}
 
   def main([base]) do
-    changed = changed_files(base)
+    merge_base = git!(["merge-base", base, "HEAD"]) |> String.trim()
+    {changed, gone} = changed_files(merge_base)
 
-    if Enum.any?(changed, &Regex.match?(@whole_suite, &1)) do
+    if Enum.any?(changed ++ gone, &Regex.match?(@whole_suite, &1)) do
       IO.puts("all")
     else
-      case select(changed) do
+      case select(changed, gone, merge_base) do
         [] -> IO.puts("none")
         selected -> IO.puts(Enum.join(selected, " "))
       end
@@ -30,28 +32,46 @@ defmodule QuickTests do
     System.halt(2)
   end
 
-  defp changed_files(base) do
-    merge_base = git!(["merge-base", base, "HEAD"]) |> String.trim()
-
-    git!(["diff", "--name-only", "--diff-filter=d", merge_base, "HEAD"])
+  # {paths present in HEAD that changed, paths that no longer exist in HEAD}. A deleted
+  # file and the old side of a rename are gone; tests may still name their modules.
+  defp changed_files(merge_base) do
+    git!(["diff", "--name-status", "-M", merge_base, "HEAD"])
     |> String.split("\n", trim: true)
+    |> Enum.reduce({[], []}, fn line, {changed, gone} ->
+      case String.split(line, "\t") do
+        ["D", path] -> {changed, [path | gone]}
+        ["R" <> _, old, new] -> {[new | changed], [old | gone]}
+        ["C" <> _, _source, new] -> {[new | changed], gone}
+        [_status, path] -> {[path | changed], gone}
+      end
+    end)
   end
 
-  defp select(changed) do
+  defp select(changed, gone, merge_base) do
     tests = Path.wildcard("test/**/*_test.exs")
     changed_tests = Enum.filter(changed, &(&1 in tests))
-    lib = Enum.filter(changed, &String.match?(&1, ~r{\Alib/.*\.exs?\z}))
+    lib = Enum.filter(changed, &lib?/1)
     lib = Enum.uniq(lib ++ direct_dependents(lib))
-    modules = Enum.flat_map(lib, &defined_modules/1)
+    gone_lib = Enum.filter(gone, &lib?/1)
+
+    # mix xref knows only current files, so gone files contribute their modules as they
+    # were at the merge base, not xref dependents.
+    modules =
+      Enum.flat_map(lib, &defined_modules(File.read!(&1))) ++
+        Enum.flat_map(gone_lib, &defined_modules(git!(["show", "#{merge_base}:#{&1}"])))
 
     referencing =
       Enum.filter(tests, fn test ->
         source = File.read!(test)
-        Enum.any?(lib, &(mirror(&1) == test)) or Enum.any?(modules, &names?(source, &1))
+
+        Enum.any?(lib ++ gone_lib, &(mirror(&1) == test)) or
+          Enum.any?(modules, &names?(source, &1))
       end)
 
     Enum.sort(Enum.uniq(changed_tests ++ referencing))
   end
+
+  defp lib?(path), do: String.match?(path, ~r{\Alib/.*\.exs?\z})
 
   # Library files with a direct compile, export or runtime edge to a changed file.
   defp direct_dependents([]), do: []
@@ -67,8 +87,8 @@ defmodule QuickTests do
     Regex.scan(~r{\blib/[\w/.-]+\.exs?\b}, out) |> List.flatten() |> Enum.uniq()
   end
 
-  defp defined_modules(file) do
-    Regex.scan(~r/^\s*defmodule\s+([A-Z][\w.]*)/m, File.read!(file), capture: :all_but_first)
+  defp defined_modules(source) do
+    Regex.scan(~r/^\s*defmodule\s+([A-Z][\w.]*)/m, source, capture: :all_but_first)
     |> List.flatten()
   end
 

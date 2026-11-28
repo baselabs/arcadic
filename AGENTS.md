@@ -93,8 +93,8 @@ on a workstation. Push the work branch (any name except `main` and `kci/*`) and 
 branch's quick run once it has finished, about four minutes after the push; do not watch
 or poll it. It checks formatting, compiles with warnings as errors, runs credo, and then
 runs the tests `scripts/quick_tests.exs` selects: every changed test file, and every test
-file that names a module from a changed library file or from a library file that depends
-on one directly. They run against a live ArcadeDB serving HTTP, Bolt and gRPC in plaintext;
+file that names a module from a changed, deleted or renamed library file or from a library
+file that depends on one directly. They run against a live ArcadeDB serving HTTP, Bolt and gRPC in plaintext;
 the TLS and shutdown suites run only in the landing run. A change to `mix.exs`, `mix.lock`,
 `.tool-versions`, `config/`, the test helper or test support runs the whole suite. A
 newer push to the branch cancels the older run. Ask for the landing only when the
